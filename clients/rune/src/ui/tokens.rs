@@ -259,7 +259,12 @@ pub(crate) fn theme_input(t: &Theme) -> phux_design::Theme {
 /// (or the house terminal picked as a theme), else the theme derived.
 /// Under increased contrast, the same solved for its higher floors.
 fn roles_for(inputs: &Inputs) -> Roles {
-    let roles = solved(inputs);
+    let mut roles = solved(inputs);
+    // A grey accent quieter than dim text would invert every emphasis it
+    // inks: a palette match, an accent icon or link would be the dimmest
+    // thing on screen (Omarchy's Vantablack). Emphasis takes body text
+    // there, as the TUI's focus does; weight still marks a match.
+    roles.accent.accent_text = roles.emphasis();
     inputs.forced.map_or(roles, |f| f.roles(&roles))
 }
 
@@ -391,7 +396,7 @@ impl Tokens {
     pub(crate) fn for_window(desk: &Desk, cx: &Cx<Desk>) -> Rc<Self> {
         let dark = crate::theme::system_dark(cx.system_dark());
         Self::resolve(&Inputs {
-            theme: desk.settings.theme.copied(),
+            theme: desk.theme().copied(),
             host: Some(crate::host_color::entry(desk.machines.label()).0),
             glass: desk.glass(),
             increased_contrast: cx.system_increased_contrast(),
@@ -407,6 +412,19 @@ impl Tokens {
         crate::theme::Selection {
             foreground: self.roles.selection.fg.paint(),
             background: self.roles.selection.bg.paint(),
+        }
+    }
+
+    /// The look of a button that ends something (§1.10): the kit danger
+    /// button, unless the failed tone is a grey quieter than dim text
+    /// ([`Roles::recedes`]). Omarchy's Vantablack solves it to `#a4a4a4`,
+    /// so Close looked disabled beside a white Cancel. The verb still says
+    /// what it does.
+    pub(crate) fn danger_button(&self) -> rune_kit::ButtonVariant {
+        if self.roles.recedes(self.roles.status.failed) {
+            rune_kit::ButtonVariant::Neutral
+        } else {
+            rune_kit::ButtonVariant::Danger
         }
     }
 

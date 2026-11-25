@@ -106,7 +106,8 @@ class NativeAssetTests(unittest.TestCase):
         manifest = plistlib.loads((build.IOS / "Tailnet/PrivacyInfo.xcprivacy").read_bytes())
         reasons = {item["NSPrivacyAccessedAPIType"]: item["NSPrivacyAccessedAPITypeReasons"]
                    for item in manifest["NSPrivacyAccessedAPITypes"]}
-        for category, reason in [("UserDefaults", "CA92.1"), ("FileTimestamp", "C617.1"), ("SystemBootTime", "35F9.1")]:
+        for category, reason in [("UserDefaults", "CA92.1"), ("FileTimestamp", "C617.1"), ("SystemBootTime", "35F9.1"),
+                                 ("DiskSpace", "E174.1")]:
             self.assertIn(reason, reasons["NSPrivacyAccessedAPICategory" + category])
         self.assertFalse(manifest["NSPrivacyTracking"])
 

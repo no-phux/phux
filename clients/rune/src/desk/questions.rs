@@ -130,6 +130,13 @@ impl Owner {
     }
 }
 
+/// Whether `key` is some question's text field, its question gone or not.
+pub(in crate::desk) fn is_field_key(key: &str) -> bool {
+    key.strip_prefix("acp-")
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(_, widget)| widget.starts_with("%5B%22field%22"))
+}
+
 /// Keep application identity components stably encoded, including JSON's `/`.
 /// Typed widget roles stay distinct without depending on Rune's path encoding.
 fn key_segment(value: Value) -> String {

@@ -78,6 +78,9 @@ fn encode_evidence(activation: &ActivationInfo, enc: &mut Encoder<'_>) {
     if activation.persistence_pending {
         enc.write_u8_field(field::org::PERSISTENCE_PENDING, 1);
     }
+    if activation.launch_interrupted {
+        enc.write_u8_field(field::org::LAUNCH_INTERRUPTED, 1);
+    }
 }
 
 pub(super) fn decode_resource_record(value: &[u8]) -> Result<ResourceRecord, DecodeError> {
@@ -91,6 +94,7 @@ pub(super) fn decode_resource_record(value: &[u8]) -> Result<ResourceRecord, Dec
             outcome: f.outcome,
             diagnostic: f.diagnostic,
             persistence_pending: f.persistence_pending,
+            launch_interrupted: f.launch_interrupted.unwrap_or(false),
         }),
         (None, _, _) => None,
         _ => return Err(DecodeError::UnexpectedEof),
@@ -300,6 +304,7 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
                 outcome: f.outcome,
                 diagnostic: f.diagnostic,
                 persistence_pending: f.persistence_pending,
+                launch_interrupted: f.launch_interrupted.unwrap_or(false),
             }),
             (None, None, None) => None,
             _ => return Err(DecodeError::UnexpectedEof),

@@ -16,6 +16,7 @@ use crate::commands::sh_quote;
 mod adoption;
 mod linger;
 mod live_unit;
+mod policy;
 mod reconcile;
 pub(crate) mod supervision;
 mod unit;
@@ -29,7 +30,9 @@ use adoption::{
     probe_unit, supervision_state, unit_is_running, unit_supervises,
 };
 pub(crate) use linger::probe_linger;
-pub(crate) use live_unit::listeners_on_resume;
+pub(crate) use live_unit::{PORT_TAKEN, listeners_on_resume};
+use policy::settle_policy;
+pub(crate) use policy::write_paired_mode;
 
 pub(crate) use reconcile::{Reconcile, reconcile_unit};
 use reconcile::{plist_container_end, settled};
@@ -1009,6 +1012,11 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
+    if let Some(taken) = live_unit::taken_port(&plan, incumbent_live) {
+        error!("service: {taken}; pick another port, or free that one. Nothing was changed.");
+        return ExitCode::FAILURE;
+    }
+
     if incumbent_live && already_supervised(manager, &plan) {
         return live_unit::refresh_running(manager, &plan);
     }
@@ -1022,11 +1030,12 @@ pub(crate) fn run_install(
     };
 
     // The policy first: a unit that could never start is never written.
-    if let Err(err) =
-        settle_policy(&plan).and_then(|()| write_unit_files(manager, &plan, &unit_path))
+    let mut before = live_unit::Before::read(manager, &unit_path);
+    if let Err(err) = before
+        .settle_policy(&plan)
+        .and_then(|()| write_unit_files(manager, &plan, &unit_path))
     {
-        error!("service: {err}");
-        return ExitCode::FAILURE;
+        return before.refuse(&plan, &err);
     }
 
     // Adoption: same unit on disk, but armed rather than loaded (ADR-0088).
@@ -1044,7 +1053,12 @@ pub(crate) fn run_install(
         if let Err(err) = mark_adoption_pending(&unit_path) {
             warn!("service: {err}");
         }
-        report_adopt(manager, &plan, &unit_path);
+        // The running server takes the unit's listeners now, panes kept.
+        let rebound = match live_unit::bind_listeners(&plan) {
+            Ok(rebound) => rebound,
+            Err(err) => return before.refuse(&plan, &err),
+        };
+        report_adopt(manager, &plan, &unit_path, rebound);
         return ExitCode::SUCCESS;
     }
 
@@ -1089,105 +1103,6 @@ fn report_linger_for(manager: Manager) {
     }
 }
 
-/// The listener-address variables a supervised server may inherit from the
-/// environment the install runs in (a systemd user manager can import it).
-const LISTENER_ENV: [&str; 3] = ["PHUX_WS_ADDR", "PHUX_QUIC_ADDR", "PHUX_WT_ADDR"];
-
-/// Whether the installing environment names a listener address the unit's
-/// server could inherit.
-fn inherited_listener_env() -> bool {
-    LISTENER_ENV
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
-}
-
-/// [`ensure_paired_policy`] against the active `config.toml` and the
-/// installing environment.
-fn settle_policy(plan: &ServicePlan) -> Result<(), String> {
-    ensure_paired_policy(
-        plan,
-        &phux_config::loader::config_path(),
-        inherited_listener_env(),
-    )
-}
-
-/// The remote entry point the supervised server will open, if any: the
-/// unit's own listener, a listener address it inherits, or a configured
-/// `[[connector]]` (the server refuses each with no mode, ADR-0179).
-fn remote_entry_point(
-    plan: &ServicePlan,
-    config: &phux_config::Config,
-    inherited_env: bool,
-) -> Option<&'static str> {
-    if plan.quic.is_some() || plan.listen.is_some() {
-        return Some("--quic/--listen");
-    }
-    if inherited_env {
-        return Some("PHUX_WS_ADDR/PHUX_QUIC_ADDR/PHUX_WT_ADDR");
-    }
-    (!config.connector.is_empty()).then_some("[[connector]]")
-}
-
-/// Write `[policy] mode = "paired"` into `config`, creating the file and
-/// the `[policy]` table when they are missing. Existing keys and comments
-/// stay (`phux_config::settings::write_edit`).
-pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
-    phux_config::settings::write_edit(
-        config,
-        "policy.mode",
-        phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
-    )
-    .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
-    // A paired server refuses to start on a state directory others can write.
-    let state = phux_config::instance::state_dir();
-    phux_server::owner_dir::tighten(&state)
-        .map_err(|err| format!("could not make {} owner-only: {err}", state.display()))
-}
-
-/// A unit whose server opens a remote entry point starts only under
-/// `[policy] mode = "paired"` (ADR-0179). With no mode in `config` that is
-/// what the operator asked for by naming one, so write it, and say so;
-/// `local` contradicts it and is refused, leaving the config alone. Nothing
-/// changes for a unit with no remote entry point.
-fn ensure_paired_policy(
-    plan: &ServicePlan,
-    config: &Path,
-    inherited_env: bool,
-) -> Result<(), String> {
-    let loaded = phux_config::loader::load_from(config)
-        .map_err(|err| format!("{}: {err}; run `phux config check`", config.display()));
-    let direct = plan.quic.is_some() || plan.listen.is_some() || inherited_env;
-    let loaded = match loaded {
-        Ok(loaded) => loaded,
-        Err(err) if direct => return Err(err),
-        // No listener of its own and an unreadable config: no connector is
-        // known to settle, and the server reports the config itself.
-        Err(_) => return Ok(()),
-    };
-    let Some(entry) = remote_entry_point(plan, &loaded, inherited_env) else {
-        return Ok(());
-    };
-    match loaded.policy.mode {
-        Some(phux_config::PolicyMode::Paired) => Ok(()),
-        Some(phux_config::PolicyMode::Local) => Err(format!(
-            "{} sets [policy] mode = \"local\", which admits no remote entry point, but the \
-             service would open one ({entry}); set it to \"paired\" (enrolled client \
-             certificates only) or install without it",
-            config.display()
-        )),
-        None => {
-            write_paired_mode(config)?;
-            info!(
-                "service: set [policy] mode = \"paired\" in {} for {entry}: the remote entry \
-                 point serves only clients holding an enrolled certificate (`phux host add`, \
-                 `phux pair --enroll`)",
-                config.display()
-            );
-            Ok(())
-        }
-    }
-}
-
 /// Put the unit in front of the init system without starting it. launchd
 /// bootstraps every plist in `~/Library/LaunchAgents` at login, so writing
 /// the file is the arming; systemd needs `enable` without `--now`.
@@ -1227,7 +1142,7 @@ fn start_armed_unit(manager: Manager, unit_path: &Path) -> Result<(), String> {
 
 /// Report an `--adopt` install: what was written, what was not done, and when
 /// supervision begins. Must not read as "the running server is supervised".
-fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
+fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path, rebound: bool) {
     outln!("phux service armed (nothing was stopped).");
     outln!("  unit    {}", unit_path.display());
     outln!("  binary  {}", plan.binary.display());
@@ -1241,10 +1156,14 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
         outln!("  ws      {listen}");
     }
     outln!("  logs    {}", plan.log.display());
-    outln!("  panes   untouched — the running server was not signalled");
+    if rebound {
+        outln!("  panes   kept — the running server reloaded in place to open its listener");
+    } else {
+        outln!("  panes   untouched — the running server was not signalled");
+    }
     outln!();
     outln!(
-        "The server on {} keeps running exactly as it was: same process, same panes,\n\
+        "The server on {} keeps running: same process, same panes,\n\
          same shells and agents. It is NOT supervised — neither launchd nor systemd can\n\
          restart-manage a process it did not start, so no command could have made it so\n\
          without replacing it.",

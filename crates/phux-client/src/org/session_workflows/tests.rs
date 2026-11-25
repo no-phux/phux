@@ -2,14 +2,16 @@
 use super::*;
 use crate::org::mint_operation;
 use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
-use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExt2, ServerFeatureExt2Set, ServerFeatureExtSet};
 use phux_protocol::wire::frame::{CommandResult, ExecState, FrameKind, Refusal};
 
 fn spec(fixture: OrgFixture, ensure: bool) -> ScriptSpec {
-    let features = if ensure {
-        ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SessionEnsure])
-    } else { ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]) };
-    ScriptSpec::new().organization(fixture).server_features_ext(features)
+    let ext2 = if ensure { ServerFeatureExt2Set::all() } else {
+        ServerFeatureExt2Set::with(&[ServerFeatureExt2::ArchivedLaunchAdmission])
+    };
+    ScriptSpec::new().organization(fixture)
+        .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .server_features_ext2(ext2)
 }
 
 #[tokio::test]

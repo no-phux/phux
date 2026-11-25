@@ -98,8 +98,8 @@ impl Entry {
                 "System, built-in and local themes. Preview live, Return to keep, Escape to restore."
             }
             Self::HoverToolbar => {
-                "Tabs and buttons stay hidden until the pointer reaches the top of the window, so \
-                 the terminal fills it."
+                "Tabs and buttons hide until the pointer reaches the top edge, so the terminal \
+                 fills the window."
             }
             Self::InterfaceSize => {
                 "The sidebar, tabs, palette and Settings from 80% to 200%. The terminal's text \
@@ -460,7 +460,9 @@ pub(super) fn category_value(category: Category, desk: &Desk) -> String {
         Category::Notifications => Entry::Notifications.value(desk),
         Category::RemoteHosts => desk.machines.label().to_owned(),
         Category::Developer => "Diagnostics".to_owned(),
-        Category::About => crate::updates::VERSION.to_owned(),
+        Category::About => (desk.native.as_ref())
+            .and_then(|native| native.app.clone())
+            .unwrap_or_else(|| crate::updates::VERSION.to_owned()),
     }
 }
 

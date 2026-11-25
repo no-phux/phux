@@ -434,3 +434,17 @@ fn a_modified_enter_commits() {
         assert_eq!(a.action, "split-pane");
     }
 }
+
+#[test]
+fn opens_on_the_named_row_when_listed() {
+    let items = vec![
+        SelectItem::header("s"),
+        SelectItem::new("a", action("first")),
+        SelectItem::new("b", action("second")),
+    ];
+    let theme = Theme::default();
+    let mut sl = SelectList::new("t", items.clone(), &theme).with_selected(Some(&action("second")));
+    assert_eq!(commit(&mut sl).as_deref(), Some("second"));
+    let mut sl = SelectList::new("t", items, &theme).with_selected(Some(&action("gone")));
+    assert_eq!(commit(&mut sl).as_deref(), Some("first"));
+}

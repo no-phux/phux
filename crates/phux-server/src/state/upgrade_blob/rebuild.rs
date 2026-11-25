@@ -162,6 +162,10 @@ impl ServerState {
     /// connected yet, so there is no one to notify.
     pub(in crate::state) fn restore_upgrade_metadata(&mut self, blob: &StateBlob) {
         for entry in &blob.metadata {
+            if let Some(pane) = entry.pane {
+                self.restore_unseen(blob, pane, &entry.value);
+                continue;
+            }
             let scope = entry
                 .group
                 .map_or(phux_protocol::wire::frame::Scope::Global, |gid| {

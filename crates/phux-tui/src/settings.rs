@@ -94,6 +94,9 @@ pub struct TuiSettings {
     pub notifications: phux_config::NotificationsCfg,
     /// `[chrome] title`: the outer window title format. Live on reload.
     pub outer_title: String,
+    /// Whether any host names a theme: only then does a focus that crosses
+    /// machines rebuild the chrome. Live on reload.
+    pub host_themes: bool,
 }
 
 impl std::fmt::Debug for TuiSettings {
@@ -115,6 +118,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
             .field("outer_title", &self.outer_title)
+            .field("host_themes", &self.host_themes)
             .finish()
     }
 }
@@ -179,6 +183,7 @@ impl TuiSettings {
         self.clipboard_read = new.clipboard_read;
         self.notifications = new.notifications;
         self.outer_title = new.outer_title;
+        self.host_themes = new.host_themes;
     }
 
     /// The seed when the config does not load: the shipped defaults, keys
@@ -225,7 +230,7 @@ impl TuiSettings {
                 &diagnostics,
             )));
         }
-        let theme = Theme::from_cfg(&cfg.theme, &manifests);
+        let theme = Theme::from_cfg(&viewed_theme(cfg), &manifests);
         Self::assemble(
             cfg,
             keybindings,
@@ -259,7 +264,8 @@ impl TuiSettings {
             return Err(diagnostic.to_string());
         }
         // A `[theme] name` that resolves to nothing is a config error too.
-        let theme = Theme::resolve(&cfg.theme, &manifests).map_err(|err| err.to_string())?;
+        let theme =
+            Theme::resolve(&viewed_theme(cfg), &manifests).map_err(|err| err.to_string())?;
         Ok(Self::assemble(
             cfg,
             keybindings,
@@ -325,7 +331,19 @@ impl TuiSettings {
             clipboard_read: cfg.defaults.clipboard_read,
             notifications: cfg.notifications,
             outer_title: cfg.chrome.title.clone(),
+            host_themes: cfg.any_host_theme(),
         }
+    }
+}
+
+/// `[theme]` as worn for the machine in view: its `[[remote]]` or `[host]`
+/// theme when it names one, else `[theme]` unchanged.
+fn viewed_theme(cfg: &Config) -> std::borrow::Cow<'_, phux_config::ThemeCfg> {
+    use crate::attach::hosts::{AttachOrigin, viewed_host};
+    match viewed_host() {
+        None => std::borrow::Cow::Borrowed(&cfg.theme),
+        Some(AttachOrigin::Local) => cfg.theme_for_host(None),
+        Some(AttachOrigin::Remote(name)) => cfg.theme_for_host(Some(&name)),
     }
 }
 

@@ -363,15 +363,21 @@ fn only_organization_commands_need_the_v2_verbs() {
             assert!(rule.subject.requires_owner_uds(), "{command:?}");
         } else if command.is_organization() {
             let method = command_method(encoded_command_tag(&command)).unwrap();
+            let ext = |feature| Some(FeatureGate::ext(feature));
             let gate = match command {
-                Command::SessionKill { .. } => crate::caps::ServerFeatureExt::SessionKill,
-                Command::SessionEnsure { .. } => crate::caps::ServerFeatureExt::SessionEnsure,
-                Command::SessionSetProject { .. } => crate::caps::ServerFeatureExt::SessionProject,
-                Command::ArrangementLock { .. } => crate::caps::ServerFeatureExt::TabLock,
-                Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,
-                _ => crate::caps::ServerFeatureExt::Organization,
+                Command::SessionKill { .. } => ext(crate::caps::ServerFeatureExt::SessionKill),
+                Command::SessionEnsure { .. } => {
+                    Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::SessionEnsure))
+                }
+                Command::ResourceRelaunch { .. } => {
+                    Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::ArchivedLaunchAdmission))
+                }
+                Command::SessionSetProject { .. } => ext(crate::caps::ServerFeatureExt::SessionProject),
+                Command::ArrangementLock { .. } => ext(crate::caps::ServerFeatureExt::TabLock),
+                Command::GetCreation { .. } => ext(crate::caps::ServerFeatureExt::ApiDescription),
+                _ => ext(crate::caps::ServerFeatureExt::Organization),
             };
-            assert_eq!(method.gate, Some(FeatureGate::ext(gate)), "{}", method.name);
+            assert_eq!(method.gate, gate, "{}", method.name);
         } else {
             assert!(!needs_v2, "{command:?} must keep its legacy verbs");
         }

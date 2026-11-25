@@ -120,7 +120,34 @@ above the native keyboard, not just a visible fragment. Keep the desktop
 drawn-keyboard cases too; their inherited large-text glyph clipping is not
 native UIKit behavior or evidence that the accessory fix repaired that stand-in.
 
+Sessions canvas cases add an empty inventory and a long unbroken filter at
+true 2× on both native-sized phone widths. At AX5, compare the whole Connections
+destination after explicit keyboard-focus/reveal requests and the long-filter editor plus the
+explicitly scrolled final action. Preserve requested text sizes and complete
+controls; an offscreen fragment is not a pass. Explicit bottom scrolls are not
+claims of Tab-driven focus reveal. Long-filter cases use the keyboard-reduced
+320×340 and 393×480 viewports. Ordinary UIKit Glass remains separate
+from the large-text opaque inline action.
+
+Sessions search recovery cases retain matching, no-match, long and blurred
+filters, standard and AX5 text, both phone widths, full and keyboard-reduced
+native-sized viewports, light/dark and true 2×. Compare the complete Clear search
+target and remaining editor width. Exercise touch, accessibility Click and real
+Tab/Enter/Space: clearing restores the first results, cancels composition and
+keeps replacement typing in the editor. A stale native edit cannot restore the
+old query; a covering modal and cancelled press cannot clear it. Preserve the
+terminal's keyboard preference, selected pane and server arrangement.
+
 ## Review behavior as well as pixels
+
+Sidebar keyboard cases start in a non-leading split pane. Compare idle,
+Focus Sidebar, Shift+Tab to Inbox and Space activation at both desktop sizes,
+light/dark and forced colours, at true 2×. Include a collapsed containing
+session. The keyboard ring must mark the actual grouped row without selecting
+another pane or changing its arrangement. Behavioral tests additionally cover
+agent-led identity, missing members, unplaced/document rows, keyless sessions
+and unchanged terminal input. These are desktop keyboard cases; the core phone
+gallery remains surrounding nonregression evidence, not a phone-sidebar claim.
 
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled
@@ -163,6 +190,16 @@ manifest. Horizontal/vertical drift, reversal, boundary resistance,
 cancellation, reduced motion and keyboard-open cases supplement the small,
 light/dark and native-sized 2× matrix. They establish rendered trajectories
 and input semantics, not physical-device smoothness.
+
+Pane-picker cases compare long, similarly named panes at standard and AX5
+text sizes, light/dark, both phone widths and native keyboard-reduced 2×
+viewports. Retain top, keyboard-focused row and scrolled final-action frames.
+Names may be ellipsized, never spilled outside their targets; visible IDs
+distinguish similar names and accessible labels retain the full identity.
+Require every focused target and its text to fit completely in the scroller,
+including Done and Terminal actions. Exercise both final touch actions,
+hostile-but-valid names, input trapping and unchanged literal arrangement.
+The toolbar remains 44 points: picker typography must not resize the terminal.
 
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.

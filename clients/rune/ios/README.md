@@ -38,6 +38,8 @@ is linked **without provisioning or distribution signing**, not installable
 device qualification. Do not install it over another app or use production
 Phux to run a test.
 
+Another app identity: [Distribution](./DISTRIBUTION.md).
+
 ### Direct installation without TestFlight
 
 `build.py --target device` still produces an unsigned bundle. To make an
@@ -164,6 +166,10 @@ out. Before installing, the fixture waits until three consecutive
 `launchctl list` queries each answer within two seconds, for at most five
 minutes, and records the query times in `settle.json`. Still slow at the
 budget, it says so on stderr and continues under the per-command deadlines.
+
+Settling is no guarantee: `simctl` can still stall for minutes. Liveness
+checks the host PID `simctl launch` reported under the owned device directory,
+not `launchctl`; waits check their deadline before liveness.
 
 Cold CoreSimulator registration can outlast installation. Container acquisition
 uses bounded timeout-only retries (at most three 60-second attempts) and must

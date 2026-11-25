@@ -13,7 +13,10 @@ use phux_core::session_list::{
     SessionListJson,
 };
 use phux_protocol::SessionId;
-use phux_protocol::wire::frame::{OrgFilter, ResourceLifecycle, SessionLifetime};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{
+    OrgFilter, RESOURCE_PARENT_KEY, ResourceLifecycle, Scope, SessionLifetime, decode_pane_parent,
+};
 use phux_protocol::wire::info::{
     ExitFacet, HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot,
 };
@@ -25,6 +28,8 @@ use crate::org::{OrgError, OrgInventory};
 use crate::resource;
 use crate::selector::format_terminal_id;
 use crate::state::{Degradation, StateView};
+
+pub mod unseen;
 
 /// The `GET_STATE` view a session listing (`phux ls -l`, `phux status`, MCP
 /// `phux_ls`) is built from.
@@ -39,7 +44,46 @@ use crate::state::{Degradation, StateView};
 pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachError> {
     let mut view = glance_view(conn).await?;
     count_layout_windows(conn, &mut view).await?;
-    Ok(view)
+    read_pane_parents(conn, view.snapshot_mut()).await?;
+    let marks = unseen::read(conn, view.snapshot()).await?;
+    Ok(view.with_unseen(marks))
+}
+
+/// First request id [`read_pane_parents`] reads with, clear of the layout
+/// and organization reads.
+const PARENT_READ_FIRST_REQUEST_ID: u32 = 0x5000;
+
+/// Set each local Terminal's `parent` to the pane it was started from
+/// (`phux.parent/v1`), which the snapshot does not carry: for a Terminal the
+/// parent is organizational and closing it closes nothing. A refused or
+/// malformed read leaves the pane a root.
+async fn read_pane_parents(
+    conn: &mut Connection,
+    snapshot: &mut SessionSnapshot,
+) -> Result<(), AttachError> {
+    let panes: Vec<usize> = (snapshot.resources.iter().enumerate())
+        .filter(|(_, r)| r.kind.is_terminal() && r.id.is_local() && r.parent.is_none())
+        .map(|(index, _)| index)
+        .collect();
+    if panes.is_empty() {
+        return Ok(());
+    }
+    let reads = (panes.iter())
+        .map(|&index| {
+            let id = snapshot.resources[index].id.clone();
+            (Scope::Resource(id), RESOURCE_PARENT_KEY.to_owned())
+        })
+        .collect();
+    let (answers, _) = conn
+        .request_metadata_many(PARENT_READ_FIRST_REQUEST_ID, reads)
+        .await?
+        .into_parts();
+    for (index, answer) in panes.into_iter().zip(answers) {
+        if let Ok(Some(value)) = answer {
+            snapshot.resources[index].parent = decode_pane_parent(&value).map(ResourceId::local);
+        }
+    }
+    Ok(())
 }
 
 /// [`listing_view`] without the window counts, which the glance never
@@ -152,6 +196,15 @@ pub async fn count_layout_windows(
     Ok(())
 }
 
+/// The `phux ls --json` document for one [`listing_view`]: [`document`] with
+/// the panes' unseen marks, which no snapshot carries.
+#[must_use]
+pub fn view_document(view: &StateView) -> SessionListJson {
+    let mut list = document(view.snapshot(), view.organization(), view.degradation());
+    unseen::annotate(&mut list, view.unseen());
+    list
+}
+
 /// The stable `phux ls --json` document for one fetched view.
 ///
 /// Sessions are name-sorted, so the document is stable across runs.
@@ -193,6 +246,7 @@ pub fn document(
             key: organization
                 .and_then(|org| org.resource_by_live(&pane.id))
                 .map(|record| record.key.to_string()),
+            unseen: None,
         })
         .collect();
     SessionListJson::new(entries)

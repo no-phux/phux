@@ -127,6 +127,11 @@ pub struct TerminalLaunch {
     /// field; a cold-started server gives it back to the pane on relaunch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u32>,
+    /// The local pane id of the pane it was started from (`phux.parent/v1`).
+    /// Not an organization wire field; reinstalled as that key at every
+    /// activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
 }
 
 impl TerminalLaunch {

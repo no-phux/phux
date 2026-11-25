@@ -476,5 +476,31 @@ fn blocked_log_open_is_bounded_by_the_overall_deadline() {
     assert!(stderr.contains(ENSURE_TIMEOUT_RENDERED), "{stderr}");
 }
 
+/// `phux chat` refuses a state dir others can open, and older releases left
+/// it 0755, so a start repairs it.
+#[test]
+fn a_server_start_makes_the_state_dir_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut fixture = Fixture::new();
+    let state = fixture.dir.path().join("state");
+    let dir = state.join("phux-ensure");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let output = bounded_output(
+        fixture
+            .command()
+            .env("XDG_STATE_HOME", &state)
+            .args(["server", "--ensure"]),
+    );
+    assert!(output.status.success(), "{output:?}");
+    fixture.server.capture_pid();
+    let mode = std::fs::metadata(&dir)
+        .expect("state dir")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    fixture.assert_cleaned_up();
+}
+
 mod adoption;
 mod descriptors;

@@ -59,7 +59,7 @@ fn backpressured_consumer_loses_no_content_after_draining() {
     let contiguous: Vec<u64> = (1..=all_seqs.len() as u64).collect();
     assert_eq!(
         all_seqs, contiguous,
-        "a frame not shipped must not burn a seq (no gaps, SPEC §12.2)"
+        "a frame not shipped must not burn a seq (no gaps)"
     );
 
     for marker in &markers {

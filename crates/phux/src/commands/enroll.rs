@@ -50,6 +50,7 @@ pub(crate) use provision::provision_remote_phux;
 pub(crate) use server::ensure_remote_server;
 pub(crate) use ssh::{
     accept_new_host_keys, authority, destination_host, login, ssh_hostname, ssh_program,
+    uri_destination,
 };
 pub(crate) use unanswered::{record as record_udp_probe, udp_unanswered};
 pub(crate) use workload::{

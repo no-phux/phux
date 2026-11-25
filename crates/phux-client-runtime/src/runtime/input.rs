@@ -59,6 +59,13 @@ impl Client {
             .with(|control| control.send_clipboard_reply(terminal_id, selection, text))
     }
 
+    /// Answer a pane's link request; see
+    /// [`ControlPlane::open_url_reply`](crate::control::ControlPlane::open_url_reply).
+    pub fn open_url_reply(&self, terminal_id: &ResourceId, id: u64, opened: bool) {
+        self.inner
+            .with(|control| control.open_url_reply(terminal_id, id, opened));
+    }
+
     /// Send one mouse event.
     #[must_use]
     pub fn send_mouse(&self, terminal_id: &ResourceId, event: MouseEvent) -> bool {

@@ -68,6 +68,16 @@ impl Desk {
         tx.instant();
     }
 
+    /// Clear the filter in place, with the editor ready for its replacement.
+    /// This changes no terminal keyboard preference or selected pane.
+    pub fn clear_phone_search(&mut self, tx: &mut Tx) {
+        let Some(phone) = &mut self.phone else { return };
+        phone.query.clear();
+        phone.query.focused = true;
+        self.phone_search_edited(tx);
+        tx.focus("phone-session-query", false);
+    }
+
     /// A filter starts at its first result, not the old inventory's offset.
     /// Shared by drawn, hardware and UIKit editing.
     pub fn phone_search_edited(&mut self, tx: &mut Tx) {

@@ -70,6 +70,48 @@ pub(crate) fn handle_client_activity(state: &SharedState, client_id: ClientId) {
     });
 }
 
+/// `phux.view.size-lock/v1` from `client_id`: `true` claims its size lock,
+/// putting back the sizes it last set explicitly (or its viewport), and
+/// `false` releases it to the window-size policy. Other values are ignored.
+pub(crate) fn handle_size_lock(state: &SharedState, client_id: ClientId, value: &[u8]) {
+    let locked = match value {
+        b"true" => true,
+        b"false" => false,
+        _ => {
+            warn!(
+                ?client_id,
+                "SET_METADATA(size-lock): want true or false; ignoring"
+            );
+            return;
+        }
+    };
+    state.with_mut(|s| {
+        if !s.set_client_size_lock(client_id, locked) {
+            return;
+        }
+        let explicit = if locked {
+            s.attached()[&client_id].explicit_sizes.clone()
+        } else {
+            std::collections::HashMap::new()
+        };
+        for terminal_id in s.viewport_terminals(client_id) {
+            let Some(&(dims, cell_px)) = explicit.get(&terminal_id) else {
+                continue;
+            };
+            let Some(Ok(terminal)) = s.resources().handle(terminal_id).map(|h| h.terminal()) else {
+                continue;
+            };
+            if s.retained().exit(terminal_id).is_none()
+                && try_resize(terminal, dims, cell_px, "SIZE_LOCK", client_id)
+                && let Some(pane) = s.registry_mut().terminal_mut(terminal_id)
+            {
+                pane.dims = dims;
+            }
+        }
+        refit_client_terminals(s, client_id, None, "SIZE_LOCK");
+    });
+}
+
 /// Recompute every Terminal `client_id` sizes under the window-size policy;
 /// `latest` is the viewport that just changed, for the `latest` policy.
 fn refit_client_terminals(

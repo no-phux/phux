@@ -144,7 +144,7 @@ and applied by [`mission_project.rs`](../crates/phux/src/commands/mission_projec
 ## Restore and executable authority
 
 Importing dormant records is not permission to run them. Restore creates a new
-execution; it never resurrects the old PTY or scrollback.
+execution; it never resurrects the old PTY.
 
 - **Plain shell restore** admits only the current host's default-shell argv
   and its current injected defaults. Matching records return to the semantic

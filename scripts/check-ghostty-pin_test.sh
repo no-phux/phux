@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-pin-test.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch/repo/scripts/lib" "$scratch/repo/.config" "$scratch/bin"
+mkdir -p "$scratch/repo/scripts/lib" "$scratch/repo/.config" "$scratch/repo/nix" "$scratch/bin"
 cp "$root/scripts/check-ghostty-pin.sh" "$scratch/repo/scripts/"
 cp "$root/scripts/lib/output.sh" "$scratch/repo/scripts/lib/"
 cp "$root/.config/zig-toolchain.json" "$scratch/repo/.config/"
@@ -23,6 +23,7 @@ revision=$rev
 archive_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 # https://codeload.github.com/example/engine/tar.gz/\$revision
 EOF
+printf '  ghosttyRev = "%s";\n' "$rev" >"$scratch/repo/nix/package.nix"
 version="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",*/\1/p' "$root/.config/zig-toolchain.json")"
 printf '.minimum_zig_version = "%s",\n' "$version" >"$scratch/build.zig.zon"
 cat >"$scratch/download.rs" <<'EOF'
@@ -70,6 +71,10 @@ mv "$scratch/repo/scripts/build-vt-wasm.sh" "$scratch/good.sh"
 mv "$scratch/bad.sh" "$scratch/repo/scripts/build-vt-wasm.sh"
 fail 'differs from browser engine'
 mv "$scratch/good.sh" "$scratch/repo/scripts/build-vt-wasm.sh"
+mv "$scratch/repo/nix/package.nix" "$scratch/good.nix"
+printf '  ghosttyRev = "%s";\n' ffffffffffffffffffffffffffffffffffffffff >"$scratch/repo/nix/package.nix"
+fail "differs from the Nix package's ffff"
+mv "$scratch/good.nix" "$scratch/repo/nix/package.nix"
 PIN_TEST_OFFLINE=1 pass 'skipped'
 PIN_TEST_SOURCE_HTTP=404 fail 'is not served (HTTP 404)'
 printf '.minimum_zig_version = "0.0.0",\n' >"$scratch/build.zig.zon"

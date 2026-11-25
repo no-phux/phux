@@ -81,15 +81,15 @@ pub struct EngineHandle {
 
 impl EngineHandle {
     #[cfg(feature = "engine")]
-    pub(crate) fn sync_output_deadline(&self) -> Option<std::time::Instant> {
-        self.request(|reply| Command::Query(Query::SyncOutputDeadline(reply)))
+    pub(crate) fn presentation_deadline(&self) -> Option<std::time::Instant> {
+        self.request(|reply| Command::Query(Query::PresentationDeadline(reply)))
             .ok()
             .flatten()
     }
 
     #[cfg(feature = "engine")]
-    pub(crate) fn expire_sync_output(&self, now: std::time::Instant) -> Vec<ResourceId> {
-        self.request(|reply| Command::Query(Query::ExpireSyncOutput(now, reply)))
+    pub(crate) fn expire_presentation(&self, now: std::time::Instant) -> Vec<ResourceId> {
+        self.request(|reply| Command::Query(Query::ExpirePresentation(now, reply)))
             .unwrap_or_default()
     }
 

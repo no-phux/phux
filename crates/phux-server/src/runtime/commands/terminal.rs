@@ -158,6 +158,9 @@ pub(super) async fn serve(
             crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request, contract)
                 .await
         }
+        Command::OpenUrl { terminal_id, op } => {
+            crate::runtime::open_url::handle(ctx, terminal_id, op).await
+        }
         Command::ReportAsked {
             terminal_id,
             id,

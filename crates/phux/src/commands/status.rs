@@ -293,7 +293,7 @@ fn protocol_line(server: (u16, u16, u16), client: (u16, u16, u16)) -> String {
 /// `secs` since the epoch as a fixed-format UTC timestamp. UTC rather than
 /// local time so the render is deterministic (testable) and greppable across
 /// machines; the relative `up ...` beside it is what a human actually reads.
-fn format_utc(secs: i64) -> String {
+pub(super) fn format_utc(secs: i64) -> String {
     jiff::Timestamp::from_second(secs).ok().map_or_else(
         || "unknown".to_owned(),
         |dt| dt.strftime("%Y-%m-%d %H:%M:%S UTC").to_string(),

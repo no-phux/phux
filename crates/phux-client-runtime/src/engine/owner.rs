@@ -38,13 +38,17 @@ use super::BoundedSelectionText;
 #[cfg(feature = "engine")]
 mod images;
 #[cfg(feature = "engine")]
+mod prediction;
+#[cfg(feature = "engine")]
+mod presentation;
+#[cfg(feature = "engine")]
 mod render;
 #[cfg(feature = "engine")]
 mod sync_output;
 #[cfg(feature = "engine")]
 mod views;
 #[cfg(feature = "engine")]
-use views::{Presentation, View};
+use presentation::{Presentation, View};
 
 #[cfg(feature = "engine")]
 struct PointerGesture {
@@ -536,12 +540,17 @@ fn gesture_document_points(
 }
 
 #[cfg(feature = "engine")]
-fn monotonic_ms() -> u64 {
+fn monotonic_epoch() -> std::time::Instant {
     use std::sync::OnceLock;
     use std::time::Instant;
 
     static EPOCH: OnceLock<Instant> = OnceLock::new();
-    u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
+    *EPOCH.get_or_init(Instant::now)
+}
+
+#[cfg(feature = "engine")]
+fn monotonic_ms() -> u64 {
+    u64::try_from(monotonic_epoch().elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "engine")]

@@ -40,7 +40,8 @@ fn inventory_and_creation_carry_identical_optional_evidence() {
             errno: Some(2),
         }),
         true,
-    );
+    )
+    .with_launch_interrupted(true);
     let resource = ResourceKey::new([3; 16]).unwrap();
     let session = SessionKey::new([2; 16]).unwrap();
     let row =
@@ -57,4 +58,43 @@ fn inventory_and_creation_carry_identical_optional_evidence() {
         request_id: 2,
         result: CommandResult::OkWith(CommandValue::Committed(Box::new(receipt))),
     });
+}
+
+#[test]
+fn a_server_stop_is_told_from_a_failed_launch() {
+    let row = |state, outcome, interrupted, kind| {
+        ResourceRecord::new(
+            ResourceKey::new([3; 16]).unwrap(),
+            SessionKey::new([2; 16]).unwrap(),
+            Revision::new(2),
+        )
+        .with_kind(kind)
+        .with_activation(Some(
+            ActivationInfo::new(ActivationId::new(1), ServerInstance::new([4; 16]), state)
+                .with_outcome(Some(outcome))
+                .with_launch_interrupted(interrupted),
+        ))
+        .ended_by_restart()
+    };
+    let (terminal, agent) = (ResourceKind::Terminal, ResourceKind::AgentSession);
+    assert!(row(
+        ExecState::Completed,
+        Outcome::Unobserved,
+        false,
+        terminal
+    ));
+    assert!(row(ExecState::Failed, Outcome::Unobserved, true, terminal));
+    assert!(!row(
+        ExecState::Failed,
+        Outcome::Unobserved,
+        false,
+        terminal
+    ));
+    assert!(!row(ExecState::Failed, Outcome::Unobserved, true, agent));
+    assert!(!row(
+        ExecState::Completed,
+        Outcome::Exited(0),
+        false,
+        terminal
+    ));
 }

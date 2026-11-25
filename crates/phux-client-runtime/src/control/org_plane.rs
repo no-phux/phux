@@ -8,7 +8,7 @@
 //! [`OrgOutcome::NotSent`], and `close_terminals` can use the advertised
 //! legacy `CLOSE_TAB_RESOURCES` path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use phux_client_core::org_ops::{
@@ -22,6 +22,8 @@ use phux_protocol::wire::frame::{
 
 mod bulk;
 mod commands;
+#[cfg(test)]
+mod tests;
 
 use bulk::{BulkMove, BulkPhase};
 pub use commands::ArrangementSubmitError;
@@ -147,10 +149,14 @@ impl ControlPlane {
         if !self.handshake_ready || !self.organization_supported() {
             return None;
         }
-        Some(self.queue_org_read(
+        Some(self.queue_arrangement_read(arrangement))
+    }
+
+    fn queue_arrangement_read(&mut self, arrangement: ArrangementKey) -> u32 {
+        self.queue_org_read(
             Command::ArrangementGet { arrangement },
             Pending::OrgArrangement(arrangement),
-        ))
+        )
     }
 
     /// A connection negotiated: resolve what can no longer be resent, then
@@ -226,6 +232,31 @@ impl ControlPlane {
         }
     }
 
+    fn refresh_seeded_arrangements(
+        &mut self,
+        filter: OrgFilter,
+        mut keys: HashSet<ArrangementKey>,
+    ) {
+        // The seed's journal cut can cover an ArrangementChanged in the same
+        // transaction as a ResourceCreated, but pages carry only the key, not
+        // the arrangement itself. Re-read cached documents in the seeded scope.
+        let seeded = self
+            .organization
+            .sessions()
+            .iter()
+            .filter(|session| match filter {
+                OrgFilter::All => true,
+                OrgFilter::Session(key) => session.key == key,
+                _ => false,
+            })
+            .filter_map(|session| session.arrangement);
+        keys.extend(seeded);
+        keys.retain(|key| self.organization.arrangement(key).is_some());
+        for key in keys {
+            self.queue_arrangement_read(key);
+        }
+    }
+
     fn resolve_org_read_refusal(&mut self, filter: OrgFilter, refusal: &Refusal) {
         // A rejected opaque continuation can be replaced once. Authorization,
         // support and store failures are not evidence of cursor invalidation.
@@ -255,7 +286,13 @@ impl ControlPlane {
                 };
                 self.queue_org_read(command, Pending::OrgPage(filter));
             }
-            ReplicaAction::Seeded => self.org_seeded(),
+            ReplicaAction::Seeded {
+                filter,
+                arrangements,
+            } => {
+                self.refresh_seeded_arrangements(filter, arrangements);
+                self.org_seeded();
+            }
             ReplicaAction::Reseed => {
                 self.queue_org_seed(OrgFilter::All);
             }
@@ -266,10 +303,7 @@ impl ControlPlane {
                 self.organization_changed();
             }
             ReplicaAction::RefetchArrangement(arrangement) => {
-                self.queue_org_read(
-                    Command::ArrangementGet { arrangement },
-                    Pending::OrgArrangement(arrangement),
-                );
+                self.queue_arrangement_read(arrangement);
             }
         }
         self.advance_bulk_moves();

@@ -13,9 +13,9 @@ pub(super) enum Query {
     #[cfg(all(test, feature = "engine"))]
     ViewCount(Sender<usize>),
     #[cfg(feature = "engine")]
-    SyncOutputDeadline(Sender<Option<std::time::Instant>>),
+    PresentationDeadline(Sender<Option<std::time::Instant>>),
     #[cfg(feature = "engine")]
-    ExpireSyncOutput(std::time::Instant, Sender<Vec<ResourceId>>),
+    ExpirePresentation(std::time::Instant, Sender<Vec<ResourceId>>),
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
     AgentStreamInfo(ResourceId, Sender<Option<AgentStreamInfo>>),

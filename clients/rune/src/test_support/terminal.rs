@@ -20,6 +20,7 @@ pub struct Replica {
     pub sources: Vec<ViewSource>,
     size: (u16, u16),
     terminals: u32,
+    sessions: u32,
     capabilities: ServerCapabilities,
     seq: u64,
 }
@@ -35,20 +36,39 @@ impl Replica {
         terminals: u32,
         capabilities: ServerCapabilities,
     ) -> Self {
-        Self::with_streamed(cols, rows, terminals, terminals, capabilities)
+        Self::spread(cols, rows, terminals, 1, capabilities)
+    }
+
+    /// `terminals` dealt round `sessions` sessions, one window each; the
+    /// first terminal, in the first session, is attached and fed.
+    pub fn spread(
+        cols: u16,
+        rows: u16,
+        terminals: u32,
+        sessions: u32,
+        capabilities: ServerCapabilities,
+    ) -> Self {
+        Self::with_streamed(cols, rows, terminals, sessions, terminals, capabilities)
     }
 
     pub fn pending(cols: u16, rows: u16, terminals: u32) -> Self {
-        Self::with_streamed(cols, rows, terminals, terminals - 1, ServerCapabilities::new())
+        Self::with_streamed(cols, rows, terminals, 1, terminals - 1, ServerCapabilities::new())
     }
 
-    fn with_streamed(cols: u16, rows: u16, terminals: u32, streamed: u32, capabilities: ServerCapabilities) -> Self {
+    fn with_streamed(
+        cols: u16,
+        rows: u16,
+        terminals: u32,
+        sessions: u32,
+        streamed: u32,
+        capabilities: ServerCapabilities,
+    ) -> Self {
         let client = Runtime::embedded(ControlOptions {
             attach: Some(AttachTarget::ByName("budget".into())),
             viewport: (cols, rows),
             ..ControlOptions::default()
         });
-        let ids = seed(&client, 1, cols, rows, terminals, streamed, capabilities.clone());
+        let ids = seed(&client, 1, (cols, rows), terminals, sessions, streamed, capabilities.clone());
         let _ = client.take_outbound();
         let _ = client.take_events();
         let sources: Vec<_> = ids.iter().take(streamed as usize)
@@ -62,13 +82,14 @@ impl Replica {
             sources,
             size: (cols, rows),
             terminals,
+            sessions,
             capabilities,
             seq: 0,
         }
     }
     /// Replace HELLO while deliberately reusing resource, stream and bootstrap ids.
     pub fn replace_server(&self, server: u8) {
-        seed(&self.client, server, self.size.0, self.size.1, self.terminals, self.terminals, self.capabilities.clone());
+        seed(&self.client, server, self.size, self.terminals, self.sessions, self.terminals, self.capabilities.clone());
     }
 
     pub fn window(&self) -> crate::desk::Desk {
@@ -96,7 +117,17 @@ fn bootstrap(client: &Client, id: &ResourceId, number: u64, cols: u16, rows: u16
     }
 }
 
-fn seed(client: &Client, server: u8, cols: u16, rows: u16, terminals: u32, streamed: u32, capabilities: ServerCapabilities) -> Vec<ResourceId> {
+/// HELLO, attach and bootstrap: `terminals` dealt round `sessions`
+/// sessions, one window each, the first `streamed` of them fed.
+fn seed(
+    client: &Client,
+    server: u8,
+    (cols, rows): (u16, u16),
+    terminals: u32,
+    sessions: u32,
+    streamed: u32,
+    capabilities: ServerCapabilities,
+) -> Vec<ResourceId> {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client.feed(HelloOk::new(vec![server; 16], capabilities).build()).expect("hello");
@@ -106,12 +137,33 @@ fn seed(client: &Client, server: u8, cols: u16, rows: u16, terminals: u32, strea
             _ => None,
         }).expect("attach request");
     let ids: Vec<_> = (1..=terminals).map(ResourceId::local).collect();
+    let session_of = |index: usize| SessionId::new(index as u32 % sessions + 1);
+    let resources = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let session = session_of(index);
+            ResourceInfo::new(id.clone(), WindowId::new(session.get()), cols, rows)
+                .with_session(Some(session))
+        })
+        .collect();
     let (session, window) = (SessionId::new(1), WindowId::new(1));
+    let names = (1..=sessions).map(|n| {
+        let name = if n == 1 {
+            "budget".to_owned()
+        } else {
+            format!("s{n}")
+        };
+        SessionInfo::new(SessionId::new(n), name)
+    });
+    let windows = (1..=sessions).map(|n| {
+        WindowInfo::new(WindowId::new(n), SessionId::new(n), "shell")
+            .with_active_resource(Some(ids[n as usize - 1].clone()))
+    });
     let snapshot = SessionSnapshot::new(session, window, ids[0].clone())
-        .with_sessions(vec![SessionInfo::new(session, "budget")])
-        .with_windows(vec![WindowInfo::new(window, session, "shell")
-            .with_active_resource(Some(ids[0].clone()))])
-        .with_resources(ids.iter().map(|id| ResourceInfo::new(id.clone(), window, cols, rows)).collect());
+        .with_sessions(names.collect())
+        .with_windows(windows.collect())
+        .with_resources(resources);
     client.feed(attached(attach_id, snapshot, 1)).expect("attached");
     let payload = (0..rows).map(|row| format!("{row:02} {FILL}")).collect::<Vec<_>>().join("\r\n");
     for (index, id) in ids.iter().take(streamed as usize).enumerate() {

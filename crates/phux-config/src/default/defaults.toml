@@ -65,8 +65,10 @@ shell-integration = false
 
 # On a machine with no screen, a program that opens a browser (a sign-in,
 # `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
-# that prints the link in the pane and copies it to your clipboard. Nothing
-# opens by itself. Read when the server starts.
+# (and an `xdg-open`, last on PATH) that asks you whether to open the link on
+# your own machine; declined, or with nobody to ask, it prints the link in the
+# pane and copies it to your clipboard. Nothing opens by itself. Read when the
+# server starts.
 browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
@@ -128,6 +130,12 @@ session-name-template = "${cwd-basename}"
 #              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
+
+# Lock the terminal UI's view size when it attaches, as `phux attach
+# --lock-size` does: while it is attached, other clients (a phone, a second
+# laptop) see its panes letterboxed or cropped instead of resizing them.
+# The palette's "Lock view size" / "Unlock view size" switch it live.
+lock-size = false
 
 # Keep the machine from going to sleep by itself while agents are busy:
 #   "off"               never (the default)

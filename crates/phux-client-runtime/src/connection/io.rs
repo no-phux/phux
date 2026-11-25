@@ -25,6 +25,9 @@ use crate::dial::dial_message;
 
 const MAX_INBOUND_BATCH: usize = 256;
 
+/// The nonce a liveness probe's PING carries and its PONG echoes.
+pub(crate) const PROBE_NONCE: u64 = 1;
+
 /// How long a send may go without the kernel accepting another chunk.
 ///
 /// A shut window trips this. A slow link that keeps taking chunks does not:
@@ -379,7 +382,7 @@ impl Io {
     pub(crate) async fn probe(&mut self) -> Result<(), LinkError> {
         match self {
             Self::Stream { .. } => {
-                self.write_frame(&encode(&FrameKind::Ping { nonce: 1 }))
+                self.write_frame(&encode(&FrameKind::Ping { nonce: PROBE_NONCE }))
                     .await
             }
             Self::Ws { writer, .. } => {

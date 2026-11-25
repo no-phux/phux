@@ -104,6 +104,8 @@ fn audit_command(
             // Audited as `forward.open` and `forward.close`, never per chunk;
             // ssh-agent forwarding as `forward.agent.offer` and `.sign`.
             | Command::Forward { .. }
+            // Audited as `open_url`, with the link's host.
+            | Command::OpenUrl { .. }
     );
     if (routine && !denied) || !crate::audit::enabled() {
         return;

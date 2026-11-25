@@ -1,10 +1,11 @@
+use super::policy::ensure_paired_policy;
 use super::reconcile::tests::{LEGACY_PLIST, LEGACY_UNIT, patched};
 use super::unit::tests::plan;
 use super::{
     HubEnsure, Manager, Reconcile, config_home_from, dry_run_text, ensure_hub_in_unit,
-    ensure_hub_in_wrapper, ensure_paired_policy, home_dir_from, render_launchd_plist, render_unit,
-    render_wrapper_script, report_policy_reach_with, resolve_plan, rewrite_unit_binary,
-    status_report, unit_socket_override, unit_supervises,
+    ensure_hub_in_wrapper, home_dir_from, render_launchd_plist, render_unit, render_wrapper_script,
+    report_policy_reach_with, resolve_plan, rewrite_unit_binary, status_report,
+    unit_socket_override, unit_supervises,
 };
 use std::path::Path;
 use std::path::PathBuf;

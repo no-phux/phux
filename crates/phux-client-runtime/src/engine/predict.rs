@@ -19,6 +19,11 @@ pub struct Predictor {
     /// Whether guesses are drawn underlined, as a terminal client marks them,
     /// or as plain text for a client that would rather they read as typed.
     underline: bool,
+    /// A guess was queued since the last [`Self::apply`], so the next one
+    /// follows a keystroke and its grid holds nothing new to judge by.
+    /// Judging there calls every backspace over echoed text, and every key
+    /// typed over a shell's suggestion, a contradiction before it is drawn.
+    fresh: bool,
 }
 
 impl Predictor {
@@ -31,6 +36,7 @@ impl Predictor {
             viewport,
             displayed_rows: Vec::new(),
             underline: true,
+            fresh: false,
         }
     }
 
@@ -58,11 +64,38 @@ impl Predictor {
                 let _ = self.state.predict_key_at(&event, now_ms);
             }
         }
+        self.fresh = self.state.pending_len() > 0;
     }
 
     /// Drop every pending guess.
     pub fn clear(&mut self) {
         self.state.clear();
+    }
+
+    /// When the queued guesses stop being shown, on the `now_ms` clock;
+    /// `None` with none queued. [`Self::expire`] past it drops them, drawn
+    /// or not.
+    #[must_use]
+    pub fn display_deadline_ms(&self) -> Option<u64> {
+        self.state.display_deadline_ms()
+    }
+
+    /// Drop the guesses once their deadline is behind `now_ms`; the next
+    /// [`Self::apply`] repaints the rows they covered. Returns whether any
+    /// were dropped.
+    ///
+    /// Left queued, a guess the program never echoed (a password prompt, a
+    /// key it ate) would pin the cursor estimate to a dead anchor and
+    /// misplace every later guess.
+    pub fn expire(&mut self, now_ms: u64) -> bool {
+        let due = self
+            .state
+            .display_deadline_ms()
+            .is_some_and(|deadline| now_ms > deadline);
+        if due {
+            self.state.clear();
+        }
+        due
     }
 
     /// Guesses still waiting for the server to echo them.
@@ -94,17 +127,20 @@ impl Predictor {
                 *dirty = true;
             }
         }
+        let fresh = std::mem::take(&mut self.fresh);
         if self.state.pending_len() == 0 {
             return;
         }
-        let _ = reconcile_terminal_output_per_cell_at(
-            &mut self.state,
-            cursor.row,
-            cursor.col,
-            now_ms,
-            |row, col| cell_text_at(buffer, cols, row, col),
-        );
-        if !self.state.should_display(now_ms) {
+        if !fresh {
+            let _ = reconcile_terminal_output_per_cell_at(
+                &mut self.state,
+                cursor.row,
+                cursor.col,
+                now_ms,
+                |row, col| cell_text_at(buffer, cols, row, col),
+            );
+        }
+        if self.expire(now_ms) || !self.state.should_display(now_ms) {
             return;
         }
         let predictions = self.state.displayable(now_ms).cloned().collect::<Vec<_>>();
@@ -118,7 +154,6 @@ impl Predictor {
         let (row, col) = self.state.cursor();
         cursor.row = row;
         cursor.col = col;
-        cursor.visible = true;
     }
 }
 

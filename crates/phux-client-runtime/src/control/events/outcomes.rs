@@ -4,11 +4,20 @@ use phux_protocol::ResourceId;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalCreationOutcome {
     /// The host returned a live target; this is not proof of child progress.
-    LiveTarget { terminal_id: ResourceId },
+    LiveTarget {
+        /// The host's live terminal.
+        terminal_id: ResourceId,
+    },
     /// The host or local preflight proved the request was not admitted.
-    Refused { message: String },
+    Refused {
+        /// Host or preflight refusal text.
+        message: String,
+    },
     /// Receipt or process evidence is missing. Never retry as a fresh create.
-    Unknown { message: String },
+    Unknown {
+        /// What evidence is missing.
+        message: String,
+    },
 }
 
 /// How one acknowledged input operation ended.

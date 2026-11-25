@@ -151,7 +151,7 @@ pub(crate) enum Endpoint {
     Quic(String),
     /// `ws://` or `wss://`, carrying the URL unchanged.
     Ws(String),
-    /// `ssh://HOST`, carrying the ssh destination.
+    /// `ssh://HOST`, carrying the destination `ssh` takes for it.
     Ssh(String),
 }
 
@@ -173,10 +173,7 @@ impl Endpoint {
             return Ok(Self::Ws(trimmed.to_owned()));
         }
         if let Some(rest) = trimmed.strip_prefix("ssh://") {
-            if rest.is_empty() {
-                return Err("ssh:// endpoint needs a host (e.g. ssh://mini)".to_owned());
-            }
-            return Ok(Self::Ssh(rest.to_owned()));
+            return super::enroll::uri_destination(rest).map(Self::Ssh);
         }
         Err(format!(
             "remote endpoint {trimmed:?} must start with quic://, wss://, ws://, or ssh://"
@@ -243,7 +240,7 @@ pub(crate) fn pin_authority(
     {
         warn!(
             "{name}: could not pin its certificate authority ({err}); \
-             the first connection pins it instead"
+             pair it again to pin it"
         );
     }
 }
@@ -458,7 +455,7 @@ pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
 
 /// Write every field, clearing omitted ones, so re-adding never leaves stale
 /// auth material pointing at a new endpoint.
-fn fill_table(table: &mut Table, new: &NewRemote) {
+pub(crate) fn fill_table(table: &mut Table, new: &NewRemote) {
     let display = |path: &Option<PathBuf>| path.as_ref().map(|path| path.display().to_string());
     table.insert("name", value(&new.name));
     table.insert("endpoint", value(&new.endpoint));

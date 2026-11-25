@@ -90,6 +90,7 @@ pub(crate) fn seed_pane_command(
         engine_launch::default_shell_command(&shell, login_shell)
     });
     let (term, fixed) = state.with(|s| (s.config().term.clone(), s.config().fixed_cwd.clone()));
+    engine_launch::apply_pane_env(&mut cmd);
     engine_launch::apply_term(&mut cmd, &term);
     engine_launch::apply_spawn_cwd(&mut cmd, fixed.as_deref(), "seed");
     cmd
@@ -158,4 +159,3 @@ pub(crate) fn spec_command(
     engine_launch::apply_term(&mut cmd, s.config().term.as_str());
     cmd
 }
-

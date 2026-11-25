@@ -160,6 +160,7 @@ fn relay_configuration_rejects_invalid_sni_without_dropping_it() {
 
 fn config(endpoint: &str) -> Configuration {
     Configuration {
+        app: None,
         endpoint: endpoint.into(),
         name: None,
         tls_server_name: None,

@@ -1,15 +1,10 @@
-**Phux Rune 0.1.51**
+**Phux Rune 0.1.55**: 8 changes since 0.1.54.
 
-- Keep question choices and unfinished replies with the right agent, even when
-  different agents reuse the same question identifier.
-- Retire replaced editors safely: queued composition, Return and late phone
-  touches cannot answer a replacement question or reach its terminal.
-- Group phone form labels, help and controls without shrinking the 44-point
-  touch rows.
-- Use the shared palette matcher and show shortcuts as key caps.
-- Avoid redundant native control reorders and unchanged accessibility updates.
-- Update the Rune engine to a compatible upstream dev snapshot, including
-  unchanged-frame IME synchronization.
-
-Optional provider form elicitation is still unsupported. The newer strict-modal
-upstream change remains deferred; this release does not bypass input ownership.
+- Make the iOS app safe to update over the Swift app (#2986)
+- Give the terminal back the keyboard and the pane in use (#2979)
+- Draw typing ahead of a remote server's echo (#2975)
+- Keep unseen marks on the server (#2976)
+- Keep terminal-browser splits visible and restore native images
+- Restore panes whose launch a server stop cut off (#2948)
+- Declare disk space in the iOS app's one privacy manifest
+- Build the iOS host under a distributor's identity

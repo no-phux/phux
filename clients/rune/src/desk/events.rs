@@ -6,7 +6,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::DetachReason;
 use rune::Tx;
 
-use super::{Desk, NoticeKind, layout};
+use super::{Desk, NoticeKind};
 
 mod receipts;
 pub(super) use receipts::Receipts;
@@ -40,8 +40,10 @@ impl Desk {
         if let Some(topology) = observation.topology.take()
             && self.connection.topology.as_ref() != Some(&topology)
         {
+            for pane in &topology.panes {
+                self.activities.marked(&pane.terminal_id, pane.unseen);
+            }
             self.connection.topology = Some(topology);
-            self.follow_reveal();
             changed = true;
         }
         if self.connection.server.is_none() {
@@ -156,6 +158,8 @@ impl Desk {
                     | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
+            event @ Event::Frame(_) => phux_client_runtime::control::forward::agent_request(event)
+                .is_some_and(|request| self.agent_request(request)),
             Event::ClipboardWrite { terminal_id, text } => {
                 self.clipboard_write(terminal_id, text.0, tx)
             }
@@ -163,6 +167,11 @@ impl Desk {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::OpenUrl {
+                terminal_id,
+                id,
+                url,
+            } => self.open_url_asked(terminal_id, id, &url),
             Event::Note {
                 terminal_id,
                 note: Some(note),
@@ -232,8 +241,14 @@ impl Desk {
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
-            | Event::BackgroundWork { .. }
-            | Event::Attached { .. } => true,
+            | Event::BackgroundWork { .. } => true,
+            Event::Attached { .. } => {
+                self.connection.in_view.clear();
+                if self.connection.size_locked {
+                    self.claim_size_lock(true);
+                }
+                true
+            }
             other => self.apply_document_subscription(client, other),
         }
     }
@@ -332,8 +347,9 @@ impl Desk {
     fn resource_closed(&mut self, client: &Client, id: &ResourceId, exit: Option<i32>) -> bool {
         let producer = self.producer_ended(id, exit);
         let document = self.forget_document(client, id);
-        let pending_phone = self.phone.is_some()
-            && self.connection.shown.is_none()
+        self.connection.tabs.recent.retain(|left| left != id);
+        // The next of a closing tab, asked for a moment ago.
+        let pending = self.connection.shown.is_none()
             && self
                 .connection
                 .wanted
@@ -344,20 +360,18 @@ impl Desk {
             .shown
             .as_ref()
             .is_some_and(|s| &s.resource == id)
-            || pending_phone
+            || pending
         {
-            let next = self
-                .connection
-                .layout
-                .as_ref()
-                .filter(|_| self.phone.is_none())
-                .and_then(|tree| layout::neighbour(tree, id));
-            self.close_shown(client, std::slice::from_ref(id));
+            let closed = std::slice::from_ref(id);
+            let next = self.after_closing(closed);
+            self.close_shown(client, closed);
+            self.drop_leaf(id);
             if let Some(next) = next {
                 self.want_automatic(next);
             }
             return true;
         }
+        self.drop_leaf(id);
         let other = self.connection.others.remove(id);
         if let Some(view) = other.flatten() {
             let _ = client.destroy_view(view);

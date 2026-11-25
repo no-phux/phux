@@ -28,6 +28,8 @@ filters = {
     "settings_theme_visual_review_frames": "RUNE_SETTINGS_SNAP",
     "mobile_appearance_and_real_theme_palette_render_accept_and_cancel": "RUNE_SETTINGS_SNAP",
     "session_browser_renders_realistic_dark_light_and_search_states": "RUNE_NAVIGATION_SNAP",
+    "phone_session_canvas_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "phone_session_search_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports": "RUNE_NAVIGATION_SNAP",
     "phone_header_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_states_visual_review_frames": "RUNE_NAVIGATION_SNAP",
@@ -37,7 +39,9 @@ filters = {
     "phone_accessory_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_accessory_resize_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "phone_pane_picker_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "attention_contrast_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "sidebar_focus_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "native_png_headless_renderer_smoke": "RUNE_RESOURCE_SNAP",
 }
 filter = sys.argv[5]

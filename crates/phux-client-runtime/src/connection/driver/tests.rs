@@ -238,3 +238,26 @@ async fn an_answered_probe_publishes_its_round_trip() {
     lock(&fixture.shared).connection_opened();
     assert_eq!(lock(&fixture.shared).round_trip(), None);
 }
+
+/// A frame the peer sent before the probe can still land after it on a link
+/// that just died; it must not answer the probe (phux-kjoap). It only pushes
+/// the deadline out, so the dead link still drops one probe timeout later.
+#[tokio::test(start_paused = true)]
+async fn traffic_from_before_the_probe_does_not_answer_it() {
+    use tokio::io::AsyncWriteExt as _;
+    let mut fixture = WriteFixture::new(64 * 1024);
+    start_pump!(running, fixture, "stale");
+    fixture.rebind.send_modify(|n| *n += 1);
+    assert!(running.as_mut().now_or_never().is_none());
+
+    let mut peer = fixture.peer;
+    peer.write_all(&encode(&FrameKind::Ping { nonce: 7 }))
+        .await
+        .unwrap();
+    assert!(running.as_mut().now_or_never().is_none());
+    tokio::time::advance(ConnectOptions::default().probe_timeout).await;
+    match running.as_mut().now_or_never() {
+        Some(ConnectionEnd::Dropped(Some(message))) if message == "liveness probe timed out" => {}
+        other => panic!("only the probe's pong answers it, got {other:?}"),
+    }
+}

@@ -98,11 +98,11 @@ fn observations(
 
 fn pty_questions(s: &ServerState, core: phux_core::ids::ResourceId) -> Vec<CurrentQuestion> {
     s.asked_observation(core)
-        .map(|(source, ask)| CurrentQuestion::PtyEvidence {
-            source: pty_source(source),
-            id: ask.id.clone(),
-            question: ask.question.clone(),
-            suggestions: ask.suggestions.clone(),
+        .map(|held| CurrentQuestion::PtyEvidence {
+            source: pty_source(held.source),
+            id: held.payload.id.clone(),
+            question: held.payload.question.clone(),
+            suggestions: held.payload.suggestions.clone(),
         })
         .into_iter()
         .collect()

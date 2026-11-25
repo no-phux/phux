@@ -186,7 +186,10 @@ impl Lit {
 
 /// A floating card around `content`: `radius.lg`, on the raised
 /// tier at rest and lifted to floating when it has the keyboard, edged
-/// with a top-lit hairline rim that is firmer on the lifted card.
+/// with a top-lit hairline rim. The lifted card's rim opens at
+/// `border.control`, the 3:1 edge a control draws: its shadow vanishes on
+/// a black ground (Omarchy's Vantablack, Matte Black), and the resting and
+/// lifted rims alone differ by too little to say which pane has the keys.
 /// `content` is clipped to the corners; the rim draws over it and never
 /// takes the pointer.
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
@@ -195,7 +198,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let b = &t.roles.border;
     let (top, bottom, tier) = match lit {
         Lit::Resting => (b.base.paint(), b.muted.paint(), Tier::Raised),
-        Lit::Focused => (b.strong.paint(), b.base.paint(), Tier::Floating),
+        Lit::Focused => (b.control.paint(), b.strong.paint(), Tier::Floating),
         Lit::Flush => (Color::TRANSPARENT, Color::TRANSPARENT, Tier::Flat),
     };
     let lifted = el()
@@ -360,6 +363,10 @@ fn terminal_layer(
             desk.blink_on,
             &metrics,
             ink.selection(),
+            grid::Bold {
+                bright: desk.file.bold_is_bright == Some(true),
+                color: desk.theme().and_then(|theme| theme.bold),
+            },
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && desk.modal().is_none() && !editing {

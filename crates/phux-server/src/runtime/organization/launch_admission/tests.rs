@@ -104,7 +104,7 @@ fn terminal_resume_uses_current_enabled_program_never_archived_argv_or_environme
         s.config_mut().restore = phux_config::RestoreCfg { on_start: false, program: vec![
             phux_config::RestoreProgram { app: "test-app".into(),
                 command: vec![program.into(), "--resume".into(), phux_config::RESUME_TOKEN_PLACEHOLDER.into()] }
-        ] };
+        ], ..phux_config::RestoreCfg::default() };
     });
     configure("current-program");
     state.with(|s| {

@@ -152,6 +152,8 @@ pub static KINDS: [KindSpec; 5] = [
             "APPLY_INPUT" => Command(COMMAND_TAG_APPLY_INPUT) [C_INPUT] feature(AcknowledgedInput);
             "PUT_FILE" => Command(COMMAND_TAG_PUT_FILE) [C_PUT_FILE] feature(FileUpload);
             "CHECKOUT" => Command(COMMAND_TAG_CHECKOUT) [C_CHECKOUT] ext(Checkout);
+            "OPEN_URL" => Command(COMMAND_TAG_OPEN_URL) [C_OPEN_URL] ext(OpenUrl);
+            "OPEN_URL_REPLY" => Command(COMMAND_TAG_OPEN_URL_REPLY) [C_OPEN_URL] ext(OpenUrl);
             "TRANSCRIBE" => Command(COMMAND_TAG_TRANSCRIBE) [C_TRANSCRIBE] feature(Transcribe);
             "GET_TERMINAL_STATE" => Command(COMMAND_TAG_GET_TERMINAL_STATE) [C_GET_TERMINAL_STATE];
             "ACQUIRE_INPUT" => Command(COMMAND_TAG_ACQUIRE_INPUT) [C_INPUT_LEASE];
@@ -172,6 +174,7 @@ pub static KINDS: [KindSpec; 5] = [
             "asked" => EVENT_TAG_ASKED;
             "cwd_changed" => EVENT_TAG_CWD_CHANGED;
             "input_activity" => EVENT_TAG_INPUT_ACTIVITY;
+            "open_url" => EVENT_TAG_OPEN_URL;
         },
         metadata_keys: &[
             RESOURCE_AGENT_KEY,
@@ -182,6 +185,9 @@ pub static KINDS: [KindSpec; 5] = [
             RESOURCE_LINK_KEY,
             crate::wire::frame::RESOURCE_NOTE_KEY,
             crate::wire::frame::RESOURCE_NOTIFY_KEY,
+            crate::wire::frame::RESOURCE_PARENT_KEY,
+            crate::wire::frame::RESOURCE_UNSEEN_KEY,
+            crate::wire::frame::RESOURCE_IN_VIEW_KEY,
         ],
     },
     KindSpec {

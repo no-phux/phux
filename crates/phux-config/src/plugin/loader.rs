@@ -8,7 +8,7 @@ use super::validate::{
     non_empty, normalize_command, normalize_id, reject_duplicate_ids, trim_optional,
 };
 use super::{
-    MAX_STARTUP_ENTRIES, PluginAgentAttention, PluginAgentState, PluginManifest,
+    MAX_STARTUP_ENTRIES, PluginAgentAttention, PluginAgentState, PluginLinkRunOn, PluginManifest,
     PluginManifestAction, PluginManifestAgent, PluginManifestBuild, PluginManifestError,
     PluginManifestEvent, PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar,
     PluginManifestStartup, PluginManifestTheme, PluginManifestWidget, PluginPanePlacement,
@@ -504,6 +504,8 @@ struct RawPluginManifestLinkHandler {
     patterns: Vec<String>,
     #[serde(default)]
     platforms: Option<Vec<PluginPlatform>>,
+    #[serde(default)]
+    run_on: PluginLinkRunOn,
     command: Vec<String>,
 }
 
@@ -540,6 +542,7 @@ fn normalize_link_handler(
         schemes,
         patterns,
         platforms: raw.platforms,
+        run_on: raw.run_on,
         command,
     })
 }

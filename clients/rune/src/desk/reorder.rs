@@ -293,19 +293,24 @@ impl Desk {
     }
 
     /// The one drain of this window's watched Global keys: the session
-    /// order, watched on every client, and the agent stats the fleet views
-    /// ask for. True when either changed.
+    /// order and keep-awake state, watched on every client, and the agent
+    /// stats the fleet views ask for. True when either changed.
     pub(super) fn take_globals(&mut self, client: &Arc<Client>) -> bool {
         let mut changed = false;
         if !Weak::ptr_eq(&self.connection.reorder.watching, &Arc::downgrade(client)) {
             // Remembered by the runtime, and asked again on every attach.
             let _ = client.watch_global_metadata(SESSION_ORDER_KEY.to_owned());
+            let _ = client.watch_global_metadata(phux_config::KeepAwake::STATUS_KEY.to_owned());
             self.connection.reorder.watching = Arc::downgrade(client);
             changed = !std::mem::take(&mut self.connection.reorder.order).is_empty();
         }
         for value in client.take_global_metadata() {
             if value.key == SESSION_ORDER_KEY {
                 self.connection.reorder.order = session_order::decode(value.value.as_deref());
+                changed = true;
+            } else if value.key == phux_config::KeepAwake::STATUS_KEY {
+                self.connection.keep_awake =
+                    super::keep_awake::Awake::parse(value.value.as_deref());
                 changed = true;
             } else if value.key == creature::KEY {
                 self.fleet.here = Stats::parse(value.value.as_deref(), self.clock);

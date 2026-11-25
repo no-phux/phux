@@ -2,6 +2,7 @@
 use super::{Modal, Shortcut};
 use rune::{Key, KeyEvent, Mods};
 
+mod keyboard_return;
 mod scroll_keys;
 
 #[test]

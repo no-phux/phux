@@ -67,15 +67,20 @@ fn a_remote_servers_update_happens_on_that_machine() {
     assert!(updates_can_fix(&ahead, true));
 }
 
+/// A terminal named only by its address, as before a topology arrives.
+fn bare(id: &ResourceId) -> String {
+    id.to_string()
+}
+
 #[test]
 fn a_held_tab_close_counts_its_terminals() {
     let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
     assert_eq!(
-        question(&close(1), false).0,
+        question(&close(1), false, &bare).0,
         "Close this tab? Anything running in it ends."
     );
     assert_eq!(
-        question(&close(3), false).0,
+        question(&close(3), false, &bare).0,
         "Close this tab and its 3 terminals? Anything running in them ends."
     );
 }
@@ -105,9 +110,15 @@ fn a_touch_confirmation_names_no_key() {
         (session, "End session"),
     ];
     for (pending, verb) in asks {
-        assert_eq!(question(&pending, true).1, verb);
-        assert_eq!(question(&pending, false).1, format!("{verb} (Return)"));
-        assert_eq!(question(&pending, true).0, question(&pending, false).0);
+        assert_eq!(question(&pending, true, &bare).1, verb);
+        assert_eq!(
+            question(&pending, false, &bare).1,
+            format!("{verb} (Return)")
+        );
+        assert_eq!(
+            question(&pending, true, &bare).0,
+            question(&pending, false, &bare).0
+        );
     }
 }
 
@@ -208,4 +219,52 @@ fn a_missing_cli_is_installed_from_the_window_and_a_failure_says_why() {
     );
     assert!(failed.1.contains("no release"), "{failed:?}");
     assert!(remedy(&Standing::Installing, false).is_none());
+}
+
+/// A prompt that ends a terminal or hands it the clipboard names it the
+/// way the sidebar does, beside its address.
+#[test]
+fn a_held_close_names_the_terminal() {
+    let named = |id: &ResourceId| format!("build ({id})");
+    let close = Pending::Close(ResourceId::local(4));
+    assert_eq!(
+        question(&close, false, &named).0,
+        "Close build (@4)? Anything running in it ends."
+    );
+    let read = Pending::ClipboardRead(
+        ResourceId::local(4),
+        phux_client_core::engine::ClipboardSelection::Clipboard,
+    );
+    assert!(
+        question(&read, true, &named)
+            .0
+            .starts_with("build (@4) wants")
+    );
+}
+
+/// The whole link is laid out, its site outside the box that scrolls, and
+/// the bar stays inside the window however long the link is.
+#[test]
+fn a_held_link_shows_its_site_and_stays_on_screen() {
+    let mut desk = crate::test_support::settings_window();
+    desk.settings_open = false;
+    let long = format!("https://id.example/{}", "x".repeat(8000));
+    desk.hold_link_for_test(&long);
+    let env = rune::Env::new(false, 1.0);
+    let mut rt = crate::test_support::runtime(desk, crate::ui::view, (800.0, 600.0), env);
+    rt.frame(0.0);
+    let drawn = |key: &str| rt.presented(key).expect(key).0;
+    let (bar, site, link) = (
+        drawn("confirm-bar"),
+        drawn("open-url-site"),
+        drawn("open-url-link"),
+    );
+    let bottom = |rect: [f32; 4]| rect[1] + rect[3];
+    assert!(bottom(bar) <= 600.0, "{bar:?}");
+    assert!(site[1] >= bar[1] && bottom(site) <= bottom(bar), "{site:?}");
+    assert!(
+        link[2] <= bar[2] && link[3] > bar[3],
+        "wrapped, and scrolls: {link:?}"
+    );
+    assert!(rt.find("confirm-ok").is_some() && rt.find("confirm-cancel").is_some());
 }

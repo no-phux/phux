@@ -16,8 +16,8 @@ use phux_client_runtime::publication::Publication;
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 
 use super::{
-    Fitted, Painted, Placement, Shown, SplitPath, copy_mode, events, find, mouse, palette, popup,
-    quick, reorder, resources, screenshot, splits, tabs,
+    Fitted, Painted, Placement, Shown, SplitPath, agent_forward, copy_mode, events, find, mouse,
+    palette, popup, quick, reorder, resources, screenshot, splits, tabs,
 };
 
 pub struct Connection {
@@ -46,11 +46,13 @@ pub struct Connection {
     /// A session created here: show its terminal once selected.
     pub(super) pending_session: Option<String>,
     pub(super) pending_session_origin: Option<CallbackFence>,
-    /// A `phux://pane/` link's pane, until the server's panes are known.
+    /// What a `phux://` link asked to show, until it can be.
     pub(super) reveal: Option<super::reveal::Reveal>,
     /// A scoped Fleet transfer retains its original watcher until this
     /// connection has qualified its own exact presentation source.
     pub(super) fleet_handoff: Option<super::fleet::Handoff>,
+    /// The ssh-agent this client serves to its server's panes.
+    pub(super) agent: agent_forward::AgentForward,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.
@@ -65,6 +67,12 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
+    /// The server's keep-awake record; `None` while its mode is `off`.
+    pub keep_awake: Option<super::keep_awake::Awake>,
+    /// The panes this attachment last reported showing (`phux.in-view/v1`).
+    pub(super) in_view: HashSet<ResourceId>,
+    /// This window holds the view size lock; claimed again on each attach.
+    pub size_locked: bool,
     /// A screenshot being taken for a terminal on this client. Replacing the
     /// connection drops it, which cancels the picker and reaps its worker.
     pub(super) capture: Option<screenshot::Capture>,
@@ -99,7 +107,7 @@ pub struct Connection {
     pub(super) pending_splits: HashMap<u32, (Option<SessionKey>, Placement)>,
     pub(super) wheel_pane: Option<ResourceId>,
     pub(super) mouse_capture: Option<(ResourceId, mouse::Press)>,
-    pub(super) mouse_cell: Option<(u16, u16)>,
+    pub(super) mouse_position: Option<mouse::ReportedPosition>,
     pub(super) split_sizes: HashMap<SplitPath, [f32; 2]>,
     pub(super) fetched: HashSet<ArrangementKey>,
     pub(super) gesture: u64,
@@ -138,6 +146,7 @@ impl Default for Connection {
             pending_session: None,
             reveal: None,
             fleet_handoff: None,
+            agent: agent_forward::AgentForward::default(),
             epoch: 0,
             paths: None,
             origins: HashMap::new(),
@@ -148,6 +157,9 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            keep_awake: None,
+            in_view: HashSet::new(),
+            size_locked: false,
             capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
@@ -167,7 +179,7 @@ impl Default for Connection {
             pending_splits: HashMap::new(),
             wheel_pane: None,
             mouse_capture: None,
-            mouse_cell: None,
+            mouse_position: None,
             split_sizes: HashMap::new(),
             fetched: HashSet::new(),
             gesture: 0,

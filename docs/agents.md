@@ -161,6 +161,10 @@ name a pane can write it.
 
 ## Mail and path claims
 
+For a quick, separately scoped conversation with a friend or their agent,
+see [conversations](./chat.md). `phux chat run` selects that process's mail
+without moving ordinary local mail or claims to another hub.
+
 Agents leave each other messages and mark the paths they work on. Both
 persist on this machine across server restarts.
 
@@ -231,8 +235,8 @@ and `phux agent report-state @7 working` reports from a hook.
 
 - **The focused pane belongs to a person.** Address panes by `@N`, never
   `.`. Integrations refuse to type into their own agent's pane.
-- **Take the wheel.** `phux take @7` gives you exclusive input until
-  `phux give @7` or detach; agents cannot take a pane a person holds.
+- **Take the wheel.** `phux attach --take` (or `C-a W` while attached) gives
+  you exclusive input until `C-a g` or detach; agents cannot take a pane a person holds.
   `phux signal @7 freeze` pauses an agent; `resume` continues it.
 - **Destructive commands ask.** `kill`, `detach`, and the `interrupt`,
   `terminate` and `kill` signals ask on a terminal and refuse without

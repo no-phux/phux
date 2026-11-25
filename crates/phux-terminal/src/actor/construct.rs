@@ -277,6 +277,7 @@ impl TerminalActor {
             icon: super::osc_scan::IconScan::default(),
             icon_owed: None,
             program_note_sink: None,
+            keep: None,
             agent_detect: None,
             agent_state_sink: None,
             live_session_probe: None,

@@ -1,0 +1,44 @@
+# Builds the flake's phux package (nix/package.nix) from source on Linux, as
+# `nix profile install github:no-phux/phux` does. Not a required check: it
+# runs only when the package's inputs change, on one hosted Ubuntu runner.
+# The package's install check runs `phux --version`.
+name: nix-package
+
+on:
+  pull_request:
+    paths: &paths
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .config/zig-toolchain.json
+      - .github/workflows/nix-package.yml
+  push:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-package-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+jobs:
+  build:
+    name: nix build .#phux (x86_64-linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      # Pull the toolchain from the shared cache; push nothing.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: phux
+          skipPush: true
+      - run: nix build -L .#phux

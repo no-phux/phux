@@ -9,7 +9,9 @@ use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 
 use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
-use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};
+use crate::commands::spawn::{
+    dispatch_spawn, dispatch_spawn_placed, owner_pane, report_spawn_error,
+};
 use crate::commands::{SpawnSplit, json_err};
 
 mod native;
@@ -144,12 +146,19 @@ fn spawn_resolved(
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
+    // With no target it joins the pane it was started from.
+    let owner = match target {
+        Some(_) => None,
+        None => crate::environment::own_terminal_id_on(&socket_path)
+            .and_then(|own| owner_pane(&socket_path, own)),
+    };
     let frame = spawn_resource_frame(
         request_id,
         argv.clone(),
         resolved.cwd.display().to_string(),
         env,
         agent_session,
+        owner,
     );
     let result = match target {
         Some(target) => dispatch_spawn_placed(
@@ -291,6 +300,7 @@ const fn spawn_resource_frame(
     cwd: String,
     env: Option<Vec<(String, String)>>,
     agent_session: Option<Vec<u8>>,
+    owner_terminal: Option<phux_protocol::ids::ResourceId>,
 ) -> FrameKind {
     FrameKind::SpawnResource {
         request_id,
@@ -301,7 +311,7 @@ const fn spawn_resource_frame(
         env,
         term: None,
         satellite: None,
-        owner_terminal: None,
+        owner_terminal,
         agent_session,
         initial_size: None,
         resource: None,

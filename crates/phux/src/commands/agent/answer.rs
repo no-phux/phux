@@ -10,17 +10,20 @@
 //! ask with no id (`ask_unidentified`), which cannot be told apart from the
 //! next one worded the same way.
 //!
+//! The live ask is the pane's title when that is one, else the question
+//! `phux ask` reported, read from the server.
+//!
 //! Delivery is one acknowledged `APPLY_INPUT` batch of trusted paste + Enter
 //! under a fresh CSPRNG operation id (ADR-0053, ADR-0076). Double submission is
-//! prevented by the staleness gate: a delivered answer retitles the pane, so a
-//! second answer finds no live ask. Ids are never derived from content, since
-//! a derivable id is a guessable one.
+//! prevented by the staleness gate: a delivered answer retitles the pane (or
+//! withdraws the reported question), so a second answer finds no live ask. Ids
+//! are never derived from content, since a derivable id is a guessable one.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::agent_prompt::ApplyVerdict;
-use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title};
+use phux_client::ask::{AskMarker, MAX_ANSWER_BYTES, deliver_answer, parse_ask_title, withdraw};
 use phux_client::attach::connection::Connection;
 use phux_client::read::Verb;
 use phux_config::socket::default_socket_path;
@@ -29,12 +32,25 @@ use phux_protocol::ids::InputOperationId;
 use crate::commands::json_err::{Refusal, codes};
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
-/// Confirm the pane is still asking the question `expected_id` names.
-fn live_ask(title: Option<&str>, expected_id: &str) -> Result<AskMarker, Refusal> {
-    let Some(marker) = title.and_then(parse_ask_title) else {
+/// Confirm the pane is still asking the question `expected_id` names: the
+/// one in its `title`, else the one `phux ask` `reported`. A title without an
+/// id takes the id the same question was reported under.
+fn live_ask(
+    title: Option<&str>,
+    reported: Option<AskMarker>,
+    expected_id: &str,
+) -> Result<AskMarker, Refusal> {
+    let marker = match title.and_then(parse_ask_title) {
+        Some(titled) if titled.is_identified() => Some(titled),
+        Some(titled) => reported
+            .filter(|ask| ask.question == titled.question)
+            .or(Some(titled)),
+        None => reported,
+    };
+    let Some(marker) = marker else {
         return Err(Refusal::new(
             codes::NO_ACTIVE_ASK,
-            "the pane is not asking anything (its title carries no phux-ask sentinel)",
+            "the pane has no open question: no phux-ask title, and none from `phux ask`",
             "nothing was typed. `phux agent show` reads the pane's current state, and \
              `phux watch --json` reports the `asked` event when a question appears. If \
              you meant to type into the pane regardless, that is `phux send-keys`",
@@ -343,8 +359,14 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
+        let reported = match phux_client::ask::reported(&mut conn, &pane).await {
+            Ok(reported) => reported,
+            Err(err) => {
+                return json_err::report_no_server(json, &err, &socket_path, "agent answer");
+            }
+        };
 
-        let marker = match live_ask(title.as_deref(), id) {
+        let marker = match live_ask(title.as_deref(), reported, id) {
             Ok(marker) => marker,
             Err(refusal) => return refusal.emit(json),
         };
@@ -366,6 +388,11 @@ pub(super) fn run_agent_answer(
         // `Busy` is not retried (unlike `agent prompt`): the liveness check
         // would go stale while waiting, so the caller re-runs the command.
         let verdict = deliver_answer(&mut conn, &pane, operation_id, 1, &answer).await;
+        if matches!(verdict, Ok(ApplyVerdict::Acked)) {
+            // Best effort: the answer is delivered either way, and a server
+            // that cannot withdraw keeps showing the question.
+            let _ = withdraw(&mut conn, pane.clone(), marker.id.clone()).await;
+        }
         drop(conn);
         match verdict {
             Ok(ApplyVerdict::Acked) => {

@@ -89,7 +89,7 @@ pub(super) fn machines(desk: &Desk, t: &Tokens) -> El {
     if offered.is_empty() {
         panel = panel.child(note(
             "No machines in your ssh config or on your tailnet. Add one any time from \
-             Settings → Machines.",
+             Settings → Remote hosts.",
             t,
         ));
     }

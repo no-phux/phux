@@ -81,7 +81,7 @@ fn session_verbs_share_the_remote_usage_rules() {
 /// and the refusal is the one-line contract document.
 #[test]
 fn an_unregistered_host_is_refused_with_the_ladder_remedies() {
-    let (code, stderr) = run(&["ls", "--remote", "me@mini"]);
+    let (code, stderr) = run(&["kill", "--yes", "--remote", "me@mini", "x"]);
     assert_eq!(code, 1, "stderr={stderr}");
     assert!(
         stderr.contains("not a registered host")
@@ -268,6 +268,68 @@ fn remote_flag_combinations_are_refused_with_their_reason() {
                 stderr.contains(needle),
                 "args={args:?}: missing {needle:?}; got: {stderr}"
             );
+        }
+    }
+}
+
+/// Reading from a machine nobody added refuses it, naming both remedies, and
+/// never reaches for ssh: asking what runs there must not set it up.
+#[test]
+fn reading_an_unregistered_host_never_runs_ssh() {
+    let dir = TempDir::new().expect("tempdir");
+    let ssh = dir.path().join("ssh");
+    let ran = dir.path().join("ssh-ran");
+    crate::common::write_executable(
+        &ssh,
+        format!("#!/bin/sh\ntouch '{}'\nexit 255\n", ran.display()),
+    );
+    for verb in ["ls", "version", "whoami", "doctor"] {
+        let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
+        cmd.env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_STATE_HOME", dir.path().join("state"))
+            .env("PHUX_PROFILE", "default")
+            .env("PHUX_SSH", &ssh)
+            .args([verb, "--remote", "me@mini"]);
+        let (code, _stdout, stderr) = crate::common::Out::of(&mut cmd).without_dhat().into_parts();
+        assert_eq!(code, 1, "{verb}: {stderr}");
+        assert!(
+            stderr.contains("not a registered host")
+                && stderr.contains("--code")
+                && stderr.contains("phux host add"),
+            "{verb}: the refusal must name both remedies; got: {stderr}"
+        );
+        assert!(!ran.exists(), "{verb} ran ssh: {stderr}");
+    }
+}
+
+/// A machine ssh gets no answer from is unreachable (exit 4); one that
+/// answered and refused the login is a failure (exit 1).
+#[test]
+fn an_ssh_host_that_never_answers_is_exit_four() {
+    for (said, expected) in [
+        ("ssh: connect to host mini port 22: Operation timed out", 4),
+        ("ssh: connect to host mini port 22: Connection refused", 1),
+        ("me@mini: Permission denied (publickey).", 1),
+    ] {
+        let dir = TempDir::new().expect("tempdir");
+        let ssh = dir.path().join("ssh");
+        crate::common::write_executable(&ssh, format!("#!/bin/sh\necho '{said}' >&2\nexit 255\n"));
+        for args in [
+            &["host", "add", "me@mini"][..],
+            &["host", "add", "me@mini", "--install", "--json"],
+            &["kill", "--yes", "--remote", "me@mini", "x"],
+        ] {
+            let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
+            cmd.env("HOME", dir.path())
+                .env("XDG_CONFIG_HOME", dir.path().join("config"))
+                .env("XDG_STATE_HOME", dir.path().join("state"))
+                .env("PHUX_PROFILE", "default")
+                .env("PHUX_SSH", &ssh)
+                .args(args);
+            let (code, _stdout, stderr) =
+                crate::common::Out::of(&mut cmd).without_dhat().into_parts();
+            assert_eq!(code, expected, "{args:?}: {stderr}");
         }
     }
 }

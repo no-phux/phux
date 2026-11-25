@@ -78,8 +78,10 @@ fn launch(
 
 /// An execution failure settles only the effect that failed. A newer
 /// activation, or a failure already reported by the engine, is untouched.
-fn fail_launch(state: &SharedState, token: ActivationToken) {
+pub(super) fn fail_launch(state: &SharedState, token: ActivationToken) {
     state.with_mut(|s| {
+        // A stop cut the launch off: `activation_ended` drops evidence while
+        // stopping, and the next start reconciles it.
         // Retry evidence, never this launch effect or a replacement execution.
         s.activation_ended(token, phux_core::ExitOutcome::UNKNOWN, true);
     });

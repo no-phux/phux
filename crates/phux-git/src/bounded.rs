@@ -348,28 +348,31 @@ mod tests {
 
     #[test]
     fn a_write_past_its_deadline_gets_sigterm_before_sigkill() {
-        let dir = std::env::temp_dir().join(format!("phux-bounded-term-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("cleaned");
-        let script = format!(
-            "trap 'touch {}; exit 1' TERM; sleep 30 & wait",
-            marker.display()
-        );
-        let started = Instant::now();
-        let out = Run {
-            program: "sh",
-            dir: &dir,
-            args: &["-c", &script],
-            env: &[],
-            timeout: Duration::from_millis(200),
-            max_stdout: 16,
-            stdin: None,
-            stop: Stop::Terminate,
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap 'printf cleaned; exit 1' TERM; sleep 30 & printf ready; wait",
+            ])
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let stdout = Capture::start(child.stdout.take(), 16);
+        // The deadline must expire after the child has installed its trap,
+        // not while a loaded runner is still scheduling its first instruction.
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        while stdout.bytes.lock().unwrap().as_slice() != b"ready" {
+            if Instant::now() >= ready_deadline {
+                kill(&mut child);
+                panic!("the child did not install its TERM handler");
+            }
+            std::thread::sleep(POLL);
         }
-        .exec();
+        let started = Instant::now();
+        let out = wait(&mut child, &stdout, started, Stop::Terminate);
         assert!(matches!(out, Err(RunError::Timeout)));
-        assert!(marker.exists(), "the TERM handler ran");
+        let (output, _) = stdout.finish(Instant::now() + DRAIN_GRACE);
+        assert_eq!(output, b"readycleaned", "the TERM handler ran");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

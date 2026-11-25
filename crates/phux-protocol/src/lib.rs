@@ -36,6 +36,7 @@ pub mod forward;
 pub mod ids;
 pub mod kinds;
 pub mod native_agent;
+pub mod open_url;
 pub mod policy;
 pub mod scope;
 pub mod service_http;

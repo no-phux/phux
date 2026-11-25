@@ -141,8 +141,8 @@ pub fn top(desk: &Desk, p: &Tokens, lights: f32, trailing: f32) -> Option<El> {
 /// The tabs on a row of their own at `at`: under the panes with
 /// `tab-bar = "bottom"`, or along the top with the title bar hidden.
 pub fn tab_row(desk: &Desk, p: &Tokens, at: TabBar) -> Option<El> {
-    let s = desk.settings;
-    let here = s.tab_bar == at && (at == TabBar::Bottom || s.title_bar == TitleBar::Hidden);
+    let here = desk.tab_bar() == at
+        && (at == TabBar::Bottom || desk.settings.title_bar == TitleBar::Hidden);
     let strip = here.then(|| tabs::strip(desk, p)).flatten()?;
     Some(
         row()
@@ -218,12 +218,12 @@ fn band(desk: &Desk, p: &Tokens, lights: f32, trailing: f32, fill: Color) -> El 
         .gap(s.s2)
         .items_center()
         .on_layout(|d: &mut Desk, rect| {
-            if d.settings.tab_bar == TabBar::Top {
+            if d.tab_bar() == TabBar::Top {
                 d.connection.tabs.room = rect[2];
             }
         })
         .children(
-            (desk.settings.tab_bar == TabBar::Top)
+            (desk.tab_bar() == TabBar::Top)
                 .then(|| tabs::strip(desk, p))
                 .flatten()
                 .or_else(|| Some(place(desk, t))),

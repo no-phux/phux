@@ -10,9 +10,13 @@ use std::path::{Path, PathBuf};
 use phux_config_core::RemoteConfigEntry;
 use phux_dial::TlsClientIdentity;
 
+// Beside this file, not under `target/`: the repository ignores that name.
 #[path = "target_authority.rs"]
 mod authority;
+#[path = "target_lookup.rs"]
+mod lookup;
 pub use authority::AuthorityPin;
+pub use lookup::{endpoint_host, endpoint_port, find_entry, find_entry_by, registration_name_by};
 
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
 /// therefore the port a target with no `:PORT` means.
@@ -128,8 +132,8 @@ impl RemoteTarget {
         Ok(Self { user, host, port })
     }
 
-    /// The registry key: the typed spelling minus any port, so `mini` and
-    /// `mini:8788` are one host.
+    /// The registry key: the typed spelling minus any port. A second server
+    /// at another port is saved as `NAME-PORT` ([`registration_name_by`]).
     #[must_use]
     pub fn registry_name(&self) -> String {
         self.user
@@ -183,56 +187,6 @@ fn parse_port(raw: &str) -> Result<u16, TargetError> {
         .ok()
         .filter(|port| *port != 0)
         .ok_or_else(|| TargetError::InvalidPort(raw.to_owned()))
-}
-
-/// The registry entry that describes `target`.
-///
-/// Matched as exact `user@host`, then the bare host (what `phux host add`
-/// registers), then any entry whose endpoint addresses that host.
-#[must_use]
-pub fn find_entry<'a>(
-    entries: &'a [RemoteConfigEntry],
-    target: &RemoteTarget,
-) -> Option<&'a RemoteConfigEntry> {
-    find_entry_by(entries, target, |entry| (&entry.name, &entry.endpoint))
-}
-
-/// [`find_entry`] over any registry row type, given its `(name, endpoint)`.
-#[must_use]
-pub fn find_entry_by<'a, E>(
-    entries: &'a [E],
-    target: &RemoteTarget,
-    name_and_endpoint: impl Fn(&E) -> (&str, &str),
-) -> Option<&'a E> {
-    let name = target.registry_name();
-    let named = |wanted: &str| {
-        entries
-            .iter()
-            .find(|entry| name_and_endpoint(entry).0 == wanted)
-    };
-    named(&name).or_else(|| named(&target.host)).or_else(|| {
-        entries.iter().find(|entry| {
-            endpoint_host(name_and_endpoint(entry).1).as_deref() == Some(&target.host)
-        })
-    })
-}
-
-/// The host an endpoint URI addresses, unbracketed; `None` when it has none.
-#[must_use]
-pub fn endpoint_host(endpoint: &str) -> Option<String> {
-    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    let host = if let Some(inner) = authority.strip_prefix('[') {
-        inner.split_once(']').map(|(host, _)| host)?
-    } else if authority.matches(':').count() > 1 {
-        authority
-    } else {
-        authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host)
-    };
-    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// The transport a registry endpoint names, restricted to what an embedder

@@ -12,7 +12,8 @@ fn window() -> (Arc<Client>, Desk) {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client.feed(phux_wire_fixtures::HelloOk::new([0xAB; 16], phux_wire_fixtures::l3_caps())
-        .features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SessionEnsure]))
+        .features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .features_ext2(phux_protocol::caps::ServerFeatureExt2Set::with(&[phux_protocol::caps::ServerFeatureExt2::SessionEnsure]))
         .build()).expect("HELLO_OK");
     let request = sent(&client).into_iter().find_map(|(request, command)|
         matches!(command, Command::GetOrganization { .. }).then_some(request)).expect("seed");

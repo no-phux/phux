@@ -3,10 +3,11 @@
 //! the same ladder and dial as `phux attach --remote`.
 //!
 //! The headless verbs take no `--code`/`--no-enroll`. Without `--json` an
-//! unregistered host still pairs over ssh; with `--json` the ssh rung is
-//! skipped, because a machine-readable call must not narrate or prompt. Every
-//! refusal is reported once, worded for the registry entry rather than for
-//! `phux attach`'s flags.
+//! unregistered host still pairs over ssh for a verb that changes something.
+//! The ssh rung is skipped for a verb that only reads, which must not set up
+//! a machine nobody added, and with `--json`, because a machine-readable call
+//! must not narrate or prompt. Every refusal is reported once, worded for the
+//! registry entry rather than for `phux attach`'s flags.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,6 +21,7 @@ use super::attach::native::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, Refusal, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::{self, Bootstrap};
+use super::ssh_bootstrap::shell_quote;
 
 /// The refusal for `--socket` next to `--remote`. One names a local UDS, the
 /// other a network dial, and silently preferring either would run the verb
@@ -82,8 +84,7 @@ impl ServerSpec {
         verb: &str,
         json: bool,
     ) -> Result<ServerTarget, ExitCode> {
-        let bootstrap = bootstrap_for(json || matches!(verb, "upload" | "download"));
-        self.resolve_inner(rt, verb, bootstrap, true)
+        self.resolve_inner(rt, verb, bootstrap_for(verb, json), true)
             .map_err(|error| error.emit(json && error.err.code != codes::USAGE_ERROR))
     }
 
@@ -131,17 +132,22 @@ fn resolve_remote(
 ) -> Result<RemoteServer, Refusal> {
     let target = remote_target::parse_target(raw)
         .map_err(|err| Refusal::new(codes::REMOTE_UNRESOLVED, err, "", 2))?;
-    let entry = remote_target::resolve(&target, None, bootstrap).map_err(|report| {
-        Refusal::from_error(ladder_refusal_error(&report), 1)
-            .with_human(report.lines().map(str::to_owned).collect())
+    let entry = remote_target::resolve(&target, None, bootstrap).map_err(|err| {
+        Refusal::from_error(ladder_refusal_error(&err.report), err.exit)
+            .with_human(err.report.lines().map(str::to_owned).collect())
     })?;
     plan_entry_inner(rt, &entry, verb, warn_renewal).map_err(|err| Refusal::from_error(err, 1))
 }
 
 /// Whether a cold target may pair over ssh: as under attach, except for a
-/// `--json` call, which must neither narrate on stderr nor block on a prompt.
-const fn bootstrap_for(json: bool) -> Bootstrap {
-    if json {
+/// `--json` call, which must neither narrate on stderr nor block on a prompt,
+/// and for verbs that read or transfer, which leave the far end as it is.
+fn bootstrap_for(verb: &str, json: bool) -> Bootstrap {
+    let never_pairs = matches!(
+        verb,
+        "ls" | "version" | "whoami" | "doctor" | "upload" | "download"
+    );
+    if json || never_pairs {
         Bootstrap::Never
     } else {
         Bootstrap::Auto
@@ -200,7 +206,12 @@ fn plan_entry_inner(
         Endpoint::Quic(addr) => native::plan_quic_dial(rt, &addr, credentials, server_name),
         Endpoint::Ws(url) => native::plan_ws_dial(url, credentials, server_name),
         Endpoint::Ssh(destination) => {
-            return Err(ssh_only_refusal(&entry.name, &destination, verb));
+            return Err(ssh_only_refusal(
+                &entry.name,
+                &destination,
+                entry.remote_phux(),
+                verb,
+            ));
         }
     };
     let DialPlan { dial, loopback } = plan.map_err(|refusal| entry_refusal(entry, &refusal))?;
@@ -293,15 +304,35 @@ fn unresolved_remedy(dns_name: bool, re_pair: &str) -> String {
     lines.join("\n")
 }
 
-/// Why an `ssh://` entry cannot carry a headless verb, and the two ways out.
-fn ssh_only_refusal(name: &str, destination: &str, verb: &str) -> CliError {
+/// Why an `ssh://` entry cannot carry a headless verb, and the ways out.
+fn ssh_only_refusal(name: &str, destination: &str, remote_phux: &str, verb: &str) -> CliError {
+    let there = format!(
+        "run the command on the host: `{} ...`",
+        over_ssh(destination, remote_phux, verb)
+    );
+    // `host add` reads a `:PORT` as phux's own, and a URI as it is.
+    let remedy = if destination.contains(':') {
+        there
+    } else {
+        format!(
+            "{there};\nor register a direct QUIC endpoint the session verbs can dial: \
+             `phux host add {} --name {name}`",
+            shell_quote(destination)
+        )
+    };
     CliError::new(
         codes::REMOTE_UNRESOLVED,
         format!("remote {name:?} is an ssh:// entry, which carries an interactive attach only"),
-        format!(
-            "`phux host add {name}` registers a direct QUIC endpoint the session verbs can dial;\n\
-             until then, run the command on the host: `ssh {destination} phux {verb} ...`"
-        ),
+        remedy,
+    )
+}
+
+/// `phux VERB` run on an `ssh://` entry's host, as a command to paste.
+pub(crate) fn over_ssh(destination: &str, remote_phux: &str, verb: &str) -> String {
+    format!(
+        "ssh {} {} {verb}",
+        shell_quote(destination),
+        shell_quote(remote_phux)
     )
 }
 

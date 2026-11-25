@@ -35,6 +35,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
         relay_rx,
         unsub_rx,
         cancel: &cancel,
+        resume: crate::hub::relay::RelayResume::default(),
     };
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
@@ -73,6 +74,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     conn,
                     &mut inbox.relay_rx,
                     &mut inbox.unsub_rx,
+                    &mut inbox.resume,
                     &cancel,
                     journal.as_ref(),
                     &operations,
@@ -166,12 +168,14 @@ pub(super) struct LinkInbox<'a> {
     pub(super) relay_rx: tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
     pub(super) unsub_rx: tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
     pub(super) cancel: &'a CancellationToken,
+    /// What the last connection left the next one.
+    pub(super) resume: crate::hub::relay::RelayResume,
 }
 
 impl LinkInbox<'_> {
     /// Await `until` while no link is up to carry relay traffic: every
-    /// relay request fails fast with `why`, and unsubscribes are dropped
-    /// (there is no registry to withdraw from). `None` means the supervisor
+    /// relay request fails fast with `why`, and unsubscribes withdraw what
+    /// the next connection would resume. `None` means the supervisor
     /// should exit: `cancel` fired, or every relay or unsubscribe handle was
     /// dropped.
     #[allow(
@@ -191,7 +195,8 @@ impl LinkInbox<'_> {
                     crate::hub::relay::fail_fast(request?.request, self.host, why);
                 }
                 unsubscribe = self.unsub_rx.recv() => {
-                    let _dropped = unsubscribe?;
+                    // Removal only, so a withdrawal pinned to any link applies.
+                    self.resume.withdraw(&unsubscribe?.unsubscribe);
                 }
                 output = &mut until => return Some(output),
             }
@@ -212,6 +217,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
     conn: C,
     relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
+    resume: &mut crate::hub::relay::RelayResume,
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
     operations: &crate::hub::operation_fence::OperationFence,
@@ -226,7 +232,11 @@ pub(super) async fn run_relay_session<C: LinkConn>(
     };
     session.set_resource_kinds(resource_kinds);
     session.set_journal(journal.cloned());
+    if resume.satellite_restarted(session.incarnation()) {
+        forget_restarted_satellite(host, relay_rx, journal);
+    }
     session.set_operation_fence(operations.clone());
+    session.resume(std::mem::take(resume));
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));
@@ -291,16 +301,33 @@ pub(super) async fn run_relay_session<C: LinkConn>(
             }
             _ = delivery_retry.tick() => {
                 session.flush_pending_snapshots();
-                let detaches = session.take_delivery_detaches();
-                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(detaches)) {
+                let mut frames = session.take_delivery_detaches();
+                frames.extend(session.settle_undrawn());
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
             }
         }
     };
     drop(write_tx);
-    session.teardown(&reason);
+    *resume = session.teardown(&reason);
     lost.then_some(reason)
+}
+
+/// The satellite is another process: its terminal ids name other panes. Typing
+/// a consumer attached under the old ids must land in none of them, queued or
+/// still to come.
+fn forget_restarted_satellite(
+    host: &SatelliteHost,
+    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    journal: Option<&crate::state::SharedState>,
+) {
+    while let Ok(queued) = relay_rx.try_recv() {
+        crate::hub::relay::fail_fast(queued.request, host, "the satellite restarted");
+    }
+    if let Some(journal) = journal {
+        journal.with_mut(|s| s.federation_mut().forget_satellite_proxy_attaches(host));
+    }
 }
 
 pub(super) fn negotiated_relay_session<C: LinkConn>(

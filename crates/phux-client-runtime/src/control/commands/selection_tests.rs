@@ -8,7 +8,8 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 
 fn hello(incarnation: u8) -> FrameKind {
     phux_wire_fixtures::HelloOk::new([incarnation; 16], phux_wire_fixtures::l3_caps())
-        .features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SessionEnsure])).build()
+        .features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .features_ext2(phux_protocol::caps::ServerFeatureExt2Set::with(&[phux_protocol::caps::ServerFeatureExt2::SessionEnsure])).build()
 }
 fn frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
     plane.take_outbound().iter().map(|bytes| FrameKind::decode(bytes).unwrap().0).collect()

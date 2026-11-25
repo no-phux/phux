@@ -60,9 +60,8 @@ fn unavailable_create_accepts_no_work_for_a_later_peer() {
 }
 
 fn ensuring() -> ControlPlane {
-    let hello = server_hello().features_ext(ServerFeatureExtSet::with(&[
-        ServerFeatureExt::Organization, ServerFeatureExt::SessionEnsure,
-    ])).build();
+    let hello = server_hello().features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+        .features_ext2(phux_protocol::caps::ServerFeatureExt2Set::with(&[phux_protocol::caps::ServerFeatureExt2::SessionEnsure])).build();
     let mut plane = opened(ControlOptions::default(), hello);
     let seed = commands(&mut plane).into_iter().find_map(|(request, command)|
         matches!(command, Command::GetOrganization { .. }).then_some(request)).expect("seed");

@@ -66,6 +66,7 @@ mod roles;
 mod session_table;
 mod sessions;
 mod snapshot;
+pub(crate) mod unseen;
 pub(crate) mod upgrade_blob;
 mod viewport;
 
@@ -194,6 +195,8 @@ pub struct ServerState {
     uplinks: crate::uplink::Uplinks,
     /// The ssh-agent broker (`docs/ssh.md#ssh-agent`).
     forward_agent: crate::runtime::forward::agent::Broker,
+    /// Links panes asked to open, waiting on a client's answer.
+    open_urls: crate::runtime::open_url::OpenUrls,
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
@@ -298,6 +301,11 @@ impl ServerState {
         &mut self,
     ) -> &mut crate::runtime::forward::agent::Broker {
         &mut self.forward_agent
+    }
+
+    /// The links waiting on a client's answer.
+    pub(crate) const fn open_urls_mut(&mut self) -> &mut crate::runtime::open_url::OpenUrls {
+        &mut self.open_urls
     }
 
     /// The shared operation dedupe record. Cloning the handle shares it.

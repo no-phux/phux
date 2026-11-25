@@ -272,7 +272,6 @@
             # download the prebuilt archive, requires the exact Zig 0.17.1.
             zigPinned
             pkgs.pkg-config
-            # Developer ergonomics.
             toolPins.just
             pkgs.cargo-nextest
             toolPins.cargo-deny
@@ -326,7 +325,6 @@
             # test fixtures, examples and benchmarks. Python is a TOOLING
             # dependency only: no `cargo build` or CI decision needs it.
             toolPins.python
-            # Debugging.
             pkgs.lldb
           ]
           # Fast linker for Linux builds (CI + Linux contributors). `mold`
@@ -400,21 +398,13 @@
             '';
         };
 
-        # The hosted shards execute an existing nextest archive. Keep the
-        # Rust metadata probes need rustc, not a native linker or SDK.
-        # Do not realize Zig, browser, desktop, or development tools either.
-        devShells.test-archive = pkgs.mkShellNoCC {
-          packages = [
-            (toolchain.override {
-              extensions = [ ];
-              targets = [ ];
-            })
-            pkgs.cargo-nextest
-            toolPins.just
-            toolPins.python
-            pkgs.jq
-          ];
-          env.RUST_BACKTRACE = "1";
+        devShells.test-archive = import ./nix/test-archive.nix {
+          inherit
+            pkgs
+            toolchain
+            toolPins
+            bunPinned
+            ;
         };
 
         # Browser CI gets a browser matched to chromedriver without making
@@ -424,6 +414,11 @@
           nativeBuildInputs =
             old.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
         });
+
+        packages = rec {
+          phux = pkgs.callPackage ./nix/package.nix { inherit toolchain zigPinned; };
+          default = phux;
+        };
 
         formatter = pkgs.nixfmt-rfc-style;
       }

@@ -16,6 +16,7 @@ pub(crate) fn execute_terminal(
         let wire = s.idspace.intern_resource(resource);
         crate::runtime::commands::terminal::set_agent_session(s, wire.clone(), spec.restore.clone());
         terminal::notify_mode::install(s, &wire, spec);
+        terminal::parent::install(s, &wire, spec);
         (s.config().scrollback, cmd)
     });
     let cmd = cmd.map(|mut cmd| {

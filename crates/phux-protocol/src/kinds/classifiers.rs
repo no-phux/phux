@@ -151,6 +151,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::SendDocumentInput { .. } => &C_SEND_DOCUMENT_INPUT,
         Command::Mirror { .. } => &C_MIRROR,
         Command::MirrorProvide { .. } => &C_MIRROR_PROVIDE,
+        Command::OpenUrl { .. } => &C_OPEN_URL,
         Command::Transcribe { .. } => &C_TRANSCRIBE,
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,

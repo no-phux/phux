@@ -41,6 +41,10 @@ Inside a phux pane it waits for the pane's mail (`phux mail wait`) and puts
 each message in the conversation with `pi.sendMessage` as a `phux.mail`
 follow-up that starts a turn when pi is idle. Nothing is typed into the pane.
 
+With this integration installed, `phux chat run NAME -- pi` also receives
+mail outside a pane. The CLI validates `PHUX_CHAT_RECORD` and selects its
+inbox without changing the generic address or claim holder.
+
 ## Safety
 
 Input and destructive actions resolve the target first and refuse pi's own

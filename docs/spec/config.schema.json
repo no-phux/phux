@@ -205,7 +205,7 @@
         },
         "browser-shim": {
           "default": false,
-          "description": "Give panes a stand-in `BROWSER` that prints a link and copies it to\nthe attached person's clipboard, for a machine with no screen. Read\nat server start.",
+          "description": "Give panes a stand-in `BROWSER`, and an `xdg-open` where there is\nnone, for a machine with no screen: it asks the person typing in the\npane to open the link on their machine, else prints it and copies it\nto their clipboard (`docs/ssh.md#opening-links`). Read at server\nstart.",
           "type": "boolean"
         },
         "clipboard-read": {
@@ -279,6 +279,11 @@
           ],
           "default": "off",
           "description": "Whether the server holds an idle-sleep inhibitor (`caffeinate`,\n`systemd-inhibit`) so a working agent is not put to sleep."
+        },
+        "lock-size": {
+          "default": false,
+          "description": "Whether `phux attach` and a bare `phux` lock their view size, as\n`--lock-size` does: other views no longer resize this client's panes.",
+          "type": "boolean"
         },
         "mouse": {
           "default": true,
@@ -389,7 +394,7 @@
       "properties": {
         "agent": {
           "default": false,
-          "description": "Broker ssh-agent requests from this server's panes to a client that\nruns `phux forward --agent`. On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
+          "description": "Broker ssh-agent requests from this server's panes to a client that\nserves its agent (`forward-agent` on its `[[remote]]` entry, or\n`phux forward --agent`). On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
           "type": "boolean"
         },
         "allow": {
@@ -587,6 +592,13 @@
       "properties": {
         "color": {
           "description": "Palette id overriding this machine's automatic colour; absent or\n`\"auto\"` keeps the hash of its short host name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "description": "Theme a client on this machine wears for its own panes, named as\nthat client lists themes; absent keeps the client's own theme.",
           "type": [
             "string",
             "null"
@@ -1018,6 +1030,30 @@
           "description": "Transport endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or\n`ssh://HOST` for the stdio bridge.",
           "type": "string"
         },
+        "forward-agent": {
+          "description": "Serve this machine's ssh-agent to the host's panes while attached to\nit; each signature is asked first (`docs/ssh.md#ssh-agent`). The host\nmust also set `[forward] agent = true`.",
+          "type": "boolean"
+        },
+        "forward-agent-keys": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "forward-agent-keys-append": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "name": {
           "description": "Local label `phux attach <name>` resolves (not a routable identity).",
           "type": "string"
@@ -1042,6 +1078,13 @@
         },
         "ssh": {
           "description": "The ssh destination the entry was enrolled through, used to restart a\nserver that does not answer; absent, the name is used.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "description": "Theme a client wears while it views this host, named as that client\nlists themes (`[theme] name` in the TUI, a theme id in Rune); absent\nkeeps the client's own theme.",
           "type": [
             "string",
             "null"
@@ -1092,6 +1135,30 @@
             "$ref": "#/definitions/RestoreProgram"
           },
           "type": "array"
+        },
+        "scrollback": {
+          "default": 0,
+          "description": "Lines of each pane's output to keep on disk, at most 10000, and show\nabove a divider when the pane starts again after the server stopped.\n`0`, the default, keeps nothing, and deletes what an earlier setting\nkept when the server next starts. The files are readable by you only\nand not encrypted.",
+          "format": "uint32",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scrollback-exclude": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scrollback-exclude-append": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -1129,6 +1196,14 @@
       "additionalProperties": false,
       "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
       "properties": {
+        "bold-is-bright": {
+          "default": null,
+          "description": "Bold text in ANSI colours 0 to 7 draws in the bright variant, 8 to\n15, like xterm's `boldColors`. Off when unset; true colour never\nbrightens.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "chief": {
           "default": null,
           "description": "The phux session whose ACP agent a tap of the right Command key\nprompts; `\"chief\"` when unset, `\"none\"` turns the tap off.",
@@ -1305,7 +1380,7 @@
             }
           ],
           "default": null,
-          "description": "Where the terminal tabs go: `\"top\"` in the title bar, `\"bottom\"` under\nthe panes, or `\"hidden\"`."
+          "description": "Where the terminal tabs go: `\"auto\"` in the title bar while the\nsidebar is folded (the sidebar lists them while it shows), `\"top\"`\nalways in the title bar, `\"bottom\"` under the panes, or `\"hidden\"`."
         },
         "theme": {
           "default": null,
@@ -1589,6 +1664,11 @@
       "description": "`[rune] tab-bar`: where the terminal tabs go.",
       "oneOf": [
         {
+          "const": "auto",
+          "description": "In the title bar while the sidebar is folded; while it shows, its\nrows are the tabs.",
+          "type": "string"
+        },
+        {
           "const": "top",
           "description": "In the title bar.",
           "type": "string"
@@ -1839,6 +1919,7 @@
         "history-bytes": 10485760,
         "history-limit": 50000,
         "keep-awake": "off",
+        "lock-size": false,
         "mouse": true,
         "retain-on-exit": false,
         "retain-on-exit-max": 256,
@@ -2078,7 +2159,9 @@
       ],
       "default": {
         "on-start": false,
-        "program": []
+        "program": [],
+        "scrollback": 0,
+        "scrollback-exclude": []
       },
       "description": "`[restore]`: whether a starting server relaunches what the last one\nended."
     },
@@ -2089,6 +2172,7 @@
         }
       ],
       "default": {
+        "bold-is-bright": null,
         "chief": null,
         "confirm-close": null,
         "copy-on-select": null,

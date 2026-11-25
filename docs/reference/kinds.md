@@ -52,6 +52,7 @@ Addressed to the server or the connection rather than to one resource.
 | `PERF_CONTROL` | command `0x39` | OBSERVE, BIND (owner socket only) | yes | `perf_control` (features_ext) | shipped |
 | `phux.session.create/v1` | metadata key | CREATE, BIND | yes | none | shipped |
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
+| `phux.view.size-lock/v1` | metadata key | BIND | yes | none | shipped |
 | `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
 | `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
@@ -159,6 +160,8 @@ The kind's facet.
 | `APPLY_INPUT` | command `0x14` | INPUT | yes | `acknowledged_input` | shipped |
 | `PUT_FILE` | command `0x15` | INPUT | yes | `file_upload` | shipped |
 | `CHECKOUT` | command `0x3c` | INPUT | yes | `checkout` (features_ext) | shipped |
+| `OPEN_URL` | command `0x51` | INPUT | yes | `open_url` (features_ext) | shipped |
+| `OPEN_URL_REPLY` | command `0x52` | INPUT | yes | `open_url` (features_ext) | shipped |
 | `TRANSCRIBE` | command `0x19` | INPUT | yes | `transcribe` | shipped |
 | `GET_TERMINAL_STATE` | command `0x0c` | INVENTORY | no | none | shipped |
 | `ACQUIRE_INPUT` | command `0x0f` | BIND | yes | none | shipped |
@@ -181,6 +184,7 @@ The kind's facet.
 | `asked` | `0x09` |
 | `cwd_changed` | `0x0a` |
 | `input_activity` | `0x0f` |
+| `open_url` | `0x22` |
 
 ### Resource metadata keys
 
@@ -192,6 +196,9 @@ The kind's facet.
 - `phux.link/v1`
 - `phux.note/v1`
 - `phux.notify/v1`
+- `phux.parent/v1`
+- `phux.unseen/v1`
+- `phux.in-view/v1`
 
 ## Kind `AGENT_SESSION`
 
@@ -351,6 +358,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `CHECKOUT` | INPUT | `NamedTerminal` |
 | `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE` | INPUT | `Global { owner_uds_only: false }` |
 | `FORWARD_OPEN`, `FORWARD_READ`, `FORWARD_WRITE`, `FORWARD_CLOSE`, `AGENT_OFFER`, `AGENT_REPLY` | INPUT | `Global { owner_uds_only: false }` |
+| `OPEN_URL`, `OPEN_URL_REPLY` | INPUT | `NamedTerminal` |
 | `TRANSCRIBE` | INPUT | `NamedTerminal` |
 | `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
 | `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |

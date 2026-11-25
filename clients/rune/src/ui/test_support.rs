@@ -39,10 +39,10 @@ pub fn glass_panels(rt: &rune::Runtime<Desk>) -> usize {
 
 /// `rt`'s last frame painted `size` pixels big through Rune's real
 /// renderer, as RGBA.
-pub fn offscreen(
+pub fn offscreen<S>(
     gpu: &rune::render::Gpu,
     renderer: &mut rune::render::Renderer,
-    rt: &mut rune::Runtime<Desk>,
+    rt: &mut rune::Runtime<S>,
     size: (u32, u32),
 ) -> Vec<u8> {
     let target = rune::render::Offscreen::new(&gpu.device, size.0, size.1);

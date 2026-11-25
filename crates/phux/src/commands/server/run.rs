@@ -247,6 +247,7 @@ pub(crate) fn run_server(
         Err(code) => return code,
     };
 
+    super::startup::private_state_dir();
     let autosave = match open_autosave(autosave) {
         Ok(autosave) => autosave,
         Err(code) => return code,
@@ -321,6 +322,7 @@ pub(crate) fn run_server(
         webtransport,
     )
     .on_listening(move |listeners| {
+        crate::terminal_browser::install(&socket_path);
         let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
         info!(
             "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",

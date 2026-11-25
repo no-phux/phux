@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_client::attach::Dial;
-use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet, select_bootstrap_profile};
+use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, ServerFeatureExt, ServerFeatureExt2, ServerFeatureExt2Set, ServerFeatureExtSet, select_bootstrap_profile};
 use phux_protocol::ids::{AuthorityId, ResourceId, ResourceKey, Revision, SessionId, SessionKey};
 use phux_protocol::wire::frame::{AttachTarget, Command, CommandResult, CommandValue, Committed, FrameKind, OrgFilter, OrganizationPage, Refusal, SessionLifetime, SessionRecord};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -46,16 +46,17 @@ impl Fixture {
                     panic!("first frame must negotiate");
                 };
                 let (selected_profile, bootstrap_limits) = select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new()).expect("compatible profile");
-                let features = match reply {
-                    Reply::Legacy => ServerFeatureExtSet::with(&[]),
-                    Reply::NoEnsure => ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]),
-                    _ => ServerFeatureExtSet::with(&[ServerFeatureExt::Organization, ServerFeatureExt::SessionEnsure]),
+                let (features, features_ext2) = match reply {
+                    Reply::Legacy => (ServerFeatureExtSet::with(&[]), ServerFeatureExt2Set::new()),
+                    Reply::NoEnsure => (ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]), ServerFeatureExt2Set::new()),
+                    _ => (ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]),
+                        ServerFeatureExt2Set::with(&[ServerFeatureExt2::SessionEnsure])),
                 };
                 send(&mut stream, FrameKind::HelloOk {
                     protocol_major: phux_protocol::PROTOCOL_VERSION.major,
                     protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
                     protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-                    server_caps: ServerCapabilities::new().with_features_ext(features),
+                    server_caps: ServerCapabilities::new().with_features_ext(features).with_features_ext2(features_ext2),
                     server_id: Vec::new(), selected_profile: Some(selected_profile), bootstrap_limits,
                 }).await;
                 let key = SessionKey::new([0x41; 16]).unwrap();

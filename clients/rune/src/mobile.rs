@@ -18,6 +18,8 @@ pub use rune;
 /// Native-only state, absent from the desktop-hosted `--phone` form.
 pub struct Platform {
     pub(crate) target: Target,
+    /// The distributed app and its version ("phux 0.4.98"), when it says.
+    pub(crate) app: Option<String>,
     pub connection_requested: bool,
     /// A command asked for the system pasteboard, which only the host reads.
     pub paste_requested: bool,
@@ -66,6 +68,7 @@ impl Platform {
     pub fn test() -> Platform {
         Platform {
             target: phux_client_runtime::Target::uds("/tmp/not-used"),
+            app: None,
             active: true,
             connection_requested: false,
             paste_requested: false,
@@ -97,6 +100,9 @@ pub struct Configuration {
     /// endpoint is what gets dialed.
     #[serde(default)]
     pub name: Option<String>,
+    /// The distributed app and its version, for About. Words only.
+    #[serde(default)]
+    pub app: Option<String>,
     /// Relay SNI; also scopes the end-to-end authority handshake to its route.
     #[serde(default)]
     pub tls_server_name: Option<String>,
@@ -402,10 +408,12 @@ pub fn state_with_identity(
     signer: Option<Arc<dyn DeviceSigner>>,
 ) -> Result<State, String> {
     let target = configuration.target_with_identity(signer)?;
-    Ok(with_target(
-        target,
-        configuration.session.filter(|s| !s.trim().is_empty()),
-    ))
+    let session = configuration.session.filter(|s| !s.trim().is_empty());
+    let mut state = with_target(target, session);
+    if let Some(native) = state.native.as_mut() {
+        native.app = configuration.app;
+    }
+    Ok(state)
 }
 
 fn with_target(target: Target, session: Option<String>) -> State {
@@ -413,6 +421,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
     state.machines.current = Some(target.name.clone());
     state.native = Some(Platform {
         target,
+        app: None,
         connection_requested: false,
         paste_requested: false,
         active: true,

@@ -1,7 +1,9 @@
 use super::*;
+use crate::activity::Mark;
 use crate::theme::contrast;
 use phux_config_core::host_color::PALETTE;
 use phux_design::tokens::IDENTITY;
+use phux_protocol::ids::ResourceId;
 
 fn tokens(dark: bool, theme: Option<&'static crate::theme::Theme>) -> std::rc::Rc<Tokens> {
     super::super::tokens_for(dark, theme)
@@ -81,6 +83,11 @@ fn the_histogram_counts_only_what_asks_for_you() {
 
 /// A window with one session of four terminals in different states.
 fn listed(dark: bool) -> rune::Runtime<Desk> {
+    listed_with(dark, &[])
+}
+
+/// [`listed`], each `(child, parent)` pane started from its parent.
+fn listed_with(dark: bool, parents: &[(u32, u32)]) -> rune::Runtime<Desk> {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     let mut rt = crate::test_support::runtime(
@@ -123,6 +130,10 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             exec: None,
             foreground: None,
             icon: None,
+            unseen: None,
+            parent: (parents.iter())
+                .find(|(child, _)| *child == id)
+                .map(|(_, parent)| ResourceId::local(*parent)),
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);
@@ -159,24 +170,23 @@ fn rows_are_one_focusable_source_list_with_their_words() {
     }
     let header = crate::ui::element(&rt, "select-session-1");
     assert!(header.focusable, "the session header is focusable");
-    // The word shows beside the mark, from the vocabulary; and the mark
-    // is named by it where a screen reader meets it.
+    // What asks for you shows its word, from the vocabulary; every badge
+    // is named by its word where a screen reader meets it, and the agent
+    // and word ride in the row's description.
     let said = |words: &str| {
         rt.elements()
             .iter()
             .any(|e| e.text.as_deref() == Some(words) || e.label.as_deref() == Some(words))
     };
-    for words in [
-        "claude · needs you",
-        "claude · working",
-        "claude · done",
-        "claude · idle",
-    ] {
-        assert!(said(words), "{words}");
-    }
+    let shows = |words: &str| (rt.elements().iter()).any(|e| e.text.as_deref() == Some(words));
+    assert!(shows("needs you"), "what needs you says so");
     assert!(
-        said("needs you") && said("done") && said("idle"),
-        "marks are named"
+        !shows("claude · working"),
+        "one line: no second line of words"
+    );
+    assert!(
+        said("needs you") && said("done") && said("working"),
+        "badges are named"
     );
 }
 
@@ -187,13 +197,19 @@ fn twins_with_an_agent_still_name_their_pane() {
     let detail = |place: Option<&str>| {
         super::Row {
             id: &id,
+            target: &id,
             session: "rune-3",
             name: "Shopify inventory sync to Meta".to_owned(),
             place: place.map(str::to_owned),
             key: None,
             agent: Some("claude"),
+            kind: Some("claude"),
             mark: crate::activity::Mark::Done,
+            panes: 1,
             selected: false,
+            children: 0,
+            open: false,
+            child: false,
             host: ("mini", 0),
             color: None,
             state: Forced::Rest,
@@ -266,4 +282,79 @@ fn a_clicked_new_button_hands_the_keyboard_back_to_the_terminal() {
         // Space would press it again: a second session or terminal.
         assert_eq!(focused(&mut rt), None, "{key} kept focus after a click");
     }
+}
+
+#[test]
+fn a_tab_is_one_row_however_many_panes_it_splits_into() {
+    let mut rt = listed(true);
+    let tab = |n: u8, name: &str, ids: &[u32]| crate::desk::Tab {
+        id: [n; 16],
+        name: name.to_owned(),
+        resources: ids.iter().copied().map(ResourceId::local).collect(),
+        active: false,
+        locked: false,
+    };
+    let tabs = vec![tab(1, "1", &[4, 1]), tab(2, "Deploy", &[2])];
+    rt.update(move |d, _| {
+        d.connection.tabs.by_session.insert(1, tabs);
+    });
+    rt.frame(2.0);
+    let at = |id: u32| rt.find(&format!("pane-{}", ResourceId::local(id)));
+    // The split is named after its first agent's pane, and pane 1 rides
+    // in it; pane 3, in no tab, keeps a row of its own.
+    assert!(at(4).is_some() && at(1).is_none(), "a split tab is one row");
+    let said = |words: &str| (rt.elements().iter()).any(|e| e.text.as_deref() == Some(words));
+    assert!(said("Deploy"), "a tab a person named keeps its name");
+    assert!(said("2"), "a split says how many panes it holds");
+    let order = [4, 2, 3].map(|id| at(id).expect("a row").1);
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "tabs in order, then the rest: {order:?}"
+    );
+}
+
+#[test]
+fn child_panes_fold_under_their_root_and_a_cycle_folds_nothing() {
+    let pane = |id: u32, parent: Option<u32>| crate::addressable::Addressable {
+        id: ResourceId::local(id),
+        label: String::new(),
+        session_id: 1,
+        session: "work".to_owned(),
+        kind: phux_protocol::ids::ResourceKind::Terminal,
+        mirror: "",
+        parent: parent.map(ResourceId::local),
+    };
+    // 3 is 2's child, so it sits with 2 under 1; 4's parent closed; 5 and
+    // 6 name each other.
+    let panes = [
+        pane(1, None),
+        pane(2, Some(1)),
+        pane(3, Some(2)),
+        pane(4, Some(9)),
+        pane(5, Some(6)),
+        pane(6, Some(5)),
+    ];
+    let rows: Vec<_> = panes.iter().collect();
+    let items = items::items(&[], &rows);
+    assert_eq!(
+        items::fold(&items),
+        vec![(0, vec![1, 2]), (3, vec![]), (4, vec![]), (5, vec![])]
+    );
+}
+
+#[test]
+fn a_parent_row_starts_folded_and_its_count_unfolds_it() {
+    let mut rt = listed_with(true, &[(3, 2), (4, 2)]);
+    let child = format!("pane-{}", ResourceId::local(3));
+    assert!(!focusable(&rt, &child), "children start folded");
+    let fold = format!("fold-{}", ResourceId::local(2));
+    let (x, y) = rt.find(&fold).expect("the parent row's fold");
+    rt.poll = Some(|d, _, tx| d.return_keyboard(tx));
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(0.0);
+    assert!(focusable(&rt, &child), "unfolded, the children show");
+    rt.frame(0.0);
+    // The row around the fold takes a press on it, and would keep the keys.
+    rt.update(|_, tx| assert_eq!(tx.focused(), None));
 }

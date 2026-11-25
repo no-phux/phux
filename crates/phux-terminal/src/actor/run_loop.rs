@@ -163,6 +163,8 @@ struct RunLoopState {
     detect_tick: tokio::time::Interval,
     /// False after intentional disarming: the first resumed deadline is stale.
     detect_deadline_valid: bool,
+    /// Polls for a due scrollback save; armed only while one is owed.
+    keep_tick: tokio::time::Interval,
     /// Debounced post-resize / gap resync owed to subscribers.
     resync: ResyncDebounce,
     /// Next combined ingress prefers native control when true.
@@ -183,6 +185,7 @@ impl TerminalActor {
     async fn shutdown_from_cancel(&mut self, resync: &mut ResyncDebounce) {
         let _ = self.flush_final_gap_resync(resync);
         self.land_native_cuts();
+        self.keep_now();
         debug!("TerminalActor cancellation token fired");
         self.process.shutdown_pty().await;
     }

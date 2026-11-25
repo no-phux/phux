@@ -243,7 +243,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     options.write(true).create(true).truncate(true);
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
     }
     let written = options.open(&tmp).and_then(|mut file| {
         file.write_all(bytes)?;

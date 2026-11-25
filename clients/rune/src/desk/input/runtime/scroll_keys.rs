@@ -14,6 +14,8 @@ fn settle(rt: &mut rune::Runtime<crate::desk::Desk>) {
 fn clicking_desktop_chrome_returns_typing_to_the_terminal() {
     let (client, mut rt) = crate::test_support::input_fixture();
     rt.update(|d, _| {
+        // The strip beside the docked sidebar, to click its tabs.
+        d.settings.tab_bar = phux_config_core::rune::TabBar::Top;
         d.connection.tabs.list = vec![
             crate::desk::Tab {
                 id: [1; 16],

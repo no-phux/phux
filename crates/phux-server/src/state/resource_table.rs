@@ -18,6 +18,13 @@ use tokio_util::sync::CancellationToken;
 use super::ClientId;
 use crate::resource::{ResourceHandle, ResourceId};
 
+/// How far apart two ids [`ResourceTable::next_bootstrap_id`] hands out are.
+/// A Terminal pump counts its own resyncs up from its attach's id without
+/// asking here, and the first block belongs to session ATTACH and SPAWN, whose
+/// generations all start at 1. Adjacent ids handed a re-attach one a client
+/// had already retired, and the client drew nothing.
+const BOOTSTRAP_ID_BLOCK: u64 = 1 << 32;
+
 /// Last sequence a pump emitted before being superseded, so a replacement
 /// resumes rather than replaying from zero.
 pub(super) type LastValidAttachSequence = Arc<AtomicU64>;
@@ -102,8 +109,8 @@ pub(crate) struct ResourceTable {
     /// All raw-output tasks (aggregate replacements, `SPAWN_RESOURCE`
     /// pumps); staged and published may coexist, and detach retires both.
     output_pumps: HashMap<(ClientId, ResourceId), Vec<OutputPumpTask>>,
-    /// Next per-client bootstrap id; monotonic, so tombstoned ids never
-    /// recur.
+    /// Next per-client bootstrap id block; monotonic, so tombstoned ids
+    /// never recur.
     next_bootstrap: HashMap<ClientId, u64>,
     /// Retired wire ids remain detachable while final publication is pending.
     draining_resources: HashMap<phux_protocol::ids::ResourceId, ResourceId>,

@@ -1,6 +1,6 @@
 //! Exact source reservations and the tasks they own.
 
-use super::{Arc, AtomicU64, AttachResourceGeneration, AttachResourcePumpReplacement, BootstrapId, CancellationToken, ClientId, LastValidAttachSequence, OutputPumpTask, StreamDisposition, ResourceId, ResourceTable, AbortHandle};
+use super::{Arc, AtomicU64, AttachResourceGeneration, BOOTSTRAP_ID_BLOCK, AttachResourcePumpReplacement, BootstrapId, CancellationToken, ClientId, LastValidAttachSequence, OutputPumpTask, StreamDisposition, ResourceId, ResourceTable, AbortHandle};
 
 impl ResourceTable {
     // -- output task lifetimes and ATTACH_RESOURCE generations --------
@@ -107,10 +107,6 @@ impl ResourceTable {
         cancel: CancellationToken,
         publication: Option<CancellationToken>,
     ) -> AttachResourcePumpReplacement {
-        // SESSION ATTACH supplies a shared generation rather than allocating
-        // one per resource. Its first lag recovery must still choose a fresh id.
-        let next = self.next_bootstrap.entry(client).or_insert(1);
-        *next = (*next).max(bootstrap_id.get().saturating_add(1));
         let source_done = CancellationToken::new();
         let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
         let prior = self
@@ -203,9 +199,12 @@ impl ResourceTable {
     /// Next per-terminal bootstrap id for `client`; `None` on overflow (the
     /// connection must reconnect).
     pub(crate) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        let next = self.next_bootstrap.entry(client).or_insert(1);
+        let next = self
+            .next_bootstrap
+            .entry(client)
+            .or_insert(BOOTSTRAP_ID_BLOCK);
         let raw = *next;
-        *next = raw.checked_add(1)?;
+        *next = raw.checked_add(BOOTSTRAP_ID_BLOCK)?;
         BootstrapId::new(raw)
     }
 
@@ -246,6 +245,11 @@ impl ResourceTable {
                 true
             }
         });
+    }
+
+    /// Forget `client`'s generation ids; only when its connection ends. A
+    /// `DETACH` keeps the connection, whose peer still holds what it retired.
+    pub(in crate::state) fn forget_bootstrap_ids(&mut self, client: ClientId) {
         self.next_bootstrap.remove(&client);
     }
 

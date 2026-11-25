@@ -1,8 +1,8 @@
 //! Tearing a session down, pruning abandoned work, and enforcing detach deadlines.
 
 use super::{
-    ClientId, CommandResult, ErrorCode, Outbound, RELAY_COMMAND_TIMEOUT, RelaySession, SpawnError,
-    SpawnResult, debug, listing_refusal, path_refusal, unreachable_error,
+    ClientId, CommandResult, ErrorCode, Outbound, RELAY_COMMAND_TIMEOUT, RelayResume, RelaySession,
+    SpawnError, SpawnResult, debug, listing_refusal, path_refusal, unreachable_error,
 };
 
 impl RelaySession {
@@ -23,8 +23,9 @@ impl RelaySession {
     }
 
     /// Fail in-flight commands, notify subscribers, clear registries. Once
-    /// per session.
-    pub(crate) fn teardown(&mut self, why: &str) {
+    /// per session. Returns what the next connection resumes: the content
+    /// attaches only, which it registers again under its own epoch.
+    pub(crate) fn teardown(&mut self, why: &str) -> RelayResume {
         if let Some(journal) = &self.journal {
             journal.with_mut(|s| {
                 if s.federation()
@@ -41,10 +42,12 @@ impl RelaySession {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if catalog.epoch == self.epoch {
-                *catalog = super::RelayCatalog::default();
+                catalog.end_link();
             }
         }
+        let mut refused = Vec::new();
         for (_, pending) in self.pending.drain() {
+            refused.extend(pending.subscription);
             let _ = pending.reply.send(CommandResult::error(
                 ErrorCode::SatelliteUnreachable,
                 format!("satellite {} is unreachable: {why}", self.host),
@@ -88,7 +91,12 @@ impl RelaySession {
                 "notified proxy subscribers of satellite teardown"
             );
         }
-        self.subscribers.clear();
+        // A consumer told its attach failed is not attached: resuming it would
+        // stream to a pane it never opened.
+        for registration in refused {
+            self.roll_back_registration(&registration);
+        }
+        let resume = self.take_resume();
         self.bootstrap_flows.clear();
         self.explicit_content.clear();
         self.legacy_events.clear();
@@ -99,6 +107,7 @@ impl RelaySession {
         self.retained_frames = 0;
         self.inflight_generation_bytes = 0;
         self.inflight_generation_frames = 0;
+        resume
     }
 
     /// Drop pending entries whose consumer stopped waiting; returns how many.
@@ -106,7 +115,33 @@ impl RelaySession {
     /// grow the map without bound.
     pub(crate) fn prune_abandoned(&mut self) -> usize {
         let before = self.pending_request_count();
-        self.pending.retain(|_, pending| !pending.reply.is_closed());
+        let mut abandoned = Vec::new();
+        self.pending.retain(|_, pending| {
+            let waiting = !pending.reply.is_closed();
+            if !waiting {
+                abandoned.extend(pending.subscription.take());
+            }
+            waiting
+        });
+        // Its consumer was told the attach failed: a late answer finds nobody
+        // and is detached.
+        for registration in abandoned {
+            let (terminal, client) = (registration.terminal, registration.client);
+            // A retry still in flight decides instead.
+            let retried = self.pending.values().any(|pending| {
+                pending
+                    .subscription
+                    .as_ref()
+                    .is_some_and(|rider| (rider.terminal, rider.client) == (terminal, client))
+            });
+            if retried {
+                continue;
+            }
+            self.roll_back_registration(&registration);
+            if !self.subscribers.contains_key(&terminal) {
+                self.orphaned_by_delivery.insert(terminal);
+            }
+        }
         self.pending_spawns
             .retain(|_, (reply, _)| !reply.is_closed());
         self.pending_listings

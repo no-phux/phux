@@ -21,7 +21,6 @@ export const STANDALONE_LOCKS = [
   "clients/phux-vt-web/Cargo.lock",
   "clients/phux-web/Cargo.lock",
   "clients/rune/Cargo.lock",
-  "scripts/plugin-index/Cargo.lock",
 ];
 
 /** Every lock a root release rewrites, in the release commit itself. */

@@ -158,6 +158,35 @@ phux kill --yes @7       # end a pane
 phux rm --yes @7         # forget a pane whose process ended
 ```
 
+### Child panes
+
+A pane spawned from inside another pane is its child: `phux spawn` records
+the pane it runs in (`$PHUX_TERMINAL_ID`) as the new pane's parent, and so
+does the MCP `phux_spawn` tool. `--parent @N` names another, `--parent none`
+none. `phux ls --json` lists it as the terminal's `parent`, and Rune's
+sidebar folds children under their parent with a count. The parent is stored
+as `phux.parent/v1` pane metadata; closing the parent closes nothing, and
+its children keep naming it.
+
+### Unseen marks
+
+The server marks a pane when something happens in it that nobody saw: it
+printed (`output`), rang its bell (`bell`), or its agent went from working or
+blocked to done (`finished`). `phux ls --json` lists the strongest as the
+terminal's `unseen`, and omits it once someone has looked:
+
+```sh
+phux ls --json | jq -r '.resources[] | select(.unseen == "finished") | .id'
+phux seen @7             # or a session, group or #tag
+```
+
+A look clears the mark on every client. Rune reports the panes in front of
+you, and a pane in some client's view collects no mark. The terminal UI does
+not report yet, so what only it shows stays marked. Marks survive `phux
+upgrade`, not a server restart. They are the `phux.unseen/v1` pane metadata;
+a program that shows panes reports with `phux.in-view/v1` (`true` or `false`)
+after attaching.
+
 **Destructive verbs ask.** `kill`, `rm`, `detach`, `approve` and
 `signal interrupt|terminate|kill` ask on a terminal; without one they exit 2
 (`confirmation_required`) unless you pass `--yes`. Every state-changing verb

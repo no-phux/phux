@@ -5,19 +5,44 @@ use phux_client::org;
 use phux_protocol::ids::OperationId;
 use phux_protocol::wire::frame::{AttachTarget, Committed, FrameKind, LaunchSpec, SessionLifetime};
 
+use crate::attach::agent_forward::AgentLink;
 use crate::attach::connection::Connection;
 use crate::attach::input_dispatch::ReattachTarget;
 use crate::attach::outcome::AttachError;
 
 use super::loop_exit::EntryPick;
-use super::session_io::{send_attach, wait_for_attached};
+use super::session_io::{send_attach, wait_for_attached_serving};
 
+/// Re-handshake against `target` on the same connection and return the new
+/// `ATTACHED`. The glass is not cleared: the next entry's held first paint
+/// replaces the old frame in one synchronized frame (`handover`).
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+pub(super) async fn switch_session(
+    conn: &mut Connection,
+    target: ReattachTarget,
+    pick: &mut EntryPick,
+    orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
+    agent: Option<&AgentLink>,
+) -> Result<FrameKind, AttachError> {
+    // Lifecycle transition (info): switching sessions on the same
+    // connection. `?target` names the destination.
+    tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
+    reattach_on_same_connection(conn, target, pick, orphan_kills, review, agent).await
+}
+
+/// Detach and re-handshake against `target` on the same connection. A
+/// served agent keeps answering while the switch waits on the server.
 pub(super) async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
     pick: &mut EntryPick,
     orphan_kills: &mut super::orphans::OrphanKills,
     review: &mut crate::attach::review::ReviewIndex,
+    agent: Option<&AgentLink>,
 ) -> Result<FrameKind, AttachError> {
     let (attach_target, receipt) = match target {
         ReattachTarget::Existing { name, id, window, pane, resource } => {
@@ -39,10 +64,13 @@ pub(super) async fn reattach_on_same_connection(
         }
     };
     let result = async {
-        detach_and_drain(conn, orphan_kills, review).await?;
+        detach_and_drain(conn, orphan_kills, review, agent).await?;
         let attach_id = send_attach(conn, attach_target).await?;
-        wait_for_attached(conn, attach_id).await
+        wait_for_attached_serving(conn, attach_id, agent).await
     }.await;
+    if result.is_ok() {
+        tracing::info!("attach loop: re-attach handshake complete");
+    }
     match receipt {
         Some(receipt) => result.map_err(|error| committed_selection_error(&receipt, error)),
         None => result,
@@ -83,17 +111,26 @@ fn committed_selection_error(receipt: &Committed, error: impl std::fmt::Display)
 }
 
 /// Release per-consumer state before ATTACH. Connection-lifetime observers
-/// still see drained frames; no failed creation is implicitly killed.
+/// (orphan kills, the review index, the agent) still see drained frames; no
+/// failed creation is implicitly killed.
 async fn detach_and_drain(
     conn: &mut Connection,
     orphan_kills: &mut super::orphans::OrphanKills,
     review: &mut crate::attach::review::ReviewIndex,
+    agent: Option<&AgentLink>,
 ) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
-        match conn.recv().await? {
+        let frame = conn.recv().await?;
+        if agent.is_some_and(|agent| agent.take(&frame).is_some()) {
+            continue;
+        }
+        match frame {
             FrameKind::Detached { .. } => {
                 orphan_kills.finish_switch_drain();
+                if let Some(agent) = agent {
+                    agent.session_switched();
+                }
                 conn.unbind_all_terminals();
                 return Ok(());
             }

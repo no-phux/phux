@@ -106,8 +106,10 @@ pub(in crate::attach) fn switch_host(
 /// attached through the relay (`ATTACH_RESOURCE`), like a `spawn --satellite`
 /// pane; choosing it again focuses that window. The window holds the real
 /// Terminal, so closing it kills the pane on the satellite (a full cross-host
-/// attach is `phux attach --remote`). It opens only once the attach succeeds;
-/// a refusal bells with a notice and leaves the layout untouched.
+/// attach is `phux attach --remote`). It opens once the attach answers, and
+/// typing until then goes nowhere; a refusal bells with a notice and leaves
+/// the layout untouched, or opens the pane down when the satellite is only
+/// unreachable.
 ///
 /// Bells when the host is unreachable or has no such session or active pane.
 fn open_satellite_session(
@@ -130,6 +132,7 @@ fn open_satellite_session(
         return;
     }
     if attach_in_flight(ctx.pending_windows, &target) {
+        ctx.hold_typing(true);
         return;
     }
     let request_id = ctx.take_request_id();
@@ -137,7 +140,10 @@ fn open_satellite_session(
         request_id,
         PendingWindow {
             name: format!("{host}/{name}"),
-            adopt: Some(Adopt::Existing(target.clone())),
+            adopt: Some(Adopt::Existing {
+                pane: target.clone(),
+                hold: true,
+            }),
         },
     );
     // The pane exists already, so there is no spawn: attach it. Its

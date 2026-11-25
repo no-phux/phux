@@ -111,3 +111,7 @@ Runners are hosted Ubuntu x64 and arm64 and macOS. The test lanes compile once
 Pull requests restore caches and never save them. `main` pushes and
 [`cache-warm.yml`](../.github/workflows/cache-warm.yml) save them: 00:10 UTC
 for the Linux and browser lanes, 06:17 UTC for Rune.
+
+Archive shards use the minimal `test-archive` Nix shell. It includes pinned
+Bun for the native chat test that exchanges real mail through the
+TypeScript agent adapter; running that archive needs no dependency install.

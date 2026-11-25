@@ -122,7 +122,8 @@ impl ControlPlane {
 
     /// Offer this machine's ssh-agent to the server's panes for as long as
     /// this connection lasts. Each request then arrives as an event
-    /// [`agent_request`] reads, to be answered with [`Self::agent_reply`]. A reconnect is a new connection: offer again.
+    /// [`agent_request`] reads, to be answered with [`Self::agent_reply`]. A
+    /// reconnect is a new connection: offer again.
     pub fn agent_offer(&mut self) -> Result<ForwardCall<()>, ForwardError> {
         self.send_forward(ForwardOp::AgentOffer, done)
     }
@@ -170,19 +171,41 @@ impl ControlPlane {
     }
 }
 
-/// The ssh-agent request `event` carries (its id and message), when it is
-/// one: what a connection that called [`ControlPlane::agent_offer`] is
-/// sent for each pane request.
+/// One ssh-agent request from a pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRequest {
+    /// Names the request in [`ControlPlane::agent_reply`].
+    pub id: u64,
+    /// The pane it seems to come from; see
+    /// [`Question::pane`](crate::agent_forward::Question::pane).
+    pub pane: Option<phux_protocol::ResourceId>,
+    /// The ssh-agent request, without its length prefix.
+    pub message: Vec<u8>,
+}
+
+/// The ssh-agent request `event` carries, when it is one: what a connection
+/// that called [`ControlPlane::agent_offer`] is sent for each pane request.
 #[must_use]
-pub fn agent_request(event: super::Event) -> Option<(u64, Vec<u8>)> {
+pub fn agent_request(event: super::Event) -> Option<AgentRequest> {
     let super::Event::Frame(frame) = event else {
         return None;
     };
-    match *frame {
+    request_in(&frame)
+}
+
+/// [`agent_request`] for a client that reads frames itself.
+#[must_use]
+pub fn request_in(frame: &FrameKind) -> Option<AgentRequest> {
+    match frame {
         FrameKind::Event {
+            terminal,
             event: phux_protocol::wire::frame::AgentEvent::SshAgentRequest { id, message },
             ..
-        } => Some((id, message)),
+        } => Some(AgentRequest {
+            id: *id,
+            pane: terminal.clone(),
+            message: message.clone(),
+        }),
         _ => None,
     }
 }

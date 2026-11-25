@@ -148,6 +148,9 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
     if caps.credential_approvals {
         enc.write_u8_field(field::hello::CREDENTIAL_APPROVALS, 1);
     }
+    if caps.open_url {
+        enc.write_u8_field(field::hello::OPEN_URL, 1);
+    }
 }
 
 /// Write `HELLO_OK.server_caps`: layers, then the feature words only as far

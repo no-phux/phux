@@ -248,8 +248,11 @@ const CAPTURE_ASKS: usize = 3;
 /// the cut mid-capture (`Resize`): a reflow, or the PTY's EOF landing the
 /// loan. That is no refusal, and a pane has no pump yet to wait for the
 /// resync, so a command that exits at once would be reaped as a failed
-/// spawn. The actor outlives EOF and captures the final screen when asked.
-async fn past_invalidation<T, F>(mut ask: impl FnMut() -> F) -> Result<T, NativeRequestFailure>
+/// spawn, and an attach caught by its own resize refused. The actor outlives
+/// EOF and captures the final screen when asked.
+pub(in crate::runtime) async fn past_invalidation<T, F>(
+    mut ask: impl FnMut() -> F,
+) -> Result<T, NativeRequestFailure>
 where
     F: Future<Output = Result<T, NativeRequestFailure>>,
 {

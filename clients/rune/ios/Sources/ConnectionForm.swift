@@ -142,6 +142,7 @@ final class ConnectionForm: UIViewController, UITextFieldDelegate {
         token.isSecureTextEntry = true; ticket.isSecureTextEntry = true
         route.returnKeyType = .done
         enroll.configuration?.title = "Enroll & Connect"
+        enroll.configuration?.baseForegroundColor = .systemBackground
         enroll.addTarget(self,action:#selector(enrollPhone),for:.touchUpInside)
         connect.configuration?.title = "Connect"
         connect.addTarget(self,action:#selector(connectHost),for:.touchUpInside)

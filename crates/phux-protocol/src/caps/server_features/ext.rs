@@ -114,8 +114,10 @@ define_server_feature_word! {
         /// command carries contract 2. Advertised only beside
         /// [`Self::Checkout`]; a client MUST see the bit before sending `show`.
         CheckoutV2 = CHECKOUT_V2 = 0x4000_0000,
-        /// Atomic, journaled current-host named session resolution.
-        SessionEnsure = SESSION_ENSURE = 0x8000_0000,
+        /// The server answers `OPEN_URL` and `OPEN_URL_REPLY`: a pane asks the
+        /// person typing into it to open a link on their own machine
+        /// (`docs/ssh.md#opening-links`). A client MUST see the bit first.
+        OpenUrl = OPEN_URL = 0x8000_0000,
     }
 }
 

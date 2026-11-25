@@ -362,7 +362,7 @@ mod wsl;
 pub(crate) use establish::{DialFailure, establish};
 use ssh::HOST_KEY_REFUSED;
 pub use ssh::{
-    ASKPASS_ENV, batch_control_options as ssh_batch_control_options,
+    ASKPASS_ENV, agent as ssh_agent, batch_control_options as ssh_batch_control_options,
     control_options as ssh_control_options, failure_hint as ssh_failure_hint, host_key_remedy,
     master_options as ssh_master_options, pre_auth_drop as ssh_pre_auth_drop,
     pre_auth_retry_delay as ssh_pre_auth_retry_delay, program as ssh_program,

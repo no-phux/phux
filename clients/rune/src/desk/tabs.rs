@@ -38,10 +38,15 @@ pub enum Renaming {
 #[derive(Default)]
 pub struct Tabs {
     pub list: Vec<Tab>,
+    /// Every session's tabs, by session id, for the sidebar's one list of
+    /// work; the selected session's are `list`. A session whose arrangement
+    /// the replica does not hold yet has none.
+    pub by_session: HashMap<u32, Vec<Tab>>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
-    /// The terminal the keyboard left last (`last-pane`).
-    pub last_pane: Option<ResourceId>,
+    /// What the keyboard left, newest last: `last-pane`, and where a close
+    /// goes back to.
+    pub recent: Vec<ResourceId>,
     /// The tab the keyboard left last (`last-tab`).
     pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
@@ -96,12 +101,45 @@ impl Desk {
         self.connection.tabs.list = self
             .arrangement(client)
             .map_or_else(Vec::new, |(_, doc)| list(&doc, listed));
+        self.sync_session_tabs(client, listed);
         let shown = self.connection.shown.as_ref().map(|s| s.resource.clone());
         if let (Some(tab), Some(shown)) =
             (self.connection.tabs.list.iter().find(|t| t.active), shown)
         {
             self.connection.tabs.focus.insert(tab.id, shown);
         }
+    }
+
+    /// Every other session's tabs, fetching each arrangement once.
+    fn sync_session_tabs(&mut self, client: &Client, listed: &[ResourceId]) {
+        let selected = client.selected_session();
+        let sessions: Vec<_> = (self.connection.topology.iter())
+            .flat_map(|t| &t.sessions)
+            .map(|s| (s.id, s.key, s.arrangement))
+            .collect();
+        let mut by_session = HashMap::with_capacity(sessions.len());
+        for (id, key, held) in sessions {
+            if Some(id) == selected {
+                by_session.insert(id, self.connection.tabs.list.clone());
+                continue;
+            }
+            let doc = key.and_then(|key| client.organization().arrangement_document(&key));
+            if let Some((_, _, doc, _)) = doc {
+                by_session.insert(id, list(&doc, listed));
+            } else if let Some(arrangement) = held
+                && !self.connection.fetched.contains(&arrangement)
+                // Asked again next time when the link was not ready.
+                && client.fetch_arrangement(arrangement).is_some()
+            {
+                self.connection.fetched.insert(arrangement);
+            }
+        }
+        self.connection.tabs.by_session = by_session;
+    }
+
+    /// The pane `tab` last had the keyboard in, while it still holds it.
+    pub fn tab_focus(&self, tab: &Tab) -> Option<&ResourceId> {
+        (self.connection.tabs.focus.get(&tab.id)).filter(|id| tab.resources.contains(id))
     }
 
     /// Bring the phone strip's active tab into view when another becomes
@@ -194,8 +232,8 @@ impl Desk {
         self.connection.zoomed = None;
     }
 
-    /// Finder's "New phux Terminal at Folder" (`services.rs`).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// A tab in a local folder: Finder's service (`services.rs`) or a
+    /// `phux://folder/` link (`reveal.rs`).
     pub fn terminal_at_folder(&mut self, folder: std::path::PathBuf) {
         if self.machines.current.is_some() {
             return self.say(
@@ -259,6 +297,8 @@ impl Desk {
             return;
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
+            // The question is about the tab on screen.
+            self.select_tab(index);
             self.pending = Some(Pending::CloseTab(terminals));
         } else {
             self.request_terminal_close(terminals);
@@ -487,40 +527,4 @@ impl Desk {
 mod close_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_client_core::layout::{Group, LayoutState};
-
-    fn id(n: u32) -> ResourceId {
-        ResourceId::local(n)
-    }
-
-    fn doc() -> ArrangementDoc {
-        ArrangementDoc {
-            groups: vec![
-                Group::new("1".to_owned(), LayoutState::single(id(1))),
-                Group::new("2".to_owned(), LayoutState::single(id(2))),
-                Group::new("gone".to_owned(), LayoutState::single(id(9))),
-            ],
-            active: 0,
-            slots: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_active_tab_is_the_one_holding_the_focus() {
-        let mut d = doc();
-        focus_group(&mut d, Some(&id(2)));
-        assert_eq!(d.active, 1);
-        focus_group(&mut d, Some(&id(7)));
-        assert_eq!(d.active, 1);
-    }
-
-    #[test]
-    fn a_group_with_no_live_terminal_is_not_a_tab() {
-        let tabs = list(&doc(), &[id(1), id(2)]);
-        assert_eq!(tabs.len(), 2);
-        assert!(tabs[0].active && !tabs[1].active);
-        assert_eq!(tabs[1].resources, vec![id(2)]);
-    }
-}
+mod tests;

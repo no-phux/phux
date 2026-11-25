@@ -6,7 +6,7 @@
 //! an older image can.
 //!
 //! A format keeps numbered fixtures under `tests/fixtures/frozen/<name>/`, and
-//! they are append-only (`scripts/check-frozen-fixtures.sh`), so a sweeping
+//! they are append-only (`tools/src/policy/frozen-fixtures.test.ts`), so a sweeping
 //! rename cannot rewrite the proof along with the code. [`Format::check`]:
 //!
 //! - reads every fixture through the real type and requires nothing lost;

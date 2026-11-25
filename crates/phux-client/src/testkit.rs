@@ -121,6 +121,9 @@ pub struct ScriptSpec {
     server_features: ServerFeatureSet,
     /// The extended features `HELLO_OK` advertises; see `server_features`.
     server_features_ext: ServerFeatureExtSet,
+    /// The third-word features `HELLO_OK` advertises; [`ScriptSpec::new`]
+    /// starts from every known bit.
+    server_features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// When set, `GET_SCREEN` is never answered: the connection stays open
     /// and silent. See [`ScriptSpec::wedge_screen_reads`].
     wedge_screen_reads: bool,

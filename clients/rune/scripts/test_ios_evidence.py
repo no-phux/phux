@@ -79,7 +79,7 @@ class EvidenceTests(unittest.TestCase):
             lane.documents = documents
             lane.require_alive = Mock()
             lane.cycle_scene = Mock()
-            lane.simctl = Mock(side_effect=lambda *args: Path(args[-1]).write_bytes(b"screenshot"))
+            lane.simctl = Mock(side_effect=lambda *args, **_: Path(args[-1]).write_bytes(b"screenshot"))
             with patch.object(qualify.time, "sleep") as sleep:
                 self.assertEqual(lane.collect_report(123, resumed=True), report)
             sleep.assert_called_once_with(3)
@@ -289,6 +289,27 @@ class InputGateTimeoutTests(unittest.TestCase):
                 lane.collect_report(123)
             lane.simctl.assert_not_called()
             return str(raised.exception)
+
+    def test_a_report_written_during_a_slow_liveness_check_is_collected(self):
+        # A liveness check that outlasts the budget must not expire it unseen.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            documents = root / "Documents"
+            documents.mkdir()
+            lane = qualify.Qualification(root / "App", root / "phux", root, root)
+            lane.documents = documents
+            now = [0.0]
+
+            def slow_alive(pid):
+                now[0] += 95.0
+                (documents / "rune-qualification.json").write_text("{not yet validated")
+
+            lane.require_alive = Mock(side_effect=slow_alive)
+            with patch.object(qualify.time, "monotonic", side_effect=lambda: now[0]), \
+                    patch.object(qualify.time, "sleep"), \
+                    self.assertRaises(json.JSONDecodeError):
+                lane.collect_report(123)
+            lane.require_alive.assert_called_once_with(123)
 
     def test_a_shown_frame_that_never_became_input_ready_is_named(self):
         message = self.timeout_message({"schema": 1, "frame_shown": True, "input_ready": False})

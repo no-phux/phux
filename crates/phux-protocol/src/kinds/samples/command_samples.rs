@@ -65,11 +65,12 @@ const fn command_variant(command: &Command) -> usize {
         Command::HostChecklist => 60,
         Command::Forward { .. } => 61,
         Command::Credentials { .. } => 62,
-        Command::SessionEnsure { .. } => 63,
+        Command::OpenUrl { .. } => 63,
+        Command::SessionEnsure { .. } => 64,
     }
 }
 
-const COMMAND_VARIANTS: usize = 64;
+const COMMAND_VARIANTS: usize = 65;
 
 /// One sample per organization command, each on its row.
 #[allow(
@@ -449,6 +450,25 @@ pub(crate) fn command_samples() -> Vec<(Command, &'static Rule)> {
                 op: PerfOp::TraceStart,
             },
             &C_PERF_CONTROL,
+        ),
+        (
+            Command::OpenUrl {
+                terminal_id: terminal(),
+                op: crate::open_url::OpenUrlOp::Request {
+                    url: "https://phux.sh/".to_owned(),
+                },
+            },
+            &C_OPEN_URL,
+        ),
+        (
+            Command::OpenUrl {
+                terminal_id: terminal(),
+                op: crate::open_url::OpenUrlOp::Reply {
+                    id: u64::MAX,
+                    opened: true,
+                },
+            },
+            &C_OPEN_URL,
         ),
         (
             Command::Transcribe {

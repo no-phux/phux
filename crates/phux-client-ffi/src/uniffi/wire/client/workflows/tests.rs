@@ -22,8 +22,8 @@ fn negotiate(client: &Client, authority: u8) {
     client.feed(phux_wire_fixtures::HelloOk::new([0xAB; 16], phux_wire_fixtures::l3_caps())
         .features_ext(phux_protocol::caps::ServerFeatureExtSet::with(&[
             phux_protocol::caps::ServerFeatureExt::Organization,
-            phux_protocol::caps::ServerFeatureExt::SessionEnsure,
         ]))
+        .features_ext2(phux_protocol::caps::ServerFeatureExt2Set::with(&[phux_protocol::caps::ServerFeatureExt2::SessionEnsure]))
         .build()).expect("HELLO_OK");
     let before_seed = client.take_outbound();
     assert!(!before_seed.iter().any(|bytes| matches!(phux_wire_fixtures::decode_one(bytes),

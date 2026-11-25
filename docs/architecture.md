@@ -83,6 +83,7 @@ Only `phux-protocol` is published. Cargo manifests define the edges.
 | `phux-work` | SQLite work store with a single-writer keeper, and missions |
 | `phux-record` | asciicast codec, VT replay, GIF/APNG export |
 | `phux-plugin` | plugin action runtime contracts |
+| `phux-plugin-index` | builds the static plugin index from the `phux-plugin` GitHub topic; CI-only, unpublished |
 | `phux-usage` | plan-usage collector (`phux.usage/v1`) |
 | `phux-frozen` | frozen fixtures for persisted formats; test support |
 | `phux-client-core` | sans-IO session kernel, layout, predictive echo; compiles to wasm |

@@ -131,7 +131,8 @@ impl Client {
         self.inner.publication.acquire_view(view)
     }
 
-    /// Poll the independent view's frame generation.
+    /// Poll the view's frame generation: zero while waiting for its first
+    /// frame, or `None` when the view is gone.
     #[cfg(feature = "engine")]
     #[must_use]
     pub fn view_generation(&self, view: crate::ViewId) -> Option<u64> {
@@ -230,9 +231,14 @@ impl Client {
         terminal_id: &ResourceId,
         text: String,
     ) -> Result<bool, crate::engine::EngineError> {
-        self.engine()
+        let predicted = self
+            .engine()
             .ok_or(crate::engine::EngineError::Stopped)?
-            .predict_text(terminal_id, text)
+            .predict_text(terminal_id, text);
+        // The driver's deadline lane erases a guess the program never
+        // echoes; wake it so an idle connection sees this one.
+        self.inner.outbound.notify_one();
+        predicted
     }
 
     /// Clear predictive text and republish authoritative state.

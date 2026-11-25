@@ -1,12 +1,19 @@
 //! The bar a held action waits in, and the question it asks.
 
+use phux_protocol::ids::ResourceId;
 use rune_kit::{Button, ButtonVariant};
+
+use crate::ui::tokens::layout::OVERLAY;
 
 use super::*;
 
 /// What a held action would do, and the word for doing it. A keyboard is
-/// told its key; `touch` has none to name.
-pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str) {
+/// told its key; `touch` has none to name. `called` names a terminal.
+pub(super) fn question(
+    pending: &Pending,
+    touch: bool,
+    called: &dyn Fn(&ResourceId) -> String,
+) -> (String, &'static str) {
     let keyed = |bare: &'static str, keyed: &'static str| if touch { bare } else { keyed };
     match pending {
         Pending::Mirror(source, target) => (
@@ -28,7 +35,7 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
             )
         }
         Pending::Close(terminal) => (
-            format!("Close {terminal}? Anything running in it ends."),
+            format!("Close {}? Anything running in it ends.", called(terminal)),
             keyed("Close", "Close (Return)"),
         ),
         Pending::CloseTab(terminals) if terminals.len() == 1 => (
@@ -44,23 +51,92 @@ pub(super) fn question(pending: &Pending, touch: bool) -> (String, &'static str)
         ),
         Pending::ClipboardRead(terminal, _) => (
             format!(
-                "{terminal} wants to read your clipboard.{}",
+                "{} wants to read your clipboard.{}",
+                called(terminal),
                 keyed("", " A allows it every time.")
             ),
             keyed("Allow once", "Allow once (Return)"),
         ),
         Pending::ClipboardWrite(terminal, text) => (
             format!(
-                "{terminal} wants to set your clipboard ({} characters).",
+                "{} wants to set your clipboard ({} characters).",
+                called(terminal),
                 text.chars().count()
             ),
             keyed("Allow", "Allow (Return)"),
+        ),
+        // Its pane by address: a title is the program's to write.
+        Pending::OpenUrl(asked) => (
+            format!(
+                "{} on {} asks to open this link here:",
+                asked.terminal, asked.machine
+            ),
+            keyed("Open", "Open (O)"),
+        ),
+        Pending::SshSign(text) => (
+            text.clone(),
+            keyed(
+                "Sign",
+                if cfg!(target_os = "macos") {
+                    "Sign (⌘Return)"
+                } else {
+                    "Sign (Ctrl+Shift+Return)"
+                },
+            ),
         ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
             keyed("End session", "End session (Return)"),
         ),
     }
+}
+
+/// A terminal as the person knows it, its name beside its address
+/// (`build (@4)`), or the address alone when nothing names it. A prompt
+/// that ends a terminal or hands it the clipboard says which one.
+fn called(desk: &Desk, id: &ResourceId) -> String {
+    desk.pane_called(id)
+        .map_or_else(|| id.to_string(), |name| format!("{name} ({id})"))
+}
+
+/// The link a pane asks to open: its site, then all of it, scrolling in its
+/// own box so the site never leaves the screen, and where a sign-in comes
+/// back to.
+fn link(asked: &crate::desk::open_url::Asked, t: &Tokens) -> El {
+    let ink = t.roles.text.text.paint();
+    let note = asked.link.callback_port().zip(asked.remote.as_ref());
+    let note = note.map(|(port, machine)| {
+        format!(
+            "It comes back to port {port} on this machine. To pass that on: \
+             phux forward -L {port}:localhost:{port} --remote {machine}"
+        )
+    });
+    let words = |words: String, font| text(words).font(font).color(ink);
+    col()
+        .w_full()
+        .gap(t.space.s1)
+        .child(
+            words(asked.link.host().to_owned(), t.ty.label.semibold())
+                .wrap_anywhere()
+                .w_full()
+                .key("open-url-site"),
+        )
+        .child(
+            col()
+                .w_full()
+                .max_h(OVERLAY.link_h)
+                .min_h(0.0)
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(
+                    words(asked.link.as_str().to_owned(), t.ty.label)
+                        .wrap_anywhere()
+                        .w_full()
+                        .key("open-url-link"),
+                ),
+        )
+        .children(note.map(|note| words(note, t.ty.label).wrap().w_full()))
 }
 
 /// The pane ids (`@N`) in `message`, set as machine nouns:
@@ -107,15 +183,26 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
     let s = &t.space;
     let pending = desk.pending.as_ref()?;
     let touch = desk.phone.is_some();
-    let (message, verb) = question(pending, touch);
-    let cancel = if touch { "Cancel" } else { "Cancel (Esc)" };
-    let verb_look = if destructive(pending) {
-        ButtonVariant::Danger
+    let (message, verb) = question(pending, touch, &|id| called(desk, id));
+    let asked = match pending {
+        Pending::OpenUrl(asked) => Some(asked),
+        _ => None,
+    };
+    let cancel = match (touch, asked) {
+        (true, _) => "Cancel",
+        (false, None) => "Cancel (Esc)",
+        (false, Some(_)) => "Don't open (Return)",
+    };
+    // Declining is a link's primary action.
+    let (verb_look, cancel_look) = if destructive(pending) {
+        (t.danger_button(), ButtonVariant::Outline)
+    } else if asked.is_some() {
+        (ButtonVariant::Outline, ButtonVariant::Submit)
     } else {
-        ButtonVariant::Submit
+        (ButtonVariant::Submit, ButtonVariant::Outline)
     };
     let cancel = Button::new(cancel)
-        .variant(ButtonVariant::Outline)
+        .variant(cancel_look)
         .on_press(Desk::cancel_pending)
         .build(&t.kit)
         .key("confirm-cancel");
@@ -124,6 +211,18 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
         .on_press_tx(Desk::confirm_pending_tx)
         .build(&t.kit)
         .key("confirm-ok");
+    let message = rune::rich(message.clone(), pane_ids(&message))
+        .font(t.ty.label)
+        .color(t.roles.text.text.paint())
+        .wrap();
+    let message = match asked {
+        None => message,
+        Some(asked) => col()
+            .gap(s.s1)
+            .child(message.w_full())
+            .child(link(asked, t)),
+    };
+    let message = message.grow(1.0).min_w(0.0);
     let surface = row()
         .key("confirm-bar")
         .on_drag(keep_from_pane)
@@ -137,14 +236,7 @@ pub(in crate::ui) fn question_bar(desk: &Desk, p: &Tokens) -> Option<El> {
         .fill(t.roles.layer.raised.paint())
         .border(s.hairline, t.roles.border.base.paint())
         .transition(rune::Transition::opacity())
-        .child(
-            rune::rich(message.clone(), pane_ids(&message))
-                .font(t.ty.label)
-                .color(t.roles.text.text.paint())
-                .wrap()
-                .grow(1.0)
-                .min_w(0.0),
-        )
+        .child(message)
         .child(touchable(desk, cancel))
         .child(touchable(desk, ok));
     Some(t.elevate(surface, Tier::Floating))

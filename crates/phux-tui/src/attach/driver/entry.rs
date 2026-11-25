@@ -12,8 +12,8 @@ use phux_protocol::caps::OutputMode;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use tracing::Instrument as _;
 
+use crate::attach::agent_forward::AgentLink;
 use crate::attach::connection::{Connection, Dial};
-use crate::attach::input_dispatch::ReattachTarget;
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::record::{SessionRecorder, TeeSink};
 use crate::predict::PredictiveConfig;
@@ -27,7 +27,7 @@ pub(super) use super::loop_exit::{
 };
 use super::main_loop::main_loop;
 use super::session_io::{attach_client_caps, attach_client_name, send_attach, wait_for_attached};
-use super::session_switch::reattach_on_same_connection;
+use super::session_switch::switch_session;
 use super::terminal::{RawModeGuard, exit_after_detach, install_panic_hook_once};
 
 enum AttachStart<'a> {
@@ -227,7 +227,8 @@ async fn connect_attach_dial(
     if let Some(colors) = default_colors {
         crate::render::theme::record_reported(colors);
     }
-    let client_caps = attach_client_caps(default_colors, dial);
+    let client_caps = attach_client_caps(default_colors, dial)
+        .with_open_url(crate::attach::open_url::opens_here());
     let mut conn =
         Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
     // The deadline bounds the handshake only; an attach is a long-lived stream.
@@ -267,26 +268,6 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     if let Some(writer) = writer.take() {
         writer.shutdown_and_join();
     }
-}
-
-/// Re-handshake against `target` on the same connection and return the new
-/// `ATTACHED`. The glass is not cleared: the next entry's held first paint
-/// replaces the old frame in one synchronized frame (`handover`).
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-async fn switch_session(
-    conn: &mut Connection,
-    target: ReattachTarget,
-    pick: &mut EntryPick,
-    orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut crate::attach::review::ReviewIndex,
-) -> Result<FrameKind, AttachError> {
-    // Lifecycle transition (info): switching sessions on the same
-    // connection. `?target` names the destination.
-    tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    reattach_on_same_connection(conn, target, pick, orphan_kills, review).await
 }
 
 /// The attach session body shared by the production and test entry points.
@@ -365,6 +346,8 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // Stray satellite panes still owed a kill; connection-lifetime.
     let mut orphan_kills = super::orphans::OrphanKills::default();
     let mut review = crate::attach::review::ReviewIndex::new();
+    // Offered once per connection, so a reconnect offers again.
+    let agent = AgentLink::for_attach();
     loop {
         let claim = onboarding_claim.take();
         // Boxed to keep callers' futures under clippy's `large_futures`.
@@ -383,6 +366,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
             std::mem::take(&mut review),
+            agent.clone(),
         ))
         .await
         {
@@ -428,11 +412,16 @@ async fn attach_session<W: crate::attach::RenderSink>(
                 carried = Some(SwitchCarry { sidebar, peers });
                 orphan_kills = carried_orphans;
                 review = carried_review;
-                attached =
-                    switch_session(&mut conn, target, &mut pick, &mut orphan_kills, &mut review)
-                        .await?;
+                attached = switch_session(
+                    &mut conn,
+                    target,
+                    &mut pick,
+                    &mut orphan_kills,
+                    &mut review,
+                    agent.as_deref(),
+                )
+                .await?;
             }
         }
     }
 }
-

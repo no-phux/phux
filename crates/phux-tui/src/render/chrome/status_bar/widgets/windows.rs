@@ -74,8 +74,8 @@ fn push_name(segment: &mut Vec<Cell>, w: &WindowInfo, base: &CellStyle) {
     if w.zoomed {
         text.push_str(" Z");
     }
-    if w.attention {
-        text.push_str(" !");
+    if let Some(marker) = w.needs_you_marker() {
+        text.push_str(&marker);
     }
     if let Some(marker) = w.exited_marker() {
         text.push_str(&marker);

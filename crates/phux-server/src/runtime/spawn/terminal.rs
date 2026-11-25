@@ -146,7 +146,16 @@ pub(crate) async fn handle_spawn_terminal(spawn: ResourceSpawn<'_>) {
         return;
     }
 
-    let builder = build_spawn_command(state, client_id, command, cwd, env, term.as_deref()).await;
+    let builder = build_spawn_command(
+        state,
+        client_id,
+        owner_terminal.as_ref(),
+        command,
+        cwd,
+        env,
+        term.as_deref(),
+    )
+    .await;
 
     let ownership = match resolve_spawn_ownership(state, client_id, owner_terminal) {
         Ok(ownership) => ownership,

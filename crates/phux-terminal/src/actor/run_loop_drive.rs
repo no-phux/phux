@@ -37,8 +37,13 @@ impl TerminalActor {
         let tick = armed_interval(tick_interval).await;
 
         self.install_agent_detector();
+        // A resumed pane's title came with its seed, before any sink, and a
+        // program waiting on its title question prints nothing.
+        self.source_ask_marker();
         let detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
         let detect_tick = armed_interval(detect_interval).await;
+
+        let keep_tick = armed_interval(super::super::keep::POLL).await;
 
         // Native control and PTY output share one arm, alternating
         // preference; both stay enabled so a silent PTY never parks history.
@@ -48,6 +53,7 @@ impl TerminalActor {
             detect_interval,
             detect_tick,
             detect_deadline_valid: true,
+            keep_tick,
             resync: ResyncDebounce::idle(),
             prefer_native: false,
             native_step_due: false,
@@ -178,6 +184,10 @@ impl TerminalActor {
                 // adaptive interval, never by PTY bytes.
                 scheduled = state.detect_tick.tick(), if detector_armed =>
                     self.service_detector_deadline(scheduled, state),
+
+                // `[restore] scrollback`: disarmed unless a save is owed.
+                _ = state.keep_tick.tick(), if !bootstrap_pending && self.keep_owed() =>
+                    self.service_keep(),
 
                 () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue =>
                     state.native_step_due = true,

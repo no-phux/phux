@@ -182,7 +182,7 @@ impl Slot {
     /// The owner half: skip this projection while the current frame is
     /// unread, leaving the slot stale for the next acquire.
     fn defer(&self) -> bool {
-        if self.read.load(Ordering::SeqCst) {
+        if self.generation.load(Ordering::Acquire) == 0 || self.read.load(Ordering::SeqCst) {
             return false;
         }
         self.stale.store(true, Ordering::SeqCst);
@@ -351,7 +351,8 @@ impl Publication {
         self.view_slot(view).and_then(|slot| slot.acquire())
     }
 
-    /// The independent view's publication generation.
+    /// The independent view's publication generation, zero before its first
+    /// complete frame, or `None` after the view has been destroyed.
     #[must_use]
     pub fn view_generation(&self, view: ViewId) -> Option<u64> {
         self.view_slot(view).map(|slot| slot.generation())
@@ -365,6 +366,15 @@ impl Publication {
 
     fn slot_key(&self, key: &FrameKey) -> Option<TerminalPublication> {
         self.slot_arc(key).map(|slot| TerminalPublication { slot })
+    }
+
+    fn ensure_slot(&self, key: FrameKey) -> Arc<Slot> {
+        let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            slots
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Slot::new(key, Arc::clone(&self.hook)))),
+        )
     }
 
     /// The terminals with a published frame.
@@ -438,6 +448,12 @@ impl Publication {
         self.publish_key(FrameKey::View(view), frame)
     }
 
+    pub(crate) fn register_view(&self, view: ViewId) {
+        // A live view can wait for synchronized output without a frame yet.
+        // Keep its identity visible so the client doesn't abandon it.
+        drop(self.ensure_slot(FrameKey::View(view)));
+    }
+
     fn publish_key(&self, key: FrameKey, mut frame: GridFrame) -> Option<Arc<GridFrame>> {
         self.swap(key, |generation| {
             frame.generation = generation;
@@ -470,14 +486,7 @@ impl Publication {
         key: FrameKey,
         published: impl FnOnce(u64) -> Published,
     ) -> (u64, Option<Published>) {
-        let slot = {
-            let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(
-                slots
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(Slot::new(key, Arc::clone(&self.hook)))),
-            )
-        };
+        let slot = self.ensure_slot(key);
         let generation = slot.generation.load(Ordering::Acquire) + 1;
         let published = published(generation);
         // Cleared before the swap: a consumer that loads the new frame

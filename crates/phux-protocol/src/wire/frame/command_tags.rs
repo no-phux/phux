@@ -56,6 +56,10 @@ pub(crate) const COMMAND_TAG_FORWARD_CLOSE: u8 = 0x47;
 pub(crate) const COMMAND_TAG_AGENT_OFFER: u8 = 0x4f;
 /// Wire tag for [`Command::Forward`] carrying `ForwardOp::AgentReply`.
 pub(crate) const COMMAND_TAG_AGENT_REPLY: u8 = 0x50;
+/// Wire tag for [`Command::OpenUrl`] carrying `OpenUrlOp::Request`.
+pub(crate) const COMMAND_TAG_OPEN_URL: u8 = 0x51;
+/// Wire tag for [`Command::OpenUrl`] carrying `OpenUrlOp::Reply`.
+pub(crate) const COMMAND_TAG_OPEN_URL_REPLY: u8 = 0x52;
 pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = 0x40;
 pub(crate) const COMMAND_TAG_GET_CREATION: u8 = 0x41;
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = 0x16;
@@ -121,10 +125,11 @@ pub(crate) const COMMAND_TAG_SESSION_KILL: u8 = 0x37;
 }
 
 // `ARRANGEMENT_LOCK` (`docs/organization.md`), an organization command gated
-// on `features_ext.TAB_LOCK`.
+// on `features_ext.TAB_LOCK`, and `SESSION_ENSURE`, gated on
+// `features_ext2.SESSION_ENSURE` (after `OPEN_URL`'s 0x51/0x52 pair).
 wire_tags! { Command;
 pub(crate) const COMMAND_TAG_ARRANGEMENT_LOCK: u8 = 0x4d;
-pub(crate) const COMMAND_TAG_SESSION_ENSURE: u8 = 0x51;
+pub(crate) const COMMAND_TAG_SESSION_ENSURE: u8 = 0x53;
 }
 
 // `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.

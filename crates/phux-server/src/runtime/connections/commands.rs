@@ -137,8 +137,8 @@ pub(in crate::runtime) enum Route {
     /// The connection's bulk worker, retaining this many payload bytes.
     Bulk(usize),
     /// Its own task beside the dispatcher: a checkout runs Git or `gh` for
-    /// seconds, and neither control frames nor uploads should queue behind
-    /// it.
+    /// seconds and a link waits on a person, and neither control frames nor
+    /// uploads should queue behind it.
     Detached,
     /// The connection's service exchanges, which bound their own tasks.
     ServiceHttp,
@@ -159,6 +159,7 @@ pub(in crate::runtime) fn route(command: &Command, input_lane: Option<&InputLane
     if matches!(
         command,
         Command::Checkout { .. }
+            | Command::OpenUrl { .. }
             | Command::Credentials {
                 op: phux_protocol::credentials::CredentialOp::Request(_)
             }

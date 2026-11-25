@@ -1,5 +1,5 @@
 //! The tab strip, shown once a session has more than one tab, and the
-//! rename dialog.
+//! rename dialog. Each tab leads with the tile its sidebar row has.
 //!
 //! Tabs are phux's own (OWN), on tokens: kit `TabStrip` draws the
 //! active tab as a pressed overlay with no lifted edge or elevation, sits
@@ -9,13 +9,12 @@
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::TABS;
 use phux_design::tokens::{SPACE, Space};
-use phux_design::{State, Tone};
 use rune::{El, row, text, text_input};
 use rune_kit::{Button, ButtonVariant, Dialog};
 
 use super::controls::{return_to_terminal_on_click, terminal_icon_press};
 use super::rows::{Base, State as Forced, forced_face};
-use super::sidebar::{Face, face, state_of};
+use super::sidebar::face;
 use super::tokens::Tier;
 use super::{Cover, Paint, Tokens, icons, reveal, tip};
 use crate::activity::Mark;
@@ -109,11 +108,7 @@ fn trailing(index: usize, tab: &Tab, width: f32, t: &Tokens) -> Option<El> {
         .variant(rune_kit::IconButtonVariant::Ghost)
         .control_size(rune_kit::ControlSize::Small)
         .label("Close tab")
-        .on_press(move |d: &mut Desk| {
-            // The question a busy tab asks is about the tab on screen.
-            d.select_tab(index);
-            d.close_tab(index);
-        })
+        .on_press(move |d: &mut Desk| d.close_tab(index))
         .build(&t.kit)
         .key(format!("tab-close-{index}"))
         .max_w(slot)
@@ -145,43 +140,20 @@ fn trailing(index: usize, tab: &Tab, width: f32, t: &Tokens) -> Option<El> {
     )
 }
 
-/// The loudest state among a tab's terminals, when it is one a tab shows:
-/// what needs you, failed, finished unseen, or is working.
+/// The loudest state among a tab's terminals that its tile's badge tells.
 fn loudest(desk: &Desk, tab: &Tab) -> Option<Mark> {
-    let shown = |s: State| {
-        matches!(
-            s,
-            State::NeedsYou | State::Failed | State::Done | State::Working
-        )
-    };
-    (tab.resources.iter())
-        .map(|id| desk.activities.mark(id))
-        .filter(|m| shown(state_of(*m)))
-        .min_by_key(|m| state_of(*m).rank())
+    super::tile::loudest(tab.resources.iter().map(|id| desk.activities.mark(id)))
 }
 
-/// The tab's status mark, named by its word. Needs-you glows, the
-/// one coloured shadow a mark may cast.
-fn status_mark(mark: Mark, t: &Tokens) -> El {
-    let Face {
-        ink, icon, word, ..
-    } = face(mark, t);
-    let size = t.icon.size.sm;
-    let glyph = rune::icon(icon, size).color(ink);
-    let glyph = match word {
-        Some(word) => glyph.label(word),
-        None => glyph.a11y_hidden(),
-    };
-    let held = rune::el()
-        .size(size, size)
-        .radius(t.radius.full)
-        .center()
-        .child(glyph);
-    if state_of(mark) == State::NeedsYou {
-        let glow = t.status.tone(Tone::NeedsYou).glow;
-        return t.elevate_glowing(held, Tier::Flat, glow);
-    }
-    held
+/// The tab's tile: the agent working in it, the first one of a split, or
+/// the prompt; badged with its loudest state. The sidebar's rows lead with
+/// the same tile.
+fn lead(desk: &Desk, tab: &Tab, t: &Tokens) -> El {
+    let acts = &desk.activities;
+    let agent =
+        (tab.resources.iter()).find_map(|id| acts.agent_kind(id).or_else(|| acts.agent_name(id)));
+    let mark = loudest(desk, tab).unwrap_or(Mark::None);
+    super::tile::tile(agent, mark, t.roles.layer.ground.paint(), t)
 }
 
 /// A tab's face for `state` over its selection (`rows::forced_face`).
@@ -287,7 +259,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, width: f32, t: &Tokens, state: Forc
         Some(n) => tip(base, label, Shortcut::Tab(n)),
         None => base.help(label),
     };
-    base.children(loud.map(|m| status_mark(m, t)))
+    base.child(lead(desk, tab, t))
         .child(name)
         .child(rune::el().grow(1.0))
         .children(trailing(index, tab, width, t))
@@ -455,6 +427,8 @@ mod tests {
     fn laid_out(count: u8, active: u8, window: (f32, f32)) -> rune::Runtime<Desk> {
         let mut desk = crate::test_support::settings_window();
         desk.settings_open = false;
+        // `auto` puts the tabs in the title bar while the sidebar is folded.
+        desk.sidebar_open = false;
         desk.connection.tabs.list = named(count, active);
         let mut rt =
             crate::test_support::runtime(desk, crate::ui::view, window, rune::Env::new(false, 1.0));
@@ -504,9 +478,10 @@ mod tests {
     #[test]
     fn the_tab_bar_goes_where_the_file_puts_it() {
         use phux_config_core::rune::{TabBar, TitleBar};
-        let bars = |tab_bar, title_bar| {
+        fn at(tab_bar: TabBar, title_bar: TitleBar, open: bool) -> (Option<f32>, bool) {
             let mut desk = crate::test_support::settings_window();
             desk.settings_open = false;
+            desk.sidebar_open = open;
             desk.settings.tab_bar = tab_bar;
             desk.settings.title_bar = title_bar;
             desk.connection.tabs.list = named(3, 0);
@@ -518,13 +493,19 @@ mod tests {
             }
             let tab = rt.presented("tab-0").map(|(rect, ..)| rect[1]);
             (tab, rt.find("settings-button").is_some())
-        };
+        }
+        let bars = |tab_bar, title_bar| at(tab_bar, title_bar, true);
+        let folded = |tab_bar| at(tab_bar, TitleBar::Shown, false).0;
         let (top, titled) = bars(TabBar::Top, TitleBar::Shown);
         let (bottom, _) = bars(TabBar::Bottom, TitleBar::Shown);
         assert!(titled && bottom.expect("bottom tabs") > top.expect("top tabs") + 300.0);
         assert_eq!(bars(TabBar::Hidden, TitleBar::Shown).0, None);
         let (row, titled) = bars(TabBar::Top, TitleBar::Hidden);
         assert!(!titled && row.expect("tabs on a row of their own") < 40.0);
+        // `auto`: the docked sidebar's rows are the tabs; folded, the
+        // title bar holds them.
+        assert_eq!(bars(TabBar::Auto, TitleBar::Shown).0, None);
+        assert_eq!(folded(TabBar::Auto), top);
     }
 
     #[test]

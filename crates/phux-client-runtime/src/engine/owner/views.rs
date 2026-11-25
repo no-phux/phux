@@ -1,17 +1,15 @@
-//! View records and scoped installation on the one terminal/dirty reader.
+//! Scoped installation of views on the one terminal/dirty reader.
 
 use super::{
     CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
-    EngineDocumentSelection, EngineError, FrameKey, Owner, ResourceId,
-    Scroll, apply_terminal_selection, engine_error, viewport_scroll,
+    EngineDocumentSelection, EngineError, FrameKey, Owner, Presentation, ResourceId, Scroll,
+    apply_terminal_selection, engine_error, viewport_scroll,
 };
 use phux_client_core::engine::EngineDocumentAdapter;
 use phux_client_core::history::HistoryCache;
 mod admission;
+mod lifecycle;
 pub(super) mod prompts;
-pub(super) use admission::{Presentation, View};
-
-
 
 impl Owner {
     pub(super) fn note_history_damage(
@@ -40,32 +38,6 @@ impl Owner {
         }
         if !damaged.contains(id) {
             damaged.push(id.clone());
-        }
-    }
-
-
-    pub(super) fn presentation_mut(
-        &mut self,
-        id: &ResourceId,
-    ) -> Result<&mut Presentation, EngineError> {
-        self.presentations
-            .get_mut(id)
-            .ok_or_else(|| engine_error("terminal has no presentation"))
-    }
-
-    pub(super) fn reset_generation_presentations(
-        &mut self,
-        id: &ResourceId,
-        geometry: CanonicalGeometry,
-    ) {
-        if let Some(slot) = self.projectors.get_mut(id) {
-            slot.valid = false;
-        }
-        self.anchors.retain(|_, (terminal, _, _)| terminal != id);
-        self.presentations
-            .insert(id.clone(), Presentation::new(geometry));
-        for view in self.views.values_mut().filter(|view| &view.terminal == id) {
-            view.presentation = Presentation::new(geometry);
         }
     }
 
@@ -123,41 +95,6 @@ impl Owner {
             crate::perf::DEFERRED.incr();
         }
         deferred
-    }
-
-    pub(super) fn forget_views(&mut self, id: &ResourceId) {
-        let removed: Vec<_> = self
-            .views
-            .iter()
-            .filter(|(_, view)| &view.terminal == id)
-            .map(|(id, _)| *id)
-            .collect();
-        for view in removed {
-            self.views.remove(&view);
-            self.publication.remove_view(view);
-        }
-        self.anchors.retain(|_, (terminal, _, _)| terminal != id);
-    }
-
-    fn release_presentation(&mut self, id: &ResourceId) {
-        self.reset_gesture(id);
-        let handles: Vec<_> = self
-            .anchors
-            .iter()
-            .filter(|(_, (terminal, view, _))| terminal == id && *view == self.active_view)
-            .map(|(handle, _)| *handle)
-            .collect();
-        for handle in handles {
-            self.drop_anchor_handle(id, handle);
-        }
-        if let Some(anchor) = self
-            .presentations
-            .get_mut(id)
-            .and_then(|state| state.viewport.take())
-        {
-            let _ = self.release_tracked_anchor(id, anchor);
-        }
-        self.invalidate_handles(id);
     }
 
     pub(super) fn install_presentation(&mut self, id: &ResourceId) -> Result<(), EngineError> {

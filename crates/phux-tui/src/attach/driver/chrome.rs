@@ -358,13 +358,22 @@ pub(super) fn agent_entries(
             match record {
                 Some(record) => rows.push(advisory_agent_entry(base, record)),
                 // An ask from a pane with no agent identity (a script's
-                // `phux ask`) still needs you: list it by its title, as
-                // the notifier does, not under "none running".
+                // `phux ask`) still needs you: list it by what runs there
+                // (its title, or `bash` behind a shell prompt; the locator
+                // already says where), as the notifier does, not under
+                // "none running".
                 None if base.attention => rows.push(AgentEntry {
                     name: panes
                         .get(id)
-                        .map_or("", |slot| slot.last_title.trim())
-                        .to_owned(),
+                        .and_then(|slot| {
+                            phux_client_core::pane_label::pane_label(
+                                None,
+                                Some(slot.last_title.as_str()),
+                                slot.foreground.as_deref(),
+                                None,
+                            )
+                        })
+                        .unwrap_or_default(),
                     ..base
                 }),
                 None => {}

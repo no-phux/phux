@@ -6,6 +6,7 @@ use super::events::{EnrollEvent, EnrollFailure, ServicePolicy, Supervision};
 use super::identity::{ClientIdentityFiles, EnrollRequest};
 use super::pair::{PairReport, candidate_endpoints, probe};
 use super::ssh::{COMMAND_NOT_FOUND, SSH_FAILED, ssh_hostname, ssh_run};
+use crate::commands::service::PORT_TAKEN;
 
 /// Leads the far `phux service install`: the state directory it makes must
 /// be owner-only for paired mode, and a released phux takes the login's umask
@@ -87,6 +88,13 @@ pub(super) fn ensure_remote_server_after_version(
         }
     };
 
+    // A server without its listener could not be paired with.
+    if let Some(taken) = install_error
+        .as_ref()
+        .filter(|err| err.contains(PORT_TAKEN))
+    {
+        return Err(taken.clone());
+    }
     let ensure = ssh_run(ssh_host, &[remote_phux, "server", "--ensure"])?;
     if !ensure.status.success() {
         let detail = ensure.failure_detail();

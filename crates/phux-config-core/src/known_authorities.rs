@@ -13,10 +13,10 @@
 //! ignored (the dial then pins the leaf alone, as before); `#` starts a
 //! comment.
 //!
-//! It is a file of its own rather than a `[[remote]]` key because a client
-//! records a pin unprompted, on its first connection to a server that
-//! presents one, and `[[remote]]` refuses unknown keys: an older `phux`
-//! reading the same `config.toml` would refuse it whole.
+//! It is a file of its own rather than a `[[remote]]` key because
+//! `[[remote]]` refuses unknown keys: an older `phux` reading the same
+//! `config.toml` would refuse it whole. Pairing writes it; a connection
+//! never does (ADR-0179).
 
 #[cfg(unix)]
 use std::io::Write as _;
@@ -119,7 +119,7 @@ pub fn record(
     }
     let mut text = String::from(
         "# phux: the certificate authority each paired server's leaf was issued by.\n\
-         # Written by `phux host add` and on first connection; delete a line to forget a pin.\n",
+         # Written by pairing (`phux host add`, `--code`), never by a connection; delete a line to forget a pin.\n",
     );
     for line in existing.lines() {
         let trimmed = line.trim();

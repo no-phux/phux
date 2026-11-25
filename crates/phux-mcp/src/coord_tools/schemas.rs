@@ -12,6 +12,13 @@ fn address() -> Value {
     json!({ "type": "string", "minLength": 1, "maxLength": 128, "description": ADDRESS_DESC })
 }
 
+fn conversation_record() -> Value {
+    json!({
+        "type": "string", "minLength": 2, "maxLength": 4096, "pattern": "^/",
+        "description": "Exact private conversation.json from phux chat invite/join. Pins this call's hub and identity independently of the MCP host's HOME/profile; defaults the sender/reader to that conversation's inbox. Does not redirect claims."
+    })
+}
+
 fn thread() -> Value {
     json!({
         "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$",
@@ -48,6 +55,7 @@ pub(super) fn mail_send_schema() -> Value {
             "message": { "type": "string", "minLength": 1, "maxLength": 65536 },
             "operation_id": { "type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-fA-F]{32}$", "not": { "const": "00000000000000000000000000000000" }, "description": "Durable mail operation identity in this work store; reuse only with identical semantic arguments. If omitted, generated once and returned on success or uncertain failure. Not the MCP adapter idempotency_key." },
             "as": address(),
+            "conversation_record": conversation_record(),
         }),
         &["to", "thread", "message"],
     )
@@ -67,6 +75,7 @@ pub(super) fn mail_read_schema() -> Value {
             "all": { "type": "boolean" },
             "peek": { "type": "boolean" },
             "as": address(),
+            "conversation_record": conversation_record(),
         }),
         &[],
     )
@@ -80,6 +89,7 @@ pub(super) fn mail_ack_schema() -> Value {
         json!({
             "id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Message id from phux_mail_read." },
             "as": address(),
+            "conversation_record": conversation_record(),
         }),
         &["id"],
     )

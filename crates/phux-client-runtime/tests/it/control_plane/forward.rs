@@ -1,7 +1,7 @@
 use super::service_http::{ready, sent_request_id};
 use super::*;
 
-use phux_client_runtime::control::forward::ForwardError;
+use phux_client_runtime::control::forward::{AgentRequest, ForwardError};
 use phux_protocol::forward::{ForwardChunk, ForwardOp, MAX_FORWARD_CHUNK_BYTES};
 
 fn plane_with_forward() -> ControlPlane {
@@ -163,7 +163,7 @@ fn an_offer_is_sent_and_a_request_surfaces_to_be_answered() {
 
     let _ = plane.take_events();
     let asked = FrameKind::Event {
-        terminal: None,
+        terminal: Some(ResourceId::local(3)),
         event: AgentEvent::SshAgentRequest {
             id: 7,
             message: vec![11],
@@ -180,7 +180,12 @@ fn an_offer_is_sent_and_a_request_surfaces_to_be_answered() {
         .into_iter()
         .filter_map(phux_client_runtime::control::forward::agent_request)
         .collect();
-    assert_eq!(read, [(7, vec![11])]);
+    let request = AgentRequest {
+        id: 7,
+        pane: Some(ResourceId::local(3)),
+        message: vec![11],
+    };
+    assert_eq!(read, [request]);
 
     let reply = plane.agent_reply(7, vec![12, 0, 0, 0, 0]).unwrap();
     let (request_id, command) = sent_request_id(&mut plane);

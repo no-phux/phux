@@ -202,7 +202,7 @@ impl Desk {
             (Mode::Select, false) => {
                 self.track_drag(terminal, &press(Phase::Up, at, WORDS), tx);
                 self.select(terminal, Phase::Up, at[0], at[1], WORDS);
-                self.copy_touched(tx);
+                self.copy_touched(terminal, touch.origin, at, tx);
             }
             (Mode::Report, false) => {
                 self.pointer(terminal, &press(Phase::Up, at, 1), tx);
@@ -233,12 +233,20 @@ impl Desk {
     }
 
     /// A finished selection goes to the clipboard: a phone has no ⌘C, and a
-    /// menu would sit under the finger that just lifted.
-    fn copy_touched(&mut self, tx: &mut Tx) {
-        if !matches!(self.selected(), Selected::Text(_)) {
+    /// menu would sit under the finger that just lifted. A word ends at a
+    /// colon, so one inside a URL would lose its scheme: that copies the URL.
+    fn copy_touched(&mut self, terminal: &ResourceId, from: [f32; 2], to: [f32; 2], tx: &mut Tx) {
+        let Selected::Text(text) = self.selected() else {
             return;
+        };
+        let link = self
+            .link_at(terminal, from[0], from[1])
+            .filter(|link| link.url.contains(&text))
+            .filter(|link| self.link_at(terminal, to[0], to[1]).as_ref() == Some(link));
+        match link {
+            Some(link) => tx.copy(link.url),
+            None => self.copy(tx),
         }
-        self.copy(tx);
         self.say(NoticeKind::Info, "Copied");
         self.phone_feedback(Feedback::Copied);
     }

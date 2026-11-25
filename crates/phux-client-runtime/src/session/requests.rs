@@ -1,6 +1,7 @@
 //! Correlated requests: send one request frame, then read until the peer
 //! answers its `request_id`, keeping every other frame for the caller.
 
+use bytes::BytesMut;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, MoveResult, Scope, SpawnResult,
@@ -8,6 +9,7 @@ use phux_protocol::wire::frame::{
 
 use super::reply::refusal_for;
 use super::{Answer, Refusal, Reply, Session, SessionError};
+use crate::control::forward::request_in;
 
 /// How many `GET_METADATA`s [`Session::request_metadata_many`] keeps in
 /// flight. 64 requests of about 40 bytes stay well inside the smallest
@@ -253,12 +255,24 @@ impl Session {
     ) -> Result<Reply<Answer<T>>, SessionError> {
         self.send(frame).await?;
         let mut interleaved = Vec::new();
+        // A pane waits on an ssh-agent request, which no caller of a request
+        // answers: it stays queued for the next `recv`.
+        let mut agent_requests = Vec::new();
         loop {
             let frame = self.recv().await?;
             if let Some(answer) = answer_to(&frame, request_id, &recognize) {
+                for bytes in agent_requests.into_iter().rev() {
+                    self.inbound.push_front(bytes);
+                }
                 return Ok(Reply::new(answer, interleaved));
             }
-            interleaved.push(frame);
+            if request_in(&frame).is_some() {
+                let mut bytes = BytesMut::new();
+                frame.encode(&mut bytes);
+                agent_requests.push(bytes.freeze());
+            } else {
+                interleaved.push(frame);
+            }
         }
     }
 }

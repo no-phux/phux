@@ -17,12 +17,20 @@ use super::super::{ControlPlane, Event, FrameKind, GroupId, Pending, SpawnReques
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkflowSubmission {
     /// No command or deferred work was accepted.
-    NotQueued { reason: String },
+    NotQueued {
+        /// Why nothing was queued; safe to show the person.
+        reason: String,
+    },
     /// One wire request was queued; its reply retains this correlation.
-    Queued { request_id: u32 },
+    Queued {
+        /// Correlation id the eventual reply and receipt events carry.
+        request_id: u32,
+    },
     /// The existing organization journal owns retries under this exact identity.
     Journaled {
+        /// Wire correlation for the first attempt, when one was sent now.
         request_id: Option<u32>,
+        /// Exact operation identity the journal replays under.
         operation: phux_protocol::ids::OperationId,
     },
 }
@@ -99,7 +107,7 @@ impl ControlPlane {
         if !self.handshake_ready || !self.org.ready || !self.organization_supported() {
             return WorkflowSubmission::NotQueued { reason: "organization_unavailable".into() };
         }
-        if !self.server.as_ref().is_some_and(|server| server.has_ext(ServerFeatureExt::SessionEnsure)) {
+        if !self.server.as_ref().is_some_and(|server| server.features_ext2.contains(phux_protocol::caps::ServerFeatureExt2::SessionEnsure)) {
             return WorkflowSubmission::NotQueued { reason: "ensure_session_unsupported".into() };
         }
         match self.submit_organization(Command::SessionEnsure {

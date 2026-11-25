@@ -374,6 +374,12 @@ impl Federation {
         self.proxy_attaches.insert((client, host, terminal));
     }
 
+    /// Drop every proxy registration on `host`: its terminal ids now name
+    /// other panes.
+    pub(crate) fn forget_satellite_proxy_attaches(&mut self, host: &SatelliteHost) {
+        self.proxy_attaches.retain(|(_, held, _)| held != host);
+    }
+
     /// Drop one proxy registration. Idempotent.
     pub(crate) fn unregister_satellite_proxy_attach(
         &mut self,

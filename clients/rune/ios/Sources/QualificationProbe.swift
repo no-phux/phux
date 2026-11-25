@@ -49,6 +49,7 @@ final class QualificationProbe {
         inputContracts = try InputContractTests.run()
         inputContracts += try NativeControlsContractTests.run()
         inputContracts += try await PairingContractTests.run()
+        inputContracts += try EarlierAppContractTests.run()
         #endif
     }
 

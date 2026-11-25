@@ -8,7 +8,9 @@ use std::sync::LazyLock;
 use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 
-use phux_agent_session::asked::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
+use phux_agent_session::asked::{
+    AskedDetector, AskedPayload, AskedSource, AskedState, AskedTransition,
+};
 use phux_agent_session::state::AgentRecordArbiter;
 
 use crate::state::{AppSlot, ServerState};
@@ -78,10 +80,7 @@ impl ServerState {
         self.app_slot::<AgentState>()?.asked.current(terminal)
     }
 
-    pub(crate) fn asked_observation(
-        &self,
-        terminal: ResourceId,
-    ) -> Option<(AskedSource, &AskedPayload)> {
+    pub(crate) fn asked_observation(&self, terminal: ResourceId) -> Option<&AskedState> {
         self.app_slot::<AgentState>()?.asked.observation(terminal)
     }
 

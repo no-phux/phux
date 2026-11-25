@@ -7,13 +7,21 @@ pub enum ServerFeatureExt2 {
     /// All archived relaunch entry points enforce current host templates or an
     /// exact ephemeral local-owner recipe decision. Absence forbids replay.
     ArchivedLaunchAdmission = 0x0000_0001,
+    /// Atomic, journaled current-host named session resolution
+    /// (`SESSION_ENSURE`). A client MUST see the bit before sending it.
+    SessionEnsure = 0x0000_0002,
 }
 impl ServerFeatureExt2 {
     /// Known features, in bit order.
-    pub const ALL: &'static [Self] = &[Self::ArchivedLaunchAdmission];
+    pub const ALL: &'static [Self] = &[Self::ArchivedLaunchAdmission, Self::SessionEnsure];
     /// Capability catalog name.
     #[must_use]
-    pub const fn wire_name(self) -> &'static str { match self { Self::ArchivedLaunchAdmission => "ARCHIVED_LAUNCH_ADMISSION" } }
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::ArchivedLaunchAdmission => "ARCHIVED_LAUNCH_ADMISSION",
+            Self::SessionEnsure => "SESSION_ENSURE",
+        }
+    }
     /// The wire mask, not a bit index.
     #[must_use]
     pub const fn mask(self) -> u32 { self as u32 }

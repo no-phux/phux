@@ -7,6 +7,7 @@ use phux_protocol::Version;
 
 mod newer_satellite;
 mod planning;
+mod restarted;
 mod supervisor;
 mod transports;
 mod write_bounds;

@@ -53,19 +53,23 @@ Panes:
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
   git           Read the Git checkout a pane is in
+  open-url      Ask to open a link on your own machine
 
 Agents:
   agent         See and drive the agents running in panes
   launch        Start an agent integration in a new pane
   ask           Report that an agent is waiting on a human
+  pick          Offer a list in the attached client and print the choice
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
   mission       Track tasks in the local work store
+  chat          Talk with a friend or agent over native phux mail
   mail          Send, read and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
   notify-mode   Mute or unmute a pane's notifications
+  seen          Mark a pane seen on every client
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -2117,10 +2121,13 @@ Remote host:
                                   and 2FA prompts work) and exits once the
                                   session is up; the session itself rides QUIC,
                                   so it roams and renders locally. Needs no
-                                  pairing, service, or overlay network on the
-                                  host. When UDP cannot reach it, the local
-                                  client attaches through ssh itself. The host
-                                  is anything ssh accepts, including
+                                  service or overlay network on the host. The
+                                  host opens that listener only under `[policy]
+                                  mode = "paired"`, and admits only an enrolled
+                                  client certificate (`PHUX_WORKLOAD_CERT`).
+                                  Without both, or when UDP cannot reach it, the
+                                  local client attaches through ssh itself. The
+                                  host is anything ssh accepts, including
                                   `ssh://user@host:port` and aliases from
                                   `~/.ssh/config`.
       --remote-phux <PATH>        The `phux` to run on the `--ssh` host, for
@@ -2141,7 +2148,14 @@ Attach role:
       --take                      Attach and take the wheel: seize the input
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
-                                  stays attached. `phux give` hands it back.
+                                  stays attached. The `give-input` key or a
+                                  detach hands it back.
+      --lock-size                 Lock this client's view size: while it is
+                                  attached, other clients see its panes
+                                  letterboxed or cropped instead of resizing
+                                  them. `defaults.lock-size = true` makes it the
+                                  default; the palette's "Unlock view size"
+                                  releases it.
 
 Recording:
       --rec <PATH>                Record this session (.cast, .gif, or .apng)
@@ -2240,6 +2254,226 @@ Arguments:
              [possible values: stable, next, lts]
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat`
+
+```text
+Talk with a friend or agent over native phux mail
+
+Requires an already reachable, paired phux hub. One person creates an invite;
+the other joins by pasting it. Messages stay in that hub's durable mail store.
+The hub can read them; neither participant gets terminal access. Local mail,
+claims and existing hub connections are unchanged.
+
+Usage: phux chat <SUBCOMMAND>
+
+Commands:
+  ack     Acknowledge a received message in this conversation
+  invite  Create a single-use messaging invite and store a welcome message
+  join    Paste and redeem a messaging invite; receive the welcome and confirm
+          it
+  open    Open a line-oriented conversation; enter /quit to leave the view
+  read    Show conversation history without consuming agent delivery
+  run     Run an agent with only its mail scoped to this conversation
+  send    Store a message for the other participant
+  status  Check the actual mailbox and whether the peer confirmed the welcome
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat ack`
+
+```text
+Acknowledge a received message in this conversation
+
+Usage: phux chat ack <FLAGS> [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+      --id <HEX32>     The message id printed by read.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat invite`
+
+```text
+Create a single-use messaging invite and store a welcome message
+
+Usage: phux chat invite [FLAGS] <NAME>
+
+Arguments:
+  <NAME>  A new local name for this conversation.
+
+Flags:
+      --hub <HOST:PORT>       Address the friend can reach. Defaults to the live
+                              QUIC listener.
+  -m, --message <MESSAGE>     The first real message the joining peer receives.
+                              (default: Hello! Welcome to our phux
+                              conversation.)
+      --expires-in <MINUTES>  Minutes the invitation remains redeemable.
+                              (default: 10)
+      --json                  Emit stable, versioned JSON on stdout instead of
+                              the human view. On failure, stdout stays empty and
+                              stderr carries one JSON error object.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat join`
+
+```text
+Paste and redeem a messaging invite; receive the welcome and confirm it
+
+Reads one invite from stdin, keeping its secret out of process arguments and
+shell history. Re-run after a partial connection failure with the same local
+name to resume an identity already saved here.
+
+Usage: phux chat join [--json] <NAME>
+
+Arguments:
+  <NAME>  A new local name; it need not match the inviter's name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat open`
+
+```text
+Open a line-oriented conversation; enter /quit to leave the view
+
+Reads do not take or mark mail read. The newest 500 messages remain visible
+through the existing mail history interface.
+
+Usage: phux chat open [--record <PATH>] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat read`
+
+```text
+Show conversation history without consuming agent delivery
+
+Usage: phux chat read [--record <PATH>] [--json] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat run`
+
+```text
+Run an agent with only its mail scoped to this conversation
+
+Requires that harness's phux integration. pi, Oh My Pi and `OpenCode` can wake
+an idle conversation. Claude and Grok receive at their next hook. Claims and
+terminal permissions are not redirected.
+
+Usage: phux chat run [--record <PATH>] [NAME] <COMMAND>…
+
+Arguments:
+  [NAME]      The local conversation name.
+  <COMMAND>…  Program and arguments, after `--`.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat send`
+
+```text
+Store a message for the other participant
+
+Usage: phux chat send <FLAGS> [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>         Exact private record; independent of HOME, profile
+                              and alias.
+  -m, --message <TEXT>        Message text; `-` reads bounded text from stdin.
+      --operation-id <HEX32>  Retry an uncertain send with the same id and
+                              identical text.
+      --json                  Emit stable, versioned JSON on stdout instead of
+                              the human view. On failure, stdout stays empty and
+                              stderr carries one JSON error object.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux chat status`
+
+```text
+Check the actual mailbox and whether the peer confirmed the welcome
+
+Usage: phux chat status [--record <PATH>] [--json] [NAME]
+
+Arguments:
+  [NAME]  The local conversation name.
+
+Flags:
+      --record <PATH>  Exact private record; independent of HOME, profile and
+                       alias.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -2841,7 +3075,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -2870,7 +3105,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -2938,7 +3174,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -2979,7 +3216,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3029,7 +3267,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3066,6 +3305,7 @@ Usage: phux forward [FLAGS]
 Flags:
   -L <SPEC>                       What to forward:
                                   `[BIND_ADDR:]LOCAL_PORT:REMOTE_HOST:REMOTE_PORT`.
+                                  Repeat for more than one.
       --agent                     Serve this machine's ssh-agent
                                   (`SSH_AUTH_SOCK`) to the server's panes,
                                   asking here before each signature.
@@ -3080,7 +3320,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3257,8 +3498,9 @@ Global flags:
 ```text
 Give back input control taken with `take`
 
-Releases the input lease taken with `phux take`, returning the pane to open
-input. A no-op if you do not hold the lease. TARGET is a selector.
+Releases the input lease this command's connection holds. Another connection's
+lease (a `phux attach --take`) is left alone: release that with its `give-input`
+key or by detaching. A no-op if you do not hold the lease. TARGET is a selector.
 
 Usage: phux give [--json] <TARGET>
 
@@ -4024,7 +4266,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4115,7 +4358,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4196,7 +4440,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4875,7 +5120,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -5090,6 +5336,33 @@ Flags:
 
 Global flags:
       --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux open-url`
+
+```text
+Open a link on the machine of the person typing in this pane.
+
+Run inside a phux pane. The attached client that last typed here asks its user,
+showing the whole link; only http and https links are asked about. Exits 0 once
+the link is opened, 1 when it was not: declined, unanswered for 60 seconds, or
+no attached client can ask.
+
+`[defaults] browser-shim` makes panes' programs use it.
+
+Example:
+phux open-url https://phux.sh
+
+Usage: phux open-url <URL>
+
+Arguments:
+  <URL>  The link.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux organize`
@@ -5498,6 +5771,36 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux pick`
+
+```text
+Offer a list and print the item chosen.
+
+Items are the arguments, else stdin's lines. The list is drawn on this terminal,
+where you type an item or its number and Enter. Inside a phux pane it is also
+raised as a `phux-ask` question, so a client's question card (or `phux agent
+answer`) can answer it; at most 16 items go to the card. The choice is printed
+on stdout and the exit code is 0; Escape, Ctrl-C or Ctrl-D cancel with exit 1.
+With no terminal (/dev/tty) it exits 2.
+
+Examples:
+git branch --format='%(refname:short)' | phux pick --prompt Branch
+host=$(phux pick mini macbook powerhouse-1)
+
+Usage: phux pick [--prompt <TEXT>] [ITEMS]…
+
+Arguments:
+  [ITEMS]…  Items to choose from. Omit to read one per line from stdin.
+
+Flags:
+      --prompt <TEXT>  The question shown above the list.
+                       (default: Pick one)
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux play`
@@ -5959,7 +6262,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6076,7 +6380,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6344,7 +6649,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6717,6 +7023,35 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux seen`
+
+```text
+Clear a pane's unseen mark.
+
+The server marks a pane when it prints, rings its bell, or its agent finishes
+while no client reports showing it. `phux ls --json` lists the mark as `unseen`.
+Clearing it clears it on every client. A session, group or tag target clears
+every pane it holds now.
+
+Examples:
+phux seen @4
+phux seen work
+
+Usage: phux seen [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The pane, or the session, group or tag whose panes to clear.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux send-keys`
 
 ```text
@@ -6912,9 +7247,8 @@ Keep a server running across logout and reboot
 Generates this host's native per-user service unit — a `launchd` `LaunchAgent`
 on macOS, a systemd user unit on Linux — with the server's environment baked in,
 so a rebooted host comes back with a server instead of waiting for someone to
-log in and start one. A restarted server has no terminals: every pane's process
-died with the host. `install --restore` brings back session names, layout, and
-cwd, not running processes.
+log in and start one. A restarted server keeps its sessions, but every pane's
+process died with the host: `phux restore` relaunches them.
 
 Usage: phux service <SUBCOMMAND>
 
@@ -6977,10 +7311,10 @@ Flags:
                             launchd nor systemd can restart-supervise a process
                             it did not start.
 
-                            When the live server is the one this systemd unit
-                            already runs, the unit is rewritten, and a listener
-                            it gains comes up by restarting that server in
-                            place, panes kept (`phux upgrade`).
+                            A listener the unit names and the live server lacks
+                            comes up by restarting that server in place, panes
+                            kept (`phux upgrade`). If it cannot open, the config
+                            and the unit are put back as they were.
       --print               Print the unit (and the restore wrapper) to stdout
                             without writing or loading anything.
   -h, --help                Print help
@@ -7490,6 +7824,11 @@ Flags:
                                  spawn with an unknown reply, use `phux terminal
                                  operation` to check its receipt without
                                  resolving the selector again.
+      --parent <PANE>            The pane the new one is a child of, folded
+                                 under it in lists; `none` for no parent.
+                                 Default: the pane this runs in. Without
+                                 `--target`, the new pane joins its parent's
+                                 session and starts in its directory.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is
@@ -7653,8 +7992,10 @@ Take exclusive input control of a pane
 Seizes exclusive input authority over the resolved pane: while held, only this
 connection's input reaches the PTY — every other client's keystrokes (and any
 agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
-is driving. Release with `phux give`. TARGET is a selector (see the top-level
-help).
+is driving. TARGET is a selector (see the top-level help).
+
+The lease belongs to this command's connection, so it ends when the command
+exits. To keep the wheel, use `phux attach --take` or the `take-input` key.
 
 Usage: phux take [--ttl <SECS>] [--json] <TARGET>
 
@@ -7662,11 +8003,11 @@ Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
-      --ttl <SECS>     Auto-release after this many seconds — the server, not
-                       this process, enforces it, so it survives this command
-                       exiting. Omit to hold the lease until `phux give` or a
-                       disconnect, today's default. The wire's `ttl_ms` is a
-                       `u32`, so this caps at 4294967 (about 49.7 days).
+      --ttl <SECS>     Have the server release the lease after this many
+                       seconds, if this command's connection has not ended
+                       first. It never extends the lease past the command's
+                       exit. The wire's `ttl_ms` is a `u32`, so this caps at
+                       4294967 (about 49.7 days).
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -7932,7 +8273,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8079,7 +8421,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8115,7 +8458,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8298,7 +8642,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot

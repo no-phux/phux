@@ -304,4 +304,5 @@ mod geometry;
 mod lifecycle;
 mod listeners;
 mod organization;
+mod size_lock;
 mod upgrade;

@@ -22,6 +22,10 @@ use crate::render::overlay::SelectItem;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use phux_design::State;
 
+mod waiting;
+pub(super) use waiting::oldest_waiting;
+use waiting::{focus_pane, waits};
+
 /// The fleet overlay's live-refresh tag.
 pub(super) const FLEET_LIVE_KEY: &str = "agent-fleet";
 
@@ -32,6 +36,10 @@ pub(super) struct FleetPaneMeta {
     /// ADR-0035 asked flag: an agent in this pane is waiting on a human
     /// answer ([`PaneSlot::attention`]).
     pub attention: bool,
+    /// When `attention` was raised ([`PaneSlot::asked_at`]).
+    pub asked_at: Option<std::time::Instant>,
+    /// Work runs outside the foreground ([`PaneSlot::background`]).
+    pub background: bool,
     /// The pane's OSC 0/2 title, trimmed and non-empty — the ADR-0040
     /// compatibility fallback when no agent record is declared.
     pub title: Option<String>,
@@ -56,8 +64,15 @@ pub(super) fn collect_pane_meta(
     panes
         .iter()
         .map(|(id, slot)| {
-            let title =
-                (!slot.last_title.trim().is_empty()).then(|| slot.last_title.trim().to_owned());
+            // The label the pane's rule draws (`pane_label`): an agent's
+            // task, else what runs and where, never a shell's prompt.
+            let title = phux_client_core::pane_label::pane_label(
+                None,
+                Some(slot.last_title.as_str()),
+                slot.foreground.as_deref(),
+                slot.cwd.as_deref(),
+            )
+            .filter(|title| !title.is_empty());
             // Prefer the live cwd (refined by cwd_changed events); fall
             // back to the snapshot-seeded index the sidebar branch uses.
             let branch = slot
@@ -69,6 +84,8 @@ pub(super) fn collect_pane_meta(
                 id.clone(),
                 FleetPaneMeta {
                     attention: slot.attention,
+                    asked_at: slot.asked_at,
+                    background: slot.background,
                     title,
                     cwd: slot.cwd.clone(),
                     branch,
@@ -380,36 +397,25 @@ fn pane_row(
             )
         }
     };
-    let attention = meta.attention
-        || session.is_some_and(|s| s.state == AgentMetaState::Blocked)
-        || record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
+    let attention =
+        waits(meta, record) || session.is_some_and(|s| s.state == AgentMetaState::Blocked);
     let label = format!("{glyph} {} {who}", pane_address(w, window_name, p));
-    let place = meta
-        .branch
-        .clone()
-        .or_else(|| meta.cwd.as_deref().map(short_cwd));
-    let secondary = match (state_word, place, host) {
-        (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} \u{b7} {place}")),
-        (Some(state), None, Some(host)) => Some(format!("{host} {state}")),
-        (None, Some(place), Some(host)) => Some(format!("{host} {place}")),
-        (None, None, Some(host)) => Some(host.to_owned()),
-        (Some(state), Some(place), None) => Some(format!("{state} \u{b7} {place}")),
-        (Some(state), None, None) => Some(state.to_owned()),
-        (None, place, None) => place,
+    let place = meta.branch.clone().or_else(|| {
+        (meta.cwd.as_deref()).map(|cwd| phux_client_core::pane_label::folder(cwd).to_owned())
+    });
+    // An agent at rest with shells still running must not read as done.
+    let background = meta.background.then(|| "background work".to_owned());
+    let detail = [state_word.map(str::to_owned), place, background]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ");
+    let secondary = match host {
+        Some(host) if detail.is_empty() => Some(host.to_owned()),
+        Some(host) => Some(format!("{host} {detail}")),
+        None => (!detail.is_empty()).then_some(detail),
     };
-
-    let mut args = BTreeMap::new();
-    // Window/pane ordinals never approach i64::MAX; the lossless path is
-    // the only one that can fire in practice.
-    args.insert(
-        "window".to_owned(),
-        toml::Value::Integer(i64::try_from(w).unwrap_or(i64::MAX)),
-    );
-    args.insert(
-        "pane".to_owned(),
-        toml::Value::Integer(i64::try_from(p).unwrap_or(i64::MAX)),
-    );
-    let mut item = SelectItem::new(label, crate::attach::resolved("focus-pane", args)).indented();
+    let mut item = SelectItem::new(label, focus_pane(w, p)).indented();
     if let Some(sec) = secondary {
         item = item.secondary(sec);
     }
@@ -534,15 +540,6 @@ fn who_label(name: &str, kind: Option<&str>) -> String {
 
 /// Shorten a cwd to its last path component for the secondary column
 /// (a full path would push the state word off a narrow modal).
-fn short_cwd(cwd: &str) -> String {
-    cwd.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(cwd)
-        .to_owned()
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests;

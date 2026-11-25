@@ -148,20 +148,29 @@ final class NativeIdentity: @unchecked Sendable {
         try deleteKey(keyID)
     }
 
-    private static func keyQuery(_ keyID: String) -> [String: Any] {
+    /// Where this app makes its keys, and where the earlier app made them. A
+    /// key cannot leave its keystore, so a carried identity signs with the
+    /// earlier key in place; nothing here creates or deletes one there.
+    private static let keyTag = "sh.phux.rune.ios.device."
+    static let earlierKeyTag = "dev.phux.mobile.device."
+
+    private static func keyQuery(_ keyID: String, tag: String = keyTag) -> [String: Any] {
         [kSecClass as String: kSecClassKey,
          kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
          kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
-         kSecAttrApplicationTag as String: Data("sh.phux.rune.ios.device.\(keyID)".utf8),
+         kSecAttrApplicationTag as String: Data((tag + keyID).utf8),
          kSecUseDataProtectionKeychain as String: true]
     }
 
     private static func loadKey(_ keyID: String) throws -> SecKey {
-        var query = keyQuery(keyID)
-        query[kSecReturnRef as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        var status = errSecItemNotFound
+        for tag in [keyTag, earlierKeyTag] where status == errSecItemNotFound {
+            var query = keyQuery(keyID, tag: tag)
+            query[kSecReturnRef as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            status = SecItemCopyMatching(query as CFDictionary, &result)
+        }
         guard status == errSecSuccess else {
             throw IdentityFailure(message: "Could not open the enrolled device key (Keychain \(status)). Unlock this phone or enroll again.")
         }
@@ -175,7 +184,7 @@ final class NativeIdentity: @unchecked Sendable {
         var error: Unmanaged<CFError>?
         var privateAttributes: [String: Any] = [
             kSecAttrIsPermanent as String: true,
-            kSecAttrApplicationTag as String: Data("sh.phux.rune.ios.device.\(keyID)".utf8)]
+            kSecAttrApplicationTag as String: Data((keyTag + keyID).utf8)]
         var attributes: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256, kSecUseDataProtectionKeychain as String: true]
         #if targetEnvironment(simulator)

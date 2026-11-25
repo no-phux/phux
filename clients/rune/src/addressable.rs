@@ -2,6 +2,8 @@
 //! the palette, cycling and the window title: terminals, then documents
 //! (trees, surfaces and typed documents), each in the server's order.
 
+use std::collections::HashMap;
+
 use phux_client_runtime::control::Topology;
 use phux_protocol::ids::{ResourceId, ResourceKind};
 
@@ -20,27 +22,38 @@ pub struct Addressable {
     pub kind: ResourceKind,
     /// What a list calls the document when `!kind.is_terminal()`.
     pub mirror: &'static str,
+    /// The pane a terminal was started from, which the sidebar folds it
+    /// under (`phux.parent/v1`).
+    pub parent: Option<ResourceId>,
 }
 
-/// The topology's terminals and documents. An agent session has no screen
-/// of its own, and a kind this build does not know cannot be drawn.
-pub fn list(topology: &Topology) -> Vec<Addressable> {
+/// The topology's terminals and documents that `wanted` keeps. An agent
+/// session has no screen of its own, and a kind this build does not know
+/// cannot be drawn. Linear in the topology: the window lists it on every
+/// sidebar build, so a scan of the panes per resource would grow with the
+/// square of the server's terminals.
+fn list(topology: &Topology, wanted: impl Fn(&ResourceId) -> bool) -> Vec<Addressable> {
+    // Reversed so the first entry wins, as a scan would find it.
+    let panes: HashMap<_, _> = (topology.panes.iter().rev())
+        .map(|pane| (&pane.terminal_id, pane))
+        .collect();
+    let sessions: HashMap<_, _> = (topology.sessions.iter().rev())
+        .map(|session| (session.id, session.name.as_str()))
+        .collect();
     let mut out: Vec<_> = topology
         .resources
         .iter()
-        .filter(|r| r.kind.is_terminal() || r.kind.is_document())
+        .filter(|r| (r.kind.is_terminal() || r.kind.is_document()) && wanted(&r.id))
         .map(|r| {
             let session = match r.id.host() {
                 Some(host) => host.as_str().to_owned(),
-                None => topology
-                    .sessions
-                    .iter()
-                    .find(|s| s.id == r.session_id)
-                    .map(|s| s.name.clone())
+                None => sessions
+                    .get(&r.session_id)
+                    .map(|name| (*name).to_owned())
                     .unwrap_or_default(),
             };
             let titled = r.title.clone().filter(|t| !t.trim().is_empty());
-            let label = match topology.pane(&r.id) {
+            let label = match panes.get(&r.id) {
                 Some(pane) => pane_label(pane),
                 None => titled.unwrap_or_else(|| kind_name(r.kind).to_owned()),
             };
@@ -51,6 +64,7 @@ pub fn list(topology: &Topology) -> Vec<Addressable> {
                 session,
                 kind: r.kind,
                 mirror: "Read-only mirror",
+                parent: panes.get(&r.id).and_then(|pane| pane.parent.clone()),
             }
         })
         .collect();
@@ -74,6 +88,16 @@ impl Desk {
     /// says. A local resource in no session it can name is left out, since
     /// showing it would attach a session called "".
     pub fn addressable(&self) -> Vec<Addressable> {
+        self.addressable_where(|_| true)
+    }
+
+    /// [`Self::addressable`]'s entry for `id`, without naming every other
+    /// resource: the window title asks on every poll.
+    pub fn addressable_of(&self, id: &ResourceId) -> Option<Addressable> {
+        self.addressable_where(|r| r == id).into_iter().next()
+    }
+
+    fn addressable_where(&self, wanted: impl Fn(&ResourceId) -> bool) -> Vec<Addressable> {
         let Some(topology) = &self.connection.topology else {
             return Vec::new();
         };
@@ -82,7 +106,7 @@ impl Desk {
             .client
             .as_ref()
             .map(|client| client.organization());
-        let mut all = list(topology);
+        let mut all = list(topology, wanted);
         all.retain_mut(|r| {
             // A popup's terminal is its box's, never a place to go; the quick
             // terminal's is the panel's.
@@ -146,7 +170,14 @@ mod tests {
                     .with_kind(ResourceKind::PixelSurface)
                     .with_title(Some("display".into())),
             ]);
-        let listed: Vec<_> = list(&Topology::from_snapshot(&snapshot))
+        let mut desk = crate::test_support::window();
+        desk.connection.topology = Some(Topology::from_snapshot(&snapshot));
+        let all = desk.addressable();
+        for id in [id(1), id(5), id(2), id(4), id(42)] {
+            let found = all.iter().find(|r| r.id == id).cloned();
+            assert_eq!(desk.addressable_of(&id), found, "{id}");
+        }
+        let listed: Vec<_> = list(&Topology::from_snapshot(&snapshot), |_| true)
             .into_iter()
             .map(|r| (r.id.to_string(), r.label, r.session, r.kind))
             .collect();

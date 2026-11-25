@@ -40,6 +40,16 @@ impl ControlPlane {
                 })));
                 return Ok(());
             }
+            AgentEvent::OpenUrl { id, url } => {
+                if let Some(terminal_id) = terminal {
+                    self.push_event(Event::OpenUrl {
+                        terminal_id,
+                        id,
+                        url,
+                    });
+                }
+                return Ok(());
+            }
             event => event,
         };
         // Server-scoped events carry no terminal; the server always scopes

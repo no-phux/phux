@@ -14,9 +14,10 @@ fn only_a_shared_tab_name_carries_its_index() {
         win("logs", false),
     ]);
     let plain = strip_ansi(&paint_to_string(&mut p, r(0, 0, 20, 14)));
-    assert!(plain.contains("○ 0 home"), "{plain:?}");
-    assert!(plain.contains("● 1 home"), "{plain:?}");
-    assert!(plain.contains("○ logs"), "{plain:?}");
+    // Focus borrows no status mark (`●` is needs you, `○` idle).
+    assert!(plain.contains("   0 home"), "{plain:?}");
+    assert!(plain.contains("› 1 home"), "{plain:?}");
+    assert!(plain.contains("   logs"), "{plain:?}");
 }
 
 /// A tab list cut short for room still shows the active tab: on the
@@ -27,7 +28,7 @@ fn a_cut_tab_list_keeps_the_active_tab() {
     p.set_roster(vec![active_roster()]);
     p.set_windows((0..9).map(|i| win(&format!("t{i}"), i == 8)).collect());
     let plain = strip_ansi(&paint_to_string(&mut p, r(0, 0, 20, 12)));
-    assert!(plain.contains("● t8"), "{plain:?}");
+    assert!(plain.contains("› t8"), "{plain:?}");
     assert!(!plain.contains("t0"), "{plain:?}");
     assert!(plain.contains("tabs"), "the rest still counted: {plain:?}");
 }
@@ -165,13 +166,13 @@ fn compact_attention_rows_keep_same_session_agents_distinguishable() {
     assert_ne!(text("claude"), text("codex"));
 }
 
-/// An asking window (ADR-0035) carries the needs-you mark; a retained
-/// exited pane (ADR-0124) carries the failed mark and its status, or the
-/// ended dash for a clean exit. Either flip re-emits.
+/// An asking window (ADR-0035) carries the needs-you mark, once, in its
+/// glyph; a retained exited pane (ADR-0124) carries the failed mark and its
+/// status, or the ended dash for a clean exit. Either flip re-emits.
 #[test]
 fn window_markers_for_attention_and_retained_exit() {
     for (marked, text) in [
-        (win_attention("shell", false), "shell ●"),
+        (win_attention("shell", false), "● shell "),
         (win_exited("shell", false, "3"), "shell ✕3"),
         (win_exited("shell", false, "sig9"), "shell ✕sig9"),
         (win_exited("shell", false, "0"), "shell –"),
@@ -182,12 +183,13 @@ fn window_markers_for_attention_and_retained_exit() {
         let rect = r(0, 0, 20, 14);
         let plain = strip_ansi(&paint_to_string(&mut p, rect));
         assert!(
-            !plain.contains("shell ●") && !plain.contains('✕') && !plain.contains('–'),
+            !plain.contains("● shell") && !plain.contains('✕') && !plain.contains('–'),
             "{plain:?}"
         );
         assert!(p.set_windows(vec![win("editor", true), marked]));
         let plain = strip_ansi(&paint_to_string(&mut p, rect));
         assert!(plain.contains(text), "{plain:?}");
+        assert!(!plain.contains("shell ●"), "needs you once: {plain:?}");
     }
 }
 
@@ -237,8 +239,8 @@ fn windows_nest_under_active_session_without_extra_sections() {
     let buf = p.compose_buffer(rect, SidebarRule::Trailing, &[]);
     assert!(row_text(&buf, rect, 0).contains(SPACES_HEADER));
     assert!(row_text(&buf, rect, 1).contains("development"));
-    assert!(row_text(&buf, rect, 2).starts_with("   ● phux"));
-    assert!(row_text(&buf, rect, 3).starts_with("   ○ scratch"));
+    assert!(row_text(&buf, rect, 2).starts_with("   › phux"));
+    assert!(row_text(&buf, rect, 3).starts_with("     scratch"));
     assert!(row_text(&buf, rect, 4).contains("peer"));
     let text = strip_text(&p, rect);
     assert!(!text.contains("mini"), "{text}");

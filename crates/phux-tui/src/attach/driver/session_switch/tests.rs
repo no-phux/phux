@@ -17,7 +17,7 @@ fn org_spec(fixture: OrgFixture) -> ScriptSpec {
 async fn switch(conn: &mut Connection, target: ReattachTarget, pick: &mut EntryPick) -> Result<FrameKind, AttachError> {
     reattach_on_same_connection(
         conn, target, pick, &mut super::super::orphans::OrphanKills::default(),
-        &mut crate::attach::review::ReviewIndex::new(),
+        &mut crate::attach::review::ReviewIndex::new(), None,
     ).await
 }
 

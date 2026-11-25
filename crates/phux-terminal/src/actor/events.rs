@@ -370,7 +370,7 @@ impl TerminalActor {
     }
 
     /// Re-derive the ask marker from the title and ship the edge.
-    fn source_ask_marker(&mut self) {
+    pub(super) fn source_ask_marker(&mut self) {
         let current_ask = AskMarker::parse(&self.last_title);
         if current_ask == self.last_ask {
             self.ask_retry_owed = false;

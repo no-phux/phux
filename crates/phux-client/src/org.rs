@@ -15,7 +15,7 @@
 //! bulk move, undo, and Intake resolve; the CLI and MCP adapters own
 //! selector parsing and rendering.
 
-use phux_protocol::caps::ServerFeatureExt;
+use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExt2};
 use phux_protocol::ids::OperationId;
 use phux_protocol::wire::frame::{Command, Committed, ErrorCode, Refusal};
 
@@ -166,7 +166,7 @@ pub async fn request(
     if (command.is_organization()
         && !conn.server_features_ext().contains(ServerFeatureExt::Organization))
         || (matches!(&command, Command::SessionEnsure { .. })
-            && !conn.server_features_ext().contains(ServerFeatureExt::SessionEnsure))
+            && !conn.server_features_ext2().contains(ServerFeatureExt2::SessionEnsure))
     {
         return Err(OrgError::Unsupported);
     }

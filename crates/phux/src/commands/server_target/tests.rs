@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use phux_client::attach::{AttachError, CertTrust, Dial};
 
 use super::{
-    ServerSpec, ServerTarget, dial_entry, entry_refusal, ladder_refusal_error, ssh_only_refusal,
+    Bootstrap, ServerSpec, ServerTarget, bootstrap_for, dial_entry, entry_refusal,
+    ladder_refusal_error, ssh_only_refusal,
 };
 use crate::commands::attach::native::DialRefusal;
 use crate::commands::json_err::codes;
@@ -235,12 +236,18 @@ fn only_a_dns_name_earns_the_overlay_hint() {
 /// The ssh:// refusal names the command actually being run.
 #[test]
 fn the_ssh_refusal_names_the_verb() {
-    let err = ssh_only_refusal("mini", "me@mini", "kill");
+    let err = ssh_only_refusal("mini", "me@box", "phux", "kill");
     assert_eq!(err.code, codes::REMOTE_UNRESOLVED);
     assert!(
-        err.remedy.contains("ssh me@mini phux kill"),
+        err.remedy.contains("ssh me@box phux kill")
+            && err.remedy.contains("phux host add me@box --name mini"),
         "{}",
         err.remedy
+    );
+    let ported = ssh_only_refusal("mini", "ssh://me@box:2222", "~/bin/phux", "kill").remedy;
+    assert!(
+        ported.contains("ssh ssh://me@box:2222 ~/bin/phux kill") && !ported.contains("host add"),
+        "{ported}"
     );
     assert!(!err.remedy.contains("phux ls"), "{}", err.remedy);
 }
@@ -250,13 +257,13 @@ fn the_ssh_refusal_names_the_verb() {
 #[test]
 fn a_ladder_refusal_splits_into_message_and_remedy() {
     let err = ladder_refusal_error(
-        "phux: mini is not a registered host\nphux: to pair without ssh, run `phux pair`\nphux:   phux --remote mini --code '<link>'",
+        "phux: mini is not a registered host\nphux: to pair without ssh, run `phux pair`\nphux:   phux attach --remote mini --code '<link>'",
     );
     assert_eq!(err.code, codes::REMOTE_UNRESOLVED);
     assert_eq!(err.message, "mini is not a registered host");
     assert_eq!(
         err.remedy,
-        "to pair without ssh, run `phux pair`\nphux --remote mini --code '<link>'"
+        "to pair without ssh, run `phux pair`\nphux attach --remote mini --code '<link>'"
     );
 }
 
@@ -289,4 +296,17 @@ fn a_remote_failure_names_the_host_and_uses_the_transport_codes() {
     assert!(target.is_remote());
     assert_eq!(target.socket_path(), None);
     assert!(matches!(target.dial(), Dial::Quic(_)));
+}
+
+/// Reading from a machine nobody added must not set it up; a verb that changes
+/// something there still may, unless it was asked for JSON.
+#[test]
+fn only_a_verb_that_changes_something_pairs_an_unregistered_host() {
+    for verb in ["ls", "version", "whoami", "doctor", "upload", "download"] {
+        assert_eq!(bootstrap_for(verb, false), Bootstrap::Never, "{verb}");
+    }
+    for verb in ["new", "kill", "rename", "detach", "forward"] {
+        assert_eq!(bootstrap_for(verb, false), Bootstrap::Auto, "{verb}");
+        assert_eq!(bootstrap_for(verb, true), Bootstrap::Never, "{verb}");
+    }
 }

@@ -28,27 +28,48 @@ pub(crate) fn own_terminal_id() -> Option<u32> {
     parse_terminal_id(&std::env::var(TERMINAL_ID_ENV).ok()?)
 }
 
+/// [`own_terminal_id`], when that pane is on the server at `socket`: a pane
+/// id means nothing on another server, so one that `PHUX_SOCKET` says this
+/// process does not run on is `None`.
+pub(crate) fn own_terminal_id_on(socket: &std::path::Path) -> Option<u32> {
+    let same = std::env::var_os("PHUX_SOCKET")
+        .filter(|own| !own.is_empty())
+        .is_none_or(|own| same_socket(own.as_ref(), socket));
+    own_terminal_id().filter(|_| same)
+}
+
+/// Whether two socket paths name one socket (`/tmp` is a link on macOS).
+fn same_socket(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 fn parse_terminal_id(raw: &str) -> Option<u32> {
     let digits = raw.strip_prefix('@').unwrap_or(raw);
     digits.parse::<u32>().ok().filter(|id| *id != 0)
 }
 
+/// The server-exchange deadline when [`TIMEOUT_ENV`] is unset.
+pub(crate) const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The deadline on every server exchange; see [`deadline_from`].
 pub(crate) const TIMEOUT_ENV: &str = "PHUX_TIMEOUT";
 
 /// The server-exchange deadline from a [`TIMEOUT_ENV`] value: whole or
-/// fractional seconds, `0` for none. Unset or unparseable is the 10-second
-/// default, so a typo never uncaps the wait.
-pub(crate) fn deadline_from(raw: Option<&str>) -> Option<std::time::Duration> {
-    const DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
-    let parsed = raw
-        .and_then(|raw| raw.trim().trim_end_matches('s').parse::<f64>().ok())
-        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok());
-    match parsed {
-        Some(deadline) if deadline.is_zero() => None,
-        Some(deadline) => Some(deadline),
-        None => Some(DEFAULT),
-    }
+/// fractional seconds, `0` for none. Unset is [`DEFAULT_TIMEOUT`].
+///
+/// # Errors
+///
+/// A value that is not a number of seconds.
+pub(crate) fn deadline_from(raw: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(Some(DEFAULT_TIMEOUT));
+    };
+    raw.trim_end_matches('s')
+        .parse::<f64>()
+        .ok()
+        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+        .map(|deadline| (!deadline.is_zero()).then_some(deadline))
+        .ok_or_else(|| format!("{TIMEOUT_ENV}={raw:?} is not a number of seconds"))
 }
 
 /// Every environment variable the binary reads, in the order the topic
@@ -69,8 +90,17 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         lines: &[
             "Seconds to wait for the server to answer the handshake and",
             "each request (default 10; `0` waits forever). On expiry the",
-            "verb exits 4. Streams (attach, watch, forward) are bounded",
-            "only until their handshake.",
+            "verb exits 4; a value that is not a number exits 2. Streams",
+            "(attach, watch, forward) are bounded only until their",
+            "handshake.",
+        ],
+    },
+    EnvVarSpec {
+        name: phux_client::conversation::CONTEXT_ENV,
+        lines: &[
+            "Private record selected by `phux chat run` (absolute path).",
+            "Scopes mail only, never path claims or terminal authority.",
+            "A bad record fails closed; no fallback to another store.",
         ],
     },
     EnvVarSpec {
@@ -119,6 +149,69 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         lines: &[
             "Also accept WebTransport (HTTP/3 over QUIC) clients on",
             "HOST:PORT. Equivalent to `phux server --webtransport`.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_NO_AUTO_LISTEN",
+        lines: &[
+            "Set (to anything) to keep the server from auto-binding a",
+            "remote listener on the private network address.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CA",
+        lines: &[
+            "The server's workload CA certificate. Default:",
+            "workload-ca.pem in the state directory. With this,",
+            "PHUX_WORKLOAD_CA_KEY, or PHUX_WORKLOAD_KEYS set,",
+            "`[policy] mode` must be set too.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CA_KEY",
+        lines: &[
+            "Its private key. Default: workload-ca.key in the state",
+            "directory.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_KEYS",
+        lines: &[
+            "Registry of the client keys the server admits. Default:",
+            "workload-keys in the state directory. enrollment-tickets and",
+            "workload-org-roots/ move with it.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_CERT",
+        lines: &[
+            "Client certificate (PEM) a remote dial presents when the",
+            "host entry names none. Set with PHUX_WORKLOAD_KEY; one",
+            "alone is an error.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_KEY",
+        lines: &["Private key of PHUX_WORKLOAD_CERT."],
+    },
+    EnvVarSpec {
+        name: "PHUX_WORKLOAD_REQUIRE_PAIRED",
+        lines: &[
+            "Set (to anything) to refuse a server that does not request",
+            "the PHUX_WORKLOAD_CERT identity.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_AGENT_DETECT",
+        lines: &["Set to `0` to turn agent detection off."],
+    },
+    EnvVarSpec {
+        name: "PHUX_AGENT_RULES_DIR",
+        lines: &[
+            "Directory of *.toml agent manifests that override or extend",
+            "the built-in ones; empty means none. Default:",
+            "$XDG_CONFIG_HOME/phux/agent-rules, else",
+            "~/.config/phux/agent-rules.",
         ],
     },
     EnvVarSpec {
@@ -240,8 +333,8 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
     },
 ];
 
-/// The width of the name column in [`environment_section`]: long enough
-/// for every name but one, which gets its meaning on the following lines.
+/// The width of the name column in [`environment_section`]: a longer
+/// name gets its meaning on the following lines.
 const NAME_COLUMN: usize = 18;
 
 /// Render the `phux help environment` topic from [`ENV_VARS`].
@@ -272,21 +365,27 @@ pub(crate) fn environment_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ENV_VARS, deadline_from, environment_section};
+    use super::{ENV_VARS, NAME_COLUMN, deadline_from, environment_section};
 
     #[test]
     fn deadline_reads_seconds_and_zero_disables() {
         use std::time::Duration;
-        let ten = Some(Duration::from_secs(10));
-        assert_eq!(deadline_from(None), ten);
-        assert_eq!(deadline_from(Some("nope")), ten);
-        assert_eq!(deadline_from(Some("-1")), ten);
-        assert_eq!(deadline_from(Some("0")), None);
-        assert_eq!(deadline_from(Some("3")), Some(Duration::from_secs(3)));
-        assert_eq!(
-            deadline_from(Some("1.5s")),
-            Some(Duration::from_millis(1500))
-        );
+        for (raw, deadline) in [
+            (None, Some(Duration::from_secs(10))),
+            (Some(""), Some(Duration::from_secs(10))),
+            (Some("0"), None),
+            (Some("3"), Some(Duration::from_secs(3))),
+            (Some("1.5s"), Some(Duration::from_millis(1500))),
+        ] {
+            assert_eq!(deadline_from(raw), Ok(deadline), "{raw:?}");
+        }
+        for raw in ["nope", "-1", "NaN"] {
+            let refused = deadline_from(Some(raw)).unwrap_err();
+            assert!(
+                refused.contains("PHUX_TIMEOUT") && refused.contains(raw),
+                "{refused}"
+            );
+        }
     }
 
     /// Every variable lands on its own line, in table order, and the
@@ -297,7 +396,15 @@ mod tests {
         let mut last = 0;
         for spec in ENV_VARS {
             let at = section
-                .find(&format!("  {}", spec.name))
+                .find(&format!(
+                    "  {}{}",
+                    spec.name,
+                    if spec.name.len() >= NAME_COLUMN {
+                        "\n"
+                    } else {
+                        " "
+                    }
+                ))
                 .unwrap_or_else(|| panic!("{} is missing from the topic", spec.name));
             assert!(at >= last, "{} is out of table order", spec.name);
             last = at;

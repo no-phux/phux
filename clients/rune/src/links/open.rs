@@ -35,7 +35,7 @@ fn decoded_path(raw: &str) -> Option<String> {
     (!decoded.contains('\0') && decoded.starts_with('/')).then_some(decoded)
 }
 
-fn percent_decode(raw: &str) -> Option<String> {
+pub(crate) fn percent_decode(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;

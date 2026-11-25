@@ -32,6 +32,13 @@ pub fn hello(server: u8, organized: bool) -> FrameKind {
         .build()
 }
 
+/// Server `server`'s hello advertising exactly `features`.
+pub fn hello_with(server: u8, features: &[ServerFeatureExt]) -> FrameKind {
+    HelloOk::new(vec![server; 16], ServerCapabilities::new())
+        .features_ext(ServerFeatureExtSet::with(features))
+        .build()
+}
+
 /// The attach in `sent`.
 pub fn attach_id(sent: &[FrameKind]) -> Option<u32> {
     sent.iter().find_map(|frame| match frame {

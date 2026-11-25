@@ -189,6 +189,7 @@ pub(super) fn journal_drained_event(
     {
         desc.program_title = Some(title.clone()).filter(|t| !t.is_empty());
     }
+    s.mark_unseen_event(wire_terminal_id, &event);
     let actor = control_actor(&event);
     let record = crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event)
         .with_actor(actor)

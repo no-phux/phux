@@ -19,6 +19,7 @@ use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 pub mod accessibility;
+mod agent_forward;
 mod attach;
 pub(crate) mod bare;
 mod changes;
@@ -37,9 +38,12 @@ pub mod hive;
 mod home;
 mod inbox;
 mod input;
+pub mod keep_awake;
 pub mod kitchen;
 mod layout;
 pub mod link;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod link_handlers;
 mod links;
 pub mod machines;
 pub mod mouse;
@@ -47,6 +51,7 @@ pub(crate) mod native_input;
 pub mod news;
 pub mod notice;
 pub mod onboarding;
+pub mod open_url;
 mod palette;
 mod pending;
 mod picks;
@@ -66,10 +71,12 @@ pub mod resources;
 mod reveal;
 mod scene_host;
 mod screenshot;
+mod seen;
 mod sessions;
 mod archived_relaunch;
 mod settings;
 mod shown;
+mod size_lock;
 mod splits;
 pub mod surfaces;
 mod tabs;
@@ -141,6 +148,9 @@ pub struct Desk {
     plugin_actions: plugin_actions::Actions,
     /// The theme a live preview stands in for, restored unless one is chosen.
     theme_before: Option<Option<&'static crate::theme::Theme>>,
+    /// The theme last installed on the terminal: a viewed machine's theme
+    /// differing from it means the window moved to a host with its own.
+    worn: Cell<Option<&'static crate::theme::Theme>>,
     pub sidebar_open: bool,
     /// The window's width in points, from the root's last layout; 0 until then.
     pub window_w: f32,
@@ -176,6 +186,9 @@ pub struct Desk {
     pub settings: settings::Settings,
     /// `config.toml`'s `[rune]` keys, which win over saved choices.
     pub file: phux_config_core::RuneCfg,
+    /// `[experimental] predictive-echo`: unset draws typing ahead of the
+    /// echo on another machine's terminals only.
+    pub(crate) predictive_echo: Option<bool>,
     pub settings_open: bool,
     /// First-run onboarding, while open, and what it has learned.
     pub onboarding: onboarding::Onboarding,
@@ -185,6 +198,8 @@ pub struct Desk {
     pub settings_ui: settings::SettingsUi,
     /// Session disclosure belongs to this window, independent of selection.
     pub sidebar_collapsed: HashSet<SessionKey>,
+    /// Rows whose child panes show; every parent starts folded.
+    pub sidebar_unfolded: HashSet<ResourceId>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -214,6 +229,8 @@ pub struct Desk {
     /// The chrome's size in percent (`settings::INTERFACE_SIZES`): the
     /// view's zoom, which the terminal's text is held against.
     pub interface_size: u16,
+    /// Which control has the keyboard instead of the terminal.
+    focus: input::focus::Focus,
     /// The terminal font family; empty is the default.
     pub font_family: String,
     /// `font_family` is not behind Rune's mono slot yet.
@@ -261,6 +278,11 @@ impl Desk {
         prefs: rune::prefs::Prefs,
     ) -> Self {
         let (config, file_error) = settings::load_file();
+        // A config that didn't load is not consent to draw guesses.
+        let predictive_echo = match file_error {
+            Some(_) => Some(false),
+            None => config.experimental.predictive_echo,
+        };
         let file = config.rune;
         // `defaults.attach-session` opens this computer's server unless a
         // flag or link named a session.
@@ -306,6 +328,7 @@ impl Desk {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             plugin_actions: plugin_actions::Actions::default(),
             theme_before: None,
+            worn: Cell::new(None),
             sidebar_open,
             window_w: 0.0,
             window_h: 0.0,
@@ -329,6 +352,7 @@ impl Desk {
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
             sidebar_collapsed: HashSet::new(),
+            sidebar_unfolded: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
@@ -346,6 +370,7 @@ impl Desk {
             generation: 0,
             font_size,
             interface_size,
+            focus: input::focus::Focus::default(),
             font_due: !font_family.is_empty(),
             font_family,
             font_epoch: rune::text::font_epoch(),
@@ -358,6 +383,7 @@ impl Desk {
             quick: None,
             quick_chord: quick::Chord::default(),
             native: None,
+            predictive_echo,
             file,
         };
         if let Some(error) = file_error {
@@ -387,7 +413,8 @@ impl Desk {
         self.follow_font(tx);
         self.machines.tick_glances(clock, tx);
         self.follow_path(tx);
-        let updated = self.pump_updates(tx)
+        let updated = self.return_keyboard(tx)
+            | self.pump_updates(tx)
             | self.finish_document_images()
             | self.finish_document_viewers(tx)
             | self.pump_machines()
@@ -398,6 +425,7 @@ impl Desk {
             | self.finish_screenshot()
             | self.pump_raw_relaunch()
             | self.pump_settings(tx)
+            | self.follow_host_theme()
             | self.pump_onboarding(tx)
             | self.follow_accessibility()
             | self.expire_notice(tx);
@@ -408,6 +436,12 @@ impl Desk {
         };
         let (news, moved) = self.observe(&client, client.take_activity(), tx);
         let mut changed = updated | news | self.take_globals(&client);
+        let held = self.connection.reveal.is_some();
+        if self.follow_reveal() {
+            tx.wake_after(Duration::from_millis(250));
+        } else {
+            changed |= held && self.connection.reveal.is_none();
+        }
         let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client) | self.tend_popup(&client, tx);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
@@ -418,16 +452,19 @@ impl Desk {
         if rearrange || opened || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
+        self.report_in_view(&client);
         self.reveal_active_tab(tx);
         // The replica's news may never come, and a split only waits so long.
         if unfocused || self.splits_waiting() {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.pump_agent(&client);
         changed |= self.take_paths(&client) | self.take_screens();
         changed |= self.take_changes(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
+        changed |= self.tick_open_url(tx);
         changed |= self.tick_playground(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);

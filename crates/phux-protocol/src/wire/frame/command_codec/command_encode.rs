@@ -251,6 +251,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         } => super::service_http::encode_read(*exchange, *max_bytes, enc),
         Command::ServiceHttpClose { exchange } => super::service_http::encode_close(*exchange, enc),
         Command::Forward { op } => super::forward::encode_op(op, enc),
+        Command::OpenUrl { terminal_id, op } => super::open_url::encode(terminal_id, op, enc),
         Command::ReportAsked {
             terminal_id,
             id,

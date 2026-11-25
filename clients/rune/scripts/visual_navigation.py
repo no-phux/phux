@@ -28,6 +28,14 @@ def navigation_inventory(themes=("dark", "light")):
              (393, 480, 2, "true"), (320, 340, 2, "true")))
     })
     cases.update(connections_inventory(themes))
+    cases.update(session_search_inventory(themes))
+    cases.update({
+        f"navigation/canvas-{state}-{theme}-{width * 2}.png":
+            (width, keyboard_height if state.startswith("query-") else height, 2)
+        for state, theme, (width, height, keyboard_height) in product(
+            ("connections", "query-top", "query-bottom", "empty"), themes,
+            ((320, 478, 340), (393, 759, 480)))
+    })
     cases.update({
         f"navigation/connections-keyboard-{theme}-{state}-{width * 2}.png":
             (width, height, 2)
@@ -37,6 +45,15 @@ def navigation_inventory(themes=("dark", "light")):
     cases.update(states_inventory(themes))
     cases.update(reconnect_inventory(themes))
     cases.update(pane_motion_inventory(themes))
+    cases.update({
+        f"navigation/pane-picker-{theme}-{text}-{width}x{height}-{scale}x-"
+        f"native-{native}-{state}.png": (width, height, scale)
+        for theme, text, (width, height, scale, native), state in product(
+            themes, ("standard", "ax5"),
+            ((393, 852, 1, "false"), (320, 568, 1, "false"),
+             (393, 480, 2, "true"), (320, 340, 2, "true")),
+            ("top", "focused", "bottom"))
+    })
     cases.update(accessory_inventory(themes))
     cases.update(accessory_resize_inventory(themes))
     cases.update({
@@ -46,7 +63,27 @@ def navigation_inventory(themes=("dark", "light")):
             themes, ("normal", "forced"), ("closed", "focused", "inbox"),
             ((1100, 720), (640, 360)))
     })
+    cases.update({
+        f"navigation/sidebar-focus-{theme}-{mode}-{state}-{width}x{height}-2x.png":
+            (width, height, 2)
+        for theme, mode, state, (width, height) in product(
+            themes, ("normal", "forced", "collapsed"),
+            ("idle", "row", "inbox-focus", "inbox-open"),
+            ((1100, 720), (640, 360)))
+    })
     return cases
+
+
+def session_search_inventory(themes):
+    return {
+        f"navigation/session-search-{state}-{theme}-{text}-native-{native}-"
+        f"{width}x{height}-{width * 2}.png": (width, height, 2)
+        for state, theme, text, (width, height, native) in product(
+            ("matching", "no-match", "long", "blurred"), themes, ("standard", "ax5"),
+            ((320, 568, "false"), (393, 852, "false"),
+             (320, 478, "true"), (393, 759, "true"),
+             (320, 340, "true"), (393, 480, "true")))
+    }
 
 
 def reconnect_inventory(themes):
@@ -102,13 +139,17 @@ def connections_inventory(themes):
 
 def navigation_exporter(stem):
     for prefix, exporter in (
+        ("session-search-", "phone_session_search_visual_review_frames"),
+        ("canvas-", "phone_session_canvas_visual_review_frames"),
         ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
+        ("sidebar-focus-", "sidebar_focus_visual_review_frames"),
         ("accessory-resize-", "phone_accessory_resize_visual_review_frames"),
         ("accessory-", "phone_accessory_visual_review_frames"),
         ("connections-keyboard-", "phone_connections_keyboard_visual_review_frames"),
         ("connections-", "phone_connections_visual_review_frames"),
         ("pane-motion-", "phone_pane_motion_visual_review_frames"),
+        ("pane-picker-", "phone_pane_picker_visual_review_frames"),
         ("header-", "phone_header_visual_review_frames"),
         ("states-", "phone_states_visual_review_frames"),
         ("retina-", "retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports"),

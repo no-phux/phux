@@ -35,25 +35,32 @@ async function settle(): Promise<void> {
   for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 }
 
-test("mail reaches the conversation as a follow-up that starts a turn when idle", async () => {
-  const pi = fakePi();
-  const source = scripted([{ text: "[phux mail] A message", ids: ["a"] }]);
-  const inbox = registerPhuxMail(pi.api, {
-    env: { PHUX_TERMINAL_ID: "749" },
-    wait: source.wait,
-    release: async () => { throw new Error("nothing to release"); },
+for (const env of [
+  { PHUX_TERMINAL_ID: "749" },
+  { PHUX_AGENT_ADDRESS: "ordinary-address" },
+  { PHUX_CHAT_RECORD: "/private/chat record" },
+  { PHUX_CHAT_RECORD: "/private/chat record", PHUX_AGENT_ADDRESS: "claim-holder" },
+]) {
+  test(`mail reaches the conversation as a follow-up for ${JSON.stringify(env)}`, async () => {
+    const pi = fakePi();
+    const source = scripted([{ text: "[phux mail] A message", ids: ["a"] }]);
+    const inbox = registerPhuxMail(pi.api, {
+      env,
+      wait: source.wait,
+      release: async () => { throw new Error("nothing to release"); },
+    });
+    assert.notEqual(inbox, null);
+    pi.fire("session_start");
+    await settle();
+    assert.deepEqual(pi.sent, [{
+      message: { customType: PHUX_MAIL_CUSTOM_TYPE, content: "[phux mail] A message", display: true, details: { ids: ["a"] } },
+      options: { triggerTurn: true, deliverAs: "followUp" },
+    }]);
+    pi.fire("session_shutdown");
+    await settle();
+    assert.equal(inbox?.running, false);
   });
-  assert.notEqual(inbox, null);
-  pi.fire("session_start");
-  await settle();
-  assert.deepEqual(pi.sent, [{
-    message: { customType: PHUX_MAIL_CUSTOM_TYPE, content: "[phux mail] A message", display: true, details: { ids: ["a"] } },
-    options: { triggerTurn: true, deliverAs: "followUp" },
-  }]);
-  pi.fire("session_shutdown");
-  await settle();
-  assert.equal(inbox?.running, false);
-});
+}
 
 test("outside a pane nothing waits for mail", async () => {
   const pi = fakePi();

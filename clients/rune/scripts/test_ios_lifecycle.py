@@ -23,7 +23,7 @@ class LifecycleTests(unittest.TestCase):
         return lane, documents
 
     def launcher(self, documents, resumed_frames=8, marker=True):
-        def launch(*args):
+        def launch(*args, **_):
             self.assertEqual(args[:2], ("launch", "OWNED-SIMULATOR"))
             if args[2] == "com.apple.springboard":
                 source = documents / "rune-background.json"
@@ -47,7 +47,8 @@ class LifecycleTests(unittest.TestCase):
                 lane.simctl = Mock(side_effect=self.launcher(documents))
                 lane.cycle_scene(documents, 123, prefix)
                 self.assertEqual(lane.simctl.call_args_list, [
-                    call("launch", "OWNED-SIMULATOR", "com.apple.springboard"),
+                    call("launch", "OWNED-SIMULATOR", "com.apple.springboard",
+                         attempts=qualify.QUERY_ATTEMPTS),
                     call("launch", "OWNED-SIMULATOR", qualify.BUNDLE_ID),
                 ])
                 lane.require_alive.assert_called_once_with(123)
@@ -62,11 +63,12 @@ class LifecycleTests(unittest.TestCase):
             lane, documents = self.lane(Path(temporary))
             (documents / "rune-background.json").write_text('{"background_frames":7}')
             lane.simctl = Mock(return_value="")
-            with patch.object(qualify.time, "monotonic", side_effect=[0, 31]), \
+            with patch.object(qualify.time, "monotonic", side_effect=[0, 1, 31]), \
                     self.assertRaisesRegex(TimeoutError, "acknowledge OS backgrounding"):
                 lane.cycle_scene(documents, 123)
             self.assertFalse((documents / "rune-background.json").exists())
-            lane.simctl.assert_called_once_with("launch", "OWNED-SIMULATOR", "com.apple.springboard")
+            lane.simctl.assert_called_once_with("launch", "OWNED-SIMULATOR", "com.apple.springboard",
+                                                attempts=qualify.QUERY_ATTEMPTS)
             lane.require_alive.assert_called_once_with(123)
 
     def test_resume_still_requires_the_marker_and_an_advanced_presented_frame(self):
@@ -82,12 +84,12 @@ class LifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             lane, documents = self.lane(Path(temporary))
             (documents / "rune-lifecycle.json").write_text('{"stale":true}')
-            def launch(*args):
+            def launch(*args, **_):
                 if args[-1] == "com.apple.springboard":
                     (documents / "rune-background.json").write_text('{"background_frames":7}')
                 return ""
             lane.simctl = Mock(side_effect=launch)
-            with patch.object(qualify.time, "monotonic", side_effect=[0, 1, 32]), \
+            with patch.object(qualify.time, "monotonic", side_effect=[0, 1, 2, 32]), \
                     self.assertRaisesRegex(TimeoutError, "no presented frame"):
                 lane.cycle_scene(documents, 123)
             self.assertEqual(lane.simctl.call_count, 2)

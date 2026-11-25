@@ -10,6 +10,7 @@ use std::time::Duration;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
+use phux_agent_session::asked::{AskedSource, AskedState};
 use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_terminal_api::actor::TerminalResource as _;
@@ -149,20 +150,20 @@ pub(crate) async fn collect_pane_handoffs(
 }
 
 /// Fill each live pane in `blob` with its engine's handoff: live size,
-/// PTY, replay, and the program's title. A retained pane's PTY does not
-/// cross (ADR-0124 §6), and a pane without a handoff keeps the registry's
-/// values.
+/// PTY, replay, and the program's title; and with its open question. A
+/// retained pane's PTY does not cross (ADR-0124 §6), and a pane without a
+/// handoff keeps the registry's values.
 pub(crate) fn carry_handoffs(
     s: &ServerState,
     blob: &mut StateBlob,
     handoffs: &HashMap<ResourceId, ProcessHandoff>,
 ) {
     for pane in blob.panes.iter_mut().filter(|p| p.retained_exit.is_none()) {
-        let handoff = s
+        let core = s
             .idspace
-            .resource_from_wire(&WireResourceId::local(pane.wire_id))
-            .and_then(|id| handoffs.get(&id));
-        if let Some(handoff) = handoff {
+            .resource_from_wire(&WireResourceId::local(pane.wire_id));
+        pane.asked = core.and_then(|id| s.asked_observation(id)).cloned();
+        if let Some(handoff) = core.and_then(|id| handoffs.get(&id)) {
             apply_handoff(pane, handoff);
         }
     }
@@ -288,12 +289,35 @@ where
         Ok(())
     }
 
-    /// Pane metadata does not cross an upgrade; the notify mode lives on
-    /// the record, so put it back before any client attaches.
+    /// Pane metadata does not cross an upgrade; the notify mode and parent
+    /// live on the record and the open question on the pane, so put them
+    /// back before any client attaches.
     fn restore(&mut self, state: &mut ServerState, blob: &StateBlob) {
         for p in &blob.panes {
-            crate::runtime::apps::terminal::notify_mode::reinstall(state, &WireResourceId::local(p.wire_id));
+            let wire = WireResourceId::local(p.wire_id);
+            crate::runtime::apps::terminal::notify_mode::reinstall(state, &wire);
+            crate::runtime::apps::terminal::parent::reinstall(state, &wire);
+            if let Some(held) = p.asked.as_ref().filter(|held| still_held(blob, p, held)) {
+                restore_ask(state, &wire, held);
+            }
         }
+    }
+}
+
+/// Whether what asked still exists to take the question back: a streamed
+/// question belongs to a session that has to have crossed too.
+fn still_held(blob: &StateBlob, pane: &PaneBlob, held: &AskedState) -> bool {
+    held.source != AskedSource::Stream
+        || (blob.agent_sessions.iter())
+            .any(|session| session.parent_wire_id == pane.wire_id && !session.ended)
+}
+
+/// Hold the carried question again, with its asked flag. Emits no event: it
+/// was announced when it was asked.
+fn restore_ask(state: &mut ServerState, wire: &WireResourceId, held: &AskedState) {
+    if let Some(core) = state.idspace.resource_from_wire(wire) {
+        state.report_agent_asked(core, held.source, held.payload.clone());
+        crate::hub::metadata_mirror::publish_asked_flag(state, wire, true);
     }
 }
 
@@ -413,6 +437,7 @@ fn wired(
 ) -> Result<RebuiltPane<crate::runtime::commands::terminal::PaneWiring>, RebuildError>
 + 'static {
     let engine = state.terminal_engine();
+    let keeper = crate::runtime::apps::terminal::scrollback::keeper(&state);
     move |core, p, scrollback| {
         let source = match (p.master_fd, p.child_pid) {
             (Some(master_fd), Some(child_pid)) => phux_terminal_api::EngineSource::Adopt {
@@ -423,7 +448,11 @@ fn wired(
             (None, None) => phux_terminal_api::EngineSource::Replay(pane_seed(p)),
             _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
         };
-        let reports = crate::runtime::commands::terminal::spawn::engine_reports(&state, core);
+        let reports = crate::runtime::commands::terminal::spawn::engine_reports(
+            &state,
+            core,
+            keeper.clone(),
+        );
         let engine = engine.as_ref().ok_or_else(|| {
             RebuildError::Actor(Box::new(phux_terminal_api::TerminalActorError::Refused(
                 "no Terminal engine supplied".into(),

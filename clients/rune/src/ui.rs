@@ -45,15 +45,17 @@ mod pitch;
 mod pitlane;
 mod playground;
 mod popup;
-mod questions;
+pub(crate) mod questions;
 #[allow(clippy::disallowed_methods)] // illustration art
 mod reef;
 pub(crate) mod rows;
 mod settings;
 mod sidebar;
+pub(crate) use sidebar::focus_target as sidebar_focus_target;
 mod spatial;
 mod status;
 mod tabs;
+mod tile;
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
 pub(crate) mod tokens;
 mod updates;
@@ -128,6 +130,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     desk.follow_appearance(dark);
     let t = Tokens::for_window(desk, cx);
     wire(&t, cx);
+    desk.watch_focus(cx);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
@@ -246,6 +249,7 @@ fn tooltip(t: &Tokens) -> rune::HelpLook {
 /// What floats over the window: banners, cards, sheets and menus.
 fn floating(root: El, desk: &Desk, p: &Tokens, band: f32, cx: &mut Cx<Desk>) -> El {
     let root = root
+        .on_key(|d: &mut Desk, event, _| d.heard_key(event))
         .children(status::banner(desk, p))
         .children(updates::card(desk, p, band));
     floating_surfaces(root, desk, p, band, cx)

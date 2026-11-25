@@ -71,7 +71,9 @@ Closing a client changes nothing on the server.
 
 When several clients show one session, the smallest view sets each pane's
 size by default; `[defaults] window-size = "active"` sizes it for the client
-you used last.
+you used last. A client can lock its view size (`phux attach --lock-size`, or
+Lock view size in the palette): while it is attached, other clients see its
+panes letterboxed or cropped instead of resizing them.
 
 ## Hosts
 
@@ -114,7 +116,7 @@ key, new process.
 | detach, close the terminal, lose SSH         | keep running | kept                  | kept       |
 | a client crashes                             | keep running | kept                  | kept       |
 | `phux update` or `phux upgrade`              | keep running | kept                  | kept       |
-| server crash, `phux kill --server`, reboot   | end          | come back             | lost       |
+| server crash, `phux kill --server`, reboot   | end          | come back             | lost, unless [`restore.scrollback`](#kept-scrollback) |
 
 When the server stops, its programs stop. The next server brings back
 sessions, tabs, panes, and each pane's directory, with nothing running:
@@ -140,6 +142,20 @@ command = ["nvim", "-S", "${PHUX_RESUME_TOKEN}"]
 
 `phux service install` runs the server under launchd or systemd (with
 linger on Linux), so it starts at login and after a reboot.
+
+### Kept scrollback
+
+```toml
+[restore]
+scrollback = 2000                        # lines per pane, at most 10000; 0 is off
+scrollback-exclude = ["secrets", "psql"] # session, pane, or program names
+```
+
+A pane that starts again then has its last lines in its history, above a
+`-- before the restart, … --` divider. A crash loses the last few seconds of
+output, and only the main screen is kept, never a full-screen program's.
+Read [what is on disk](./security.md#kept-scrollback) before turning it on.
+Restart the server after changing it.
 
 ## Agents
 

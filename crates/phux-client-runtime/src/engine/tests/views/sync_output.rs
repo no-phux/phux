@@ -15,7 +15,7 @@ fn expired_hold() -> (EngineHandle, Arc<Publication>, ResourceId, Arc<GridFrame>
     let (owner, publication, terminal) = committed();
     publication.acquire(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
-    owner.expire_sync_output(owner.sync_output_deadline().unwrap());
+    owner.expire_presentation(owner.presentation_deadline().unwrap());
     let committed = publication.acquire(&terminal).unwrap();
     (owner, publication, terminal, committed)
 }
@@ -52,7 +52,7 @@ fn synchronized_redraw_keeps_committed_default_and_view_frames() {
         publication.acquire_view(view).unwrap().text(),
         "replacement"
     );
-    assert!(owner.sync_output_deadline().is_none());
+    assert!(owner.presentation_deadline().is_none());
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn a_batched_end_and_new_begin_rearms_an_expired_watchdog() {
             output(&terminal, 3, b"\x1b[?2026h\x1b[2J"),
         ],
     );
-    assert!(owner.sync_output_deadline().is_some());
+    assert!(owner.presentation_deadline().is_some());
     assert!(Arc::ptr_eq(
         &committed,
         &publication.acquire(&terminal).unwrap()
@@ -97,7 +97,7 @@ fn end_and_new_begin_inside_one_payload_rearm_an_expired_watchdog() {
         &owner,
         output(&terminal, 2, b"\x1b[?2026l\x1b[?2026h\x1b[2J"),
     );
-    assert!(owner.sync_output_deadline().is_some());
+    assert!(owner.presentation_deadline().is_some());
     assert!(Arc::ptr_eq(
         &committed,
         &publication.acquire(&terminal).unwrap()
@@ -109,7 +109,7 @@ fn uncommitted_batched_transactions_cannot_postpone_the_watchdog() {
     let (owner, publication, terminal) = committed();
     publication.acquire(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h\x1b[2J"));
-    let deadline = owner.sync_output_deadline().unwrap();
+    let deadline = owner.presentation_deadline().unwrap();
     for n in 0..5 {
         apply_batch_ok(
             &owner,
@@ -118,11 +118,11 @@ fn uncommitted_batched_transactions_cannot_postpone_the_watchdog() {
                 output(&terminal, 3 + n * 2, b"\x1b[?2026h"),
             ],
         );
-        assert_eq!(owner.sync_output_deadline(), Some(deadline));
+        assert_eq!(owner.presentation_deadline(), Some(deadline));
         assert_eq!(publication.acquire(&terminal).unwrap().text(), "committed");
     }
-    assert_eq!(owner.expire_sync_output(deadline), vec![terminal]);
-    assert!(owner.sync_output_deadline().is_none());
+    assert_eq!(owner.expire_presentation(deadline), vec![terminal]);
+    assert!(owner.presentation_deadline().is_none());
 }
 
 #[test]
@@ -133,21 +133,21 @@ fn missing_end_is_released_by_the_deadline_lane_without_more_output() {
         &owner,
         output(&terminal, 1, b"\x1b[?2026h\x1b[2J\x1b[Hwaiting"),
     );
-    let deadline = owner.sync_output_deadline().unwrap();
+    let deadline = owner.presentation_deadline().unwrap();
     assert!(
         owner
-            .expire_sync_output(deadline.checked_sub(Duration::from_millis(1)).unwrap())
+            .expire_presentation(deadline.checked_sub(Duration::from_millis(1)).unwrap())
             .is_empty()
     );
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "committed");
-    assert_eq!(owner.expire_sync_output(deadline), vec![terminal.clone()]);
+    assert_eq!(owner.expire_presentation(deadline), vec![terminal.clone()]);
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "waiting");
-    assert!(owner.sync_output_deadline().is_none());
+    assert!(owner.presentation_deadline().is_none());
     apply_ok(&owner, output(&terminal, 2, b"!"));
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "waiting!");
     apply_ok(&owner, output(&terminal, 3, b"\x1b[?2026l"));
     apply_ok(&owner, output(&terminal, 4, b"\x1b[?2026h\x1b[2J"));
-    assert!(owner.sync_output_deadline().is_some());
+    assert!(owner.presentation_deadline().is_some());
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "waiting!");
 }
 
@@ -168,6 +168,8 @@ fn synchronized_bootstrap_and_new_view_wait_for_a_complete_frame() {
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "complete");
     let source = owner.view_source(&terminal).unwrap();
     let view = owner.create_view(&source).unwrap();
+    // Registered at admission, then published once from the complete frame.
+    assert_eq!(publication.view_generation(view), Some(1));
     assert_eq!(publication.acquire_view(view).unwrap().text(), "complete");
 }
 
@@ -183,12 +185,12 @@ fn synchronization_does_not_hold_other_terminals_or_survive_reset() {
     apply_ok(&owner, output(&b, 1, b"!"));
     assert_eq!(publication.acquire(&b).unwrap().text(), "second!");
     owner.reset_connection();
-    assert!(owner.sync_output_deadline().is_none());
+    assert!(owner.presentation_deadline().is_none());
     attach(&owner, &a, b"fresh");
     assert_eq!(publication.acquire(&a).unwrap().text(), "fresh");
     assert!(
         owner
-            .expire_sync_output(Instant::now() + Duration::from_secs(2))
+            .expire_presentation(Instant::now() + Duration::from_secs(2))
             .is_empty()
     );
 }
@@ -202,19 +204,19 @@ fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
     publication.acquire_view(view).unwrap();
     publication.acquire(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
-    let old_deadline = owner.sync_output_deadline().unwrap();
-    owner.expire_sync_output(old_deadline);
+    let old_deadline = owner.presentation_deadline().unwrap();
+    owner.expire_presentation(old_deadline);
     rebootstrap(&owner, &terminal, 2, b"\x1b[?2026hnew");
-    assert!(owner.sync_output_deadline().is_some());
+    assert!(owner.presentation_deadline().is_some());
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "committed");
     assert_eq!(publication.acquire_view(view).unwrap().text(), "committed");
     assert!(
-        owner.sync_output_deadline().is_some(),
+        owner.presentation_deadline().is_some(),
         "reapplying cached cell pitch must preserve the hold"
     );
     owner.set_retain_on_close(&terminal, true);
     apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
-    assert!(owner.sync_output_deadline().is_none());
+    assert!(owner.presentation_deadline().is_none());
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "new");
     assert_eq!(publication.acquire_view(view).unwrap().text(), "new");
 }
@@ -226,7 +228,7 @@ fn a_nonretained_close_drops_held_frames_and_deadlines() {
     let view = owner.create_view(&source).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h\x1b[2J"));
     apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
-    assert!(owner.sync_output_deadline().is_none());
+    assert!(owner.presentation_deadline().is_none());
     assert!(publication.acquire(&terminal).is_none());
     assert!(publication.acquire_view(view).is_none());
 }

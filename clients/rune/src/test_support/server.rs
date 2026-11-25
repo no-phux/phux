@@ -53,6 +53,8 @@ pub fn pane(
         exec: None,
         foreground: None,
         icon: None,
+        parent: None,
+        unseen: None,
     }
 }
 

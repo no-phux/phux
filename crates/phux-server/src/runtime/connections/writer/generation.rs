@@ -1,6 +1,6 @@
 use crate::state::Outbound;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{FrameKind, TombstoneReason};
 use std::collections::HashMap;
 
 /// Upper bound on queued outbound messages coalesced into one transport
@@ -52,10 +52,19 @@ impl OutboundGenerationFence {
 
     /// Admit one mailbox item into the wire stream, applying generation
     /// transitions before the next queued item is considered.
-    pub(super) fn admits(&mut self, message: &Outbound) -> bool {
+    ///
+    /// A reattach's tombstone is the one frame rewritten here: it names the
+    /// id the replaced pump *started* with, and that pump may have resynced
+    /// since, so it is made to retire the generation actually live. Dropped,
+    /// it left the next BEGIN unannounced, which a hub relaying the stream
+    /// reads as a broken flow.
+    pub(super) fn admits(&mut self, message: &mut Outbound) -> bool {
         let Outbound::Frame(frame) = message else {
             return true;
         };
+        if !self.retarget_reattach(frame) {
+            return false;
+        }
         match frame {
             FrameKind::BootstrapBegin {
                 terminal_id,
@@ -93,6 +102,26 @@ impl OutboundGenerationFence {
                 },
             ),
         }
+    }
+
+    /// Name the live generation in a reattach's tombstone; `false` when it
+    /// is retired already (a resync the reattach cut short), so nothing is
+    /// left to tombstone.
+    fn retarget_reattach(&self, frame: &mut FrameKind) -> bool {
+        if let FrameKind::BootstrapTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            reason: TombstoneReason::ExplicitReattach,
+            ..
+        } = frame
+            && let Some(live) = self.current(terminal_id)
+            && live.stream_id == *stream_id
+        {
+            *bootstrap_id = live.bootstrap_id;
+            return !live.retired;
+        }
+        true
     }
 
     fn admit_begin(
@@ -291,11 +320,11 @@ mod outbound_generation_fence_tests {
             diagnostics: Some(registration.tracker()),
             ..OutboundGenerationFence::default()
         };
-        assert!(fence.admits(&begin(initial)));
-        assert!(fence.admits(&output(initial)));
-        assert!(fence.admits(&tombstone(initial, TombstoneReason::Resize)));
+        assert!(fence.admits(&mut begin(initial)));
+        assert!(fence.admits(&mut output(initial)));
+        assert!(fence.admits(&mut tombstone(initial, TombstoneReason::Resize)));
 
-        assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryPage {
+        assert!(!fence.admits(&mut Outbound::Frame(FrameKind::HistoryPage {
             terminal_id: terminal(),
             stream_id: stream(),
             bootstrap_id: initial,
@@ -305,29 +334,55 @@ mod outbound_generation_fence_tests {
             payload: Bytes::from_static(b"late history"),
             rows: 1,
         })));
-        assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryTombstone {
-            terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: initial,
-            cursor: Bytes::from_static(b"old"),
-            reason: HistoryTombstoneReason::Stale,
-        },)));
-        assert!(!fence.admits(&output(initial)));
-        assert!(!fence.admits(&begin(initial)));
+        assert!(
+            !fence.admits(&mut Outbound::Frame(FrameKind::HistoryTombstone {
+                terminal_id: terminal(),
+                stream_id: stream(),
+                bootstrap_id: initial,
+                cursor: Bytes::from_static(b"old"),
+                reason: HistoryTombstoneReason::Stale,
+            },))
+        );
+        assert!(!fence.admits(&mut output(initial)));
+        assert!(!fence.admits(&mut begin(initial)));
 
-        assert!(fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
+        assert!(fence.admits(&mut tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
         );
 
-        assert!(fence.admits(&begin(replacement)));
-        assert!(fence.admits(&output(replacement)));
-        assert!(!fence.admits(&output(initial)));
-        assert!(!fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
+        assert!(fence.admits(&mut begin(replacement)));
+        assert!(fence.admits(&mut output(replacement)));
+        assert!(!fence.admits(&mut output(initial)));
+        assert!(!fence.admits(&mut tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
         );
+    }
+
+    /// A reattach names the id the replaced pump started with; after a resync
+    /// its tombstone still retires the generation that is live, once.
+    #[test]
+    fn a_reattach_tombstone_retires_the_live_generation() {
+        let mut fence = OutboundGenerationFence::default();
+        for bootstrap_id in [bootstrap(1), bootstrap(2)] {
+            assert!(fence.admits(&mut begin(bootstrap_id)));
+        }
+        let mut reattach = tombstone(bootstrap(1), TombstoneReason::ExplicitReattach);
+        assert!(fence.admits(&mut reattach));
+        assert!(matches!(
+            reattach,
+            Outbound::Frame(FrameKind::BootstrapTombstone { bootstrap_id, .. })
+                if bootstrap_id == bootstrap(2)
+        ));
+        assert!(!fence.admits(&mut output(bootstrap(2))), "retired");
+        let mut again = tombstone(bootstrap(1), TombstoneReason::ExplicitReattach);
+        assert!(!fence.admits(&mut again), "nothing is live to retire");
+        assert!(fence.admits(&mut begin(bootstrap(9))));
+
+        let mut stale = tombstone(bootstrap(1), TombstoneReason::Resize);
+        assert!(!fence.admits(&mut stale), "only a reattach is retargeted");
     }
 }

@@ -72,7 +72,7 @@ impl ControlPlane {
             #[cfg(feature = "engine")]
             self.engine
                 .as_ref()
-                .and_then(super::EngineHandle::sync_output_deadline),
+                .and_then(super::EngineHandle::presentation_deadline),
         ]
         .into_iter()
         .flatten()
@@ -86,18 +86,18 @@ impl ControlPlane {
         let uploads = self.expire_uploads();
         let organization = self.expire_org();
         #[cfg(feature = "engine")]
-        let synchronized = self.expire_sync_output();
+        let presented = self.expire_presentation();
         #[cfg(not(feature = "engine"))]
-        let synchronized = false;
-        input || uploads || organization || synchronized
+        let presented = false;
+        input || uploads || organization || presented
     }
 
     #[cfg(feature = "engine")]
-    fn expire_sync_output(&mut self) -> bool {
+    fn expire_presentation(&mut self) -> bool {
         let expired = self
             .engine
             .as_ref()
-            .map(|engine| engine.expire_sync_output(self.observed_time()))
+            .map(|engine| engine.expire_presentation(self.observed_time()))
             .unwrap_or_default();
         let changed = !expired.is_empty();
         for id in expired {

@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use phux_config::ClipboardWrite;
+use phux_config::{ClipboardRead, ClipboardWrite};
 use phux_protocol::input::paste::ClipboardData;
 
 use super::super::{AttachError, Connection, FrameKind, FrameOutcome};
@@ -24,6 +24,9 @@ impl super::super::SessionLoop {
             }
             match self.settings.clipboard_write {
                 ClipboardWrite::Allow => crate::attach::copy::write_host_clipboard(out, &text.0)?,
+                ClipboardWrite::Ask if self.overlays.asking() => {
+                    tracing::info!(terminal_id = ?pane, "clipboard write dropped: another question is up");
+                }
                 ClipboardWrite::Ask => {
                     let source = crate::attach::server_frame::pane_label(&pane);
                     self.overlays.push(Box::new(
@@ -51,8 +54,10 @@ impl super::super::SessionLoop {
         outcome: &mut FrameOutcome,
     ) -> Result<(), AttachError> {
         for (pane, selection) in std::mem::take(&mut outcome.clipboard_reads) {
-            let focused = self.mirror.focused_resource.as_ref() == Some(&pane);
             let policy = self.settings.clipboard_read;
+            // A read that would ask while another question is up is dropped.
+            let held = policy == ClipboardRead::Ask && self.overlays.asking();
+            let focused = !held && self.mirror.focused_resource.as_ref() == Some(&pane);
             let action = self.clipboard_reads.borrow_mut().on_read(
                 &pane,
                 selection,
@@ -66,10 +71,8 @@ impl super::super::SessionLoop {
                 }
                 ReadAction::Ask => {
                     let mut label = crate::attach::server_frame::pane_label(&pane);
-                    if let Some(slot) = self.mirror.panes.get(&pane)
-                        && !slot.last_title.is_empty()
-                    {
-                        label = format!("{label} ({})", slot.last_title);
+                    if let Some(title) = self.pane_title(&pane) {
+                        label = format!("{label} ({title})");
                     }
                     self.overlays.push(Box::new(ClipboardReadOverlay::new(
                         pane,
@@ -84,6 +87,21 @@ impl super::super::SessionLoop {
             }
         }
         self.flush_clipboard_query(out)
+    }
+
+    /// What a held pane calls itself, for a question about it.
+    pub(in crate::attach::driver::loop_state) fn pane_title(
+        &self,
+        pane: &phux_protocol::ResourceId,
+    ) -> Option<String> {
+        let slot = self.mirror.panes.get(pane)?;
+        phux_client_core::pane_label::pane_label(
+            None,
+            Some(slot.last_title.as_str()),
+            slot.foreground.as_deref(),
+            slot.cwd.as_deref(),
+        )
+        .filter(|title| !title.is_empty())
     }
 
     /// Ask the host terminal for its clipboard for an allowed read.

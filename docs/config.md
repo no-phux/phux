@@ -116,7 +116,7 @@ values are in the [config schema](./spec/config.schema.json) (`RuneCfg`).
 [rune]
 theme = "nord"                    # "" follows the system
 font-family = ["Berkeley Mono", "Symbols Nerd Font"]
-tab-bar = "bottom"                # "top", "bottom", "hidden"
+tab-bar = "bottom"                # "auto" (default), "top", "bottom", "hidden"
 quick-terminal = "ctrl+backquote" # global drop-down terminal; "none" is off
 chief = "staff"                   # session the right-Cmd tap prompts; "none" is off
 ssh-agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
@@ -149,10 +149,11 @@ never executes document code or fetches assets.
 ## Predictive echo
 
 `[experimental] predictive-echo` draws your typing before the server echoes
-it. Unset, it is on for remote attaches and off locally. It cannot see when a
-program turns echo off, so a typed password can flash on your screen for up
-to about five seconds; nothing extra is sent. Set it to `false` before typing
-secrets on a shared screen, then reattach.
+it, in `phux attach` and in Rune. Unset, it is on for another machine's
+terminals and off for this computer's. It cannot see when a program turns
+echo off, so a typed password can flash on your screen for up to about five
+seconds; nothing extra is sent. Set it to `false` before typing secrets on a
+shared screen, then reattach or reopen Rune.
 
 ## Tailnet owner devices
 

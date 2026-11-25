@@ -3,10 +3,10 @@
 use super::{
     AtomicBool, AttachError, Connection, ESC_FLUSH_IDLE, Ordering, RepaintLevel,
     SYNC_OUTPUT_WATCHDOG, SidebarReservation, Signal, StatusBarPainter, Step,
-    desired_mouse_capture, exit_on_signal, mark_focused_seen, peer_gone, sleep_for_or_pending,
-    sleep_until_or_pending, sync_hover_tracking, sync_mouse_capture, update_which_key_deadline,
+    desired_mouse_capture, mark_focused_seen, peer_gone, sync_hover_tracking, sync_mouse_capture,
+    update_which_key_deadline,
 };
-use crate::attach::driver::terminal::{outer_title, sync_outer_title};
+use crate::attach::driver::terminal::{outer_title, sync_outer_title, terminal_reset_on_signal};
 
 mod kitty_heal;
 
@@ -23,6 +23,8 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         let sidebar = self.sidebar();
         self.settle_iteration(out, sidebar, needs_resync)?;
+        self.send_open_url_answers(conn).await?;
+        self.raise_agent_question(out, sidebar);
         let stepped = self.select_next_event(conn, out, sidebar).await;
         // Whatever woke the loop may have completed a held switch's view.
         self.release_paint_hold_if_ready(out, self.sidebar());
@@ -74,8 +76,9 @@ impl super::SessionLoop {
             &self.mouse_optout,
         );
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
-        // Hover reporting follows the overlay stack (context menus).
-        sync_hover_tracking(out, self.overlays.wants_pointer_hover()).map_err(AttachError::Io)?;
+        // Both menus and visible any-motion applications need unpressed motion.
+        let hover = self.overlays.wants_pointer_hover() || self.application_wants_hover(sidebar);
+        sync_hover_tracking(out, hover).map_err(AttachError::Io)?;
         // The host's window title names the session and the tab in view.
         let ws = &self.mirror.workspace;
         let window = ws.groups.get(ws.active).map_or_else(String::new, |w| {
@@ -95,6 +98,29 @@ impl super::SessionLoop {
         self.repaint_after_resync(out, sidebar, needs_resync);
         crate::attach::render_prof::tick();
         Ok(())
+    }
+
+    /// Hidden tabs and zoomed-away panes must not keep host hover capture on.
+    pub(super) fn application_wants_hover(&self, sidebar: Option<SidebarReservation>) -> bool {
+        let visible = super::view_rects(
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            self.content(sidebar),
+            self.viewport_dims,
+        );
+        visible
+            .keys()
+            .chain(crate::attach::floating::floating_pane(&self.mirror.panes))
+            .filter(|id| !self.mouse_optout.contains(*id))
+            .filter(|id| !crate::attach::pane_state::pane_exited(&self.mirror.panes, id))
+            .any(|id| {
+                crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)
+                    .is_some_and(|terminal| {
+                        terminal
+                            .mode(libghostty_vt::mode::Mode::ANY_MOUSE)
+                            .unwrap_or(false)
+                    })
+            })
     }
 
     /// Mark the focused pane seen (demoting its attention-ladder row) and
@@ -149,13 +175,7 @@ impl super::SessionLoop {
         let flush_sleep = sleep_until_or_pending(self.esc_deadline);
         self.arm_which_key();
         let which_key_sleep = sleep_until_or_pending(self.which_key_deadline);
-        // Status-bar repaint cadence; never fires for a bar with no polling widget.
-        let status_tick = sleep_for_or_pending(
-            self.settings
-                .status_bar
-                .as_ref()
-                .and_then(StatusBarPainter::min_poll_interval),
-        );
+        let status_tick = sleep_until_or_pending(self.arm_status_tick());
         // The pacer's settle deadline, armed only while a paint is owed, or
         // a held switch's deadline: the release after this step paints it.
         let paint_sleep = sleep_until_or_pending(
@@ -175,6 +195,13 @@ impl super::SessionLoop {
 
         tokio::select! {
             biased;
+
+            // First, so frames that are always ready cannot starve it.
+            () = status_tick => {
+                self.status_tick_at = None;
+                self.on_status_tick(out, sidebar);
+                Ok(Step::Continue)
+            }
 
             n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin_timed(conn, out, sidebar, n).await,
 
@@ -213,12 +240,6 @@ impl super::SessionLoop {
             // SIGWINCH.
             _ = self.sigwinch.recv() => self.on_sigwinch(conn, out, sidebar).await,
 
-            // Periodic status-bar repaint.
-            () = status_tick => {
-                self.on_status_tick(out, sidebar);
-                Ok(Step::Continue)
-            }
-
             // Check the kernel's deadlines; ask which grey satellite panes can
             // be reattached.
             () = probe => self.on_probe_due(conn).await,
@@ -238,8 +259,9 @@ impl super::SessionLoop {
 
             // Off-loop work finished: a background job (ADR-0172) toasts its
             // result and refreshes what it changed; a peer arrangement read
-            // (ADR-0161) folds into the peer caches.
-            done = next_off_loop(&self.jobs, self.peer_reader.as_mut()) => {
+            // (ADR-0161) folds into the peer caches; the forwarded ssh-agent
+            // asks or answers.
+            done = next_off_loop(&self.jobs, self.peer_reader.as_mut(), self.agent_link.as_deref()) => {
                 self.on_off_loop(conn, out, sidebar, done).await
             }
 
@@ -287,6 +309,7 @@ impl super::SessionLoop {
         match done {
             OffLoop::Job(done) => self.on_job_done(conn, out, sidebar, done).await,
             OffLoop::PeerReads(done) => self.on_peer_reads_done(conn, out, sidebar, done).await,
+            OffLoop::Agent(due) => self.on_agent_due(conn, out, sidebar, due).await,
         }
     }
 
@@ -311,6 +334,22 @@ impl super::SessionLoop {
             tokio::time::Instant::now(),
             self.settings.which_key.delay,
         );
+    }
+
+    /// The status-bar repaint cadence, kept across iterations: a pane that
+    /// outputs faster than it would otherwise put the tick off forever. `None`
+    /// for a bar with no polling widget.
+    fn arm_status_tick(&mut self) -> Option<tokio::time::Instant> {
+        let interval = self
+            .settings
+            .status_bar
+            .as_ref()
+            .and_then(StatusBarPainter::min_poll_interval)?;
+        Some(
+            *self
+                .status_tick_at
+                .get_or_insert_with(|| tokio::time::Instant::now() + interval),
+        )
     }
 
     /// The sooner of the satellite probe and the kernel's next deadline: a
@@ -382,17 +421,22 @@ enum OffLoop {
     Job(crate::attach::jobs::JobDone),
     /// A peer arrangement read (ADR-0161).
     PeerReads(crate::attach::peer_arrangements::PeerReadDone),
+    /// The forwarded ssh-agent's question or answer.
+    Agent(crate::attach::agent_forward::Due),
 }
 
-/// The next finished job or peer arrangement read, jobs first.
+/// The next finished job, peer arrangement read, or agent work, in that
+/// order.
 async fn next_off_loop(
     jobs: &crate::attach::jobs::Jobs,
     peers: Option<&mut crate::attach::peer_arrangements::PeerReader>,
+    agent: Option<&crate::attach::agent_forward::AgentLink>,
 ) -> OffLoop {
     tokio::select! {
         biased;
         done = jobs.next() => OffLoop::Job(done),
         done = crate::attach::peer_arrangements::next_done(peers) => OffLoop::PeerReads(done),
+        due = crate::attach::agent_forward::next_due(agent) => OffLoop::Agent(due),
     }
 }
 
@@ -416,4 +460,20 @@ async fn recv_shutdown_signal(
 
         _ = sighup.recv() => 129,
     }
+}
+
+/// A `sleep_until` future for an armed deadline, or a never-resolving one.
+async fn sleep_until_or_pending(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Restore the terminal explicitly (Drop wouldn't fire on `exit()`), then
+/// exit with the shell-conventional code for the signal.
+#[allow(clippy::exit, reason = "signal-driven graceful exit; Drop won't run")]
+fn exit_on_signal(code: i32) -> ! {
+    terminal_reset_on_signal();
+    std::process::exit(code);
 }

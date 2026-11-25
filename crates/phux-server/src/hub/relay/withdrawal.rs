@@ -10,10 +10,35 @@ impl RelaySession {
         &mut self,
         queued: super::QueuedUnsubscribe,
     ) -> Vec<Vec<u8>> {
-        if queued.epoch != self.epoch || !self.link_is_current() {
+        if !self.link_is_current() {
+            return Vec::new();
+        }
+        if queued.epoch != self.epoch && !self.resumed_from(queued.epoch, &queued.unsubscribe) {
             return Vec::new();
         }
         self.handle_unsubscribe(queued.unsubscribe)
+    }
+
+    /// Whether a withdrawal pinned to an earlier link names a subscription
+    /// this one holds, which it can only have resumed from that link. The
+    /// registration `seq` still keeps it off a newer re-attach.
+    fn resumed_from(&self, epoch: u64, unsubscribe: &Unsubscribe) -> bool {
+        if epoch >= self.epoch {
+            return false;
+        }
+        match *unsubscribe {
+            Unsubscribe::Client(client) => self
+                .subscribers
+                .values()
+                .flatten()
+                .any(|sub| sub.client == client),
+            Unsubscribe::Terminal {
+                client, terminal, ..
+            } => self
+                .subscribers
+                .get(&terminal)
+                .is_some_and(|subs| subs.iter().any(|sub| sub.client == client)),
+        }
     }
 
     /// Withdraw proxy subscriptions. Returns the upstream

@@ -1,47 +1,48 @@
 //! Search, inbox and creation controls around the session navigator.
 
 use phux_design::Tone;
-use rune::{El, el, text};
+use rune::{El, el};
 use rune_kit::{Button, ButtonVariant};
 
-use super::super::{Paint, Tokens, icon_press, icons, pressable, tip};
-use super::return_to_terminal_on_click;
+use super::super::{Tokens, icon_press, icons, tip};
 use crate::desk::Desk;
 use crate::keys::Shortcut;
 
-/// The way to the palette: a press target drawn as a filled pill with the
-/// sidebar rows' radius, not an outlined field, since nothing is typed
-/// here. It names the chord that opens the palette from anywhere.
+/// The way to the palette: an icon beside the inbox, its chord waiting in
+/// the tooltip, so the list starts right under the window's top edge.
 pub(super) fn search(t: &Tokens) -> El {
-    // ⌘K is the chord this field has always taught; ⌘P reaches it too.
-    // Plain dim figures, as a menu writes a shortcut, not boxed keycaps.
-    let chord = if cfg!(target_os = "macos") {
-        "⌘K"
-    } else {
-        "Ctrl+Shift+K"
-    };
-    let s = &t.space;
-    let dim = t.roles.text.dim.paint();
-    pressable("sidebar-search", t)
-        .w_full()
-        .h(s.row_h)
-        .px(s.s2)
-        .gap(s.icon_gap)
-        .radius(t.radius.md)
-        .items_center()
-        .fill(t.roles.wash.hover.paint())
-        .focusable(true)
-        .role("button")
-        .label("Jump to…")
-        .on_press(|d: &mut Desk| d.toggle_palette())
-        .child(
-            rune::icon(&icons::SEARCH, t.icon.size.md)
-                .color(dim)
-                .a11y_hidden(),
-        )
-        .child(text("Jump to…").font(t.ty.label).color(dim).a11y_hidden())
-        .child(el().grow(1.0))
-        .child(text(chord).font(t.ty.label).color(dim).a11y_hidden())
+    let button = icon_press(
+        &icons::SEARCH,
+        "Jump to…",
+        "sidebar-search",
+        t,
+        |d: &mut Desk| {
+            d.toggle_palette();
+        },
+    );
+    tip(button, "Jump to…", Shortcut::Palette)
+}
+
+/// Shown only while the server keeps the machine awake, saying why; a
+/// click opens the palette on the keep-awake modes.
+pub(super) fn awake_button(desk: &Desk, t: &Tokens) -> Option<El> {
+    let awake = desk
+        .connection
+        .keep_awake
+        .as_ref()
+        .filter(|a| a.holding())?;
+    let words = awake.words();
+    let button = icon_press(
+        &icons::AWAKE,
+        "Keep awake",
+        "keep-awake",
+        t,
+        |d: &mut Desk| {
+            d.toggle_palette();
+            d.palette_query.replace_text("Keep awake");
+        },
+    );
+    Some(button.label(words.clone()).help(words))
 }
 
 /// The way into the inbox, loud only when something waits: a dot in the
@@ -83,7 +84,7 @@ pub(super) fn foot(
         .icon(&icons::PLUS)
         .on_press_tx(move |d: &mut Desk, tx| {
             press(d);
-            return_to_terminal_on_click(tx);
+            super::return_to_terminal_on_click(tx);
         })
         .build(&t.kit)
         .key(key)

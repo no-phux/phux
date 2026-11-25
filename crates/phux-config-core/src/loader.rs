@@ -57,6 +57,8 @@ pub struct ClientConfig {
     pub rune: RuneCfg,
     /// `[defaults]`: the few keys a client applies itself.
     pub defaults: crate::ClientDefaults,
+    /// `[experimental]`: predictive echo, which each client draws itself.
+    pub experimental: crate::ExperimentalCfg,
 }
 
 /// Parse `user_input` and its `extends` layers into a [`ClientConfig`].

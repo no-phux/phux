@@ -82,6 +82,9 @@ pub struct ActivationInfo {
     pub diagnostic: Option<crate::api::LaunchDiagnostic>,
     /// In-memory executor evidence awaits durable commit.
     pub persistence_pending: bool,
+    /// A server stop cut the launch off before any process was recorded,
+    /// unlike a launch that failed. Never set by older servers.
+    pub launch_interrupted: bool,
 }
 
 impl ActivationInfo {
@@ -95,11 +98,13 @@ impl ActivationInfo {
             outcome: None,
             diagnostic: None,
             persistence_pending: false,
+            launch_interrupted: false,
         }
     }
 
     builder_setters! {
         const fn with_outcome(outcome: Option<Outcome>) => outcome;
+        const fn with_launch_interrupted(interrupted: bool) => launch_interrupted;
     }
 
     /// Attach safe execution evidence and persistence uncertainty.
@@ -151,6 +156,19 @@ impl ResourceRecord {
             revision,
             live: None,
         }
+    }
+
+    /// Whether a server stop ended it, so `phux restore` relaunches it: its
+    /// program ended unobserved, or (a Terminal) its launch was cut off. A
+    /// launch that failed is neither.
+    #[must_use]
+    pub fn ended_by_restart(&self) -> bool {
+        self.activation.is_some_and(|a| {
+            (a.state == ExecState::Completed && a.outcome == Some(Outcome::Unobserved))
+                || (a.launch_interrupted
+                    && a.state == ExecState::Failed
+                    && self.kind == ResourceKind::Terminal)
+        })
     }
 
     builder_setters! {

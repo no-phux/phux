@@ -408,3 +408,55 @@ fn program_status_and_inheritance_survive_graceful_upgrade() {
         "replacement of the root must remove inherited app after upgrade"
     );
 }
+
+/// phux-dsako.4: an agent blocked on a person prints nothing, so a question
+/// lost in the upgrade is never asked again. Both kinds cross, reported and
+/// title, and each can still be answered and then closes.
+#[test]
+#[ignore = "spawns a real phux server + performs a real in-place re-exec; run via `just e2e`."]
+fn open_questions_survive_graceful_upgrade() {
+    let server = start_with_seed(
+        "printf '\\033]2;phux-ask[t1]:Ship it??s=Yes|No\\007'; read answer; \
+         printf '\\033]2;done\\007'; exec sleep 600",
+    );
+    let spawned = json_of(&server, &["spawn", "--json", "--", "cat"]);
+    let reported = format!("@{}", spawned["terminal_id"]);
+    let ask = [
+        "ask",
+        "--id",
+        "q2",
+        "--suggest",
+        "Yes",
+        &reported,
+        "Keep me?",
+    ];
+    assert_eq!(server.status(&ask), 0);
+    let panes = [("@1", "t1"), (reported.as_str(), "q2")];
+    let questions = |pane: &str| json_of(&server, &["agent", "questions", pane]);
+    let holds = |pane: &str, id: &str| questions(pane)["questions"][0]["id"] == id;
+    for (pane, id) in panes {
+        assert!(
+            common::eventually(Duration::from_secs(10), || holds(pane, id)),
+            "{pane} should ask {id}: {}",
+            questions(pane)
+        );
+    }
+    let before = panes.map(|(pane, _)| questions(pane));
+
+    assert_eq!(server.status(&["upgrade"]), 0);
+    assert!(
+        common::eventually(Duration::from_secs(15), || server.status(&["ls"]) == 0),
+        "the resumed server should accept connections again"
+    );
+    assert_eq!(panes.map(|(pane, _)| questions(pane)), before);
+
+    for (pane, id) in panes {
+        let answer = ["agent", "answer", "--id", id, "--choice", "1", pane];
+        assert_eq!(server.status(&answer), 0, "{pane} answers {id}");
+        assert!(
+            common::eventually(Duration::from_secs(10), || !holds(pane, id)),
+            "{pane} should have closed {id}: {}",
+            questions(pane)
+        );
+    }
+}

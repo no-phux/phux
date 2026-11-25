@@ -333,6 +333,8 @@ struct Pump<'a> {
     signals: &'a mut Signals,
     wake: &'a Wake,
     probe_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// When the in-flight probe went out.
+    probe_sent: Instant,
     /// When a quiet attached session should send its next liveness probe.
     quiet_probe_at: Instant,
 }
@@ -354,6 +356,7 @@ impl<'a> Pump<'a> {
             signals,
             wake,
             probe_deadline: None,
+            probe_sent: Instant::now(),
             quiet_probe_at: Instant::now() + QUIET_PROBE,
         }
     }
@@ -464,6 +467,7 @@ impl<'a> Pump<'a> {
             .await
             .map_err(|error| self.dropped(&error))?;
         if self.probe_deadline.is_none() {
+            self.probe_sent = Instant::now();
             self.probe_deadline = Some(Box::pin(tokio::time::sleep(self.options.probe_timeout)));
         }
         Ok(())
@@ -502,14 +506,13 @@ impl<'a> Pump<'a> {
         &mut self,
         inbound: Result<Option<Vec<Bytes>>, LinkError>,
     ) -> Result<(), ConnectionEnd> {
-        // Any inbound traffic, a pong included, proves liveness.
-        self.answer_probe();
         self.note_inbound();
         let mut frames = inbound
             .map_err(|error| self.dropped(&error))?
             .ok_or_else(|| {
                 ConnectionEnd::Dropped(Some(format!("{} closed the connection", self.name)))
             })?;
+        self.settle_probe(&frames);
         frames.retain(|frame| !frame.is_empty());
         if frames.is_empty() {
             return Ok(());

@@ -45,7 +45,7 @@ macro_rules! organization_commands {
         launch: Option<Box<LaunchSpec>>,
     },
     /// Resolve a named session atomically, creating only when absent.
-    /// Requires `features_ext.SESSION_ENSURE`; never falls back to create.
+    /// Requires `features_ext2.SESSION_ENSURE`; never falls back to create.
     SessionEnsure {
         /// Retry identity, retained with the exact resolution.
         operation: OperationId,

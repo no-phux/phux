@@ -84,13 +84,14 @@ pub(super) fn hex(value: &str) -> Option<u32> {
 /// The colours in `text` as a theme. Later lines win; a line that isn't a
 /// colour leaves the earlier one standing.
 pub fn parse(text: &str) -> Option<Theme> {
-    let (mut background, mut foreground, mut cursor) = (None, None, None);
+    let (mut background, mut foreground, mut cursor, mut bold) = (None, None, None, None);
     let mut palette = [None; 16];
     for (key, value) in lines(text) {
         match key {
             "background" => background = hex(value).or(background),
             "foreground" => foreground = hex(value).or(foreground),
             "cursor-color" => cursor = hex(value).or(cursor),
+            "bold-color" => bold = hex(value).or(bold),
             "palette" => {
                 if let Some((slot, colour)) = value.split_once('=')
                     && let Ok(slot) = slot.trim().parse::<usize>()
@@ -127,6 +128,7 @@ pub fn parse(text: &str) -> Option<Theme> {
         // The blue slot: a cursor is often the foreground, which no wash reads on.
         accent: ansi[4],
         selection: None,
+        bold,
     })
 }
 
@@ -187,6 +189,7 @@ mod tests {
 background = #1a1b26
 foreground = "#c0caf5"
 cursor-color = fff
+bold-color = #ff9e64
 palette = 1=#f7768e
 palette = 4=#7aa2f7
 palette = 99=#000000
@@ -202,6 +205,7 @@ font-size = 14
         assert_eq!(theme.ansi[1], 0xf7768e);
         assert_eq!(theme.ansi[2], required("catppuccin-mocha").ansi[2]);
         assert_eq!(theme.accent, 0x7aa2f7);
+        assert_eq!(theme.bold, Some(0xff9e64));
         assert!(theme.dark);
         assert_eq!(theme.id, "ghostty");
     }

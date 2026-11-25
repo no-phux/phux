@@ -97,10 +97,36 @@ pub struct RemoteConfigEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 
+    /// Theme a client wears while it views this host, named as that client
+    /// lists themes (`[theme] name` in the TUI, a theme id in Rune); absent
+    /// keeps the client's own theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+
     /// Paused by `phux host disable`: kept in the registry, but nothing
     /// dials it until `phux host enable`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
+
+    /// Serve this machine's ssh-agent to the host's panes while attached to
+    /// it; each signature is asked first (`docs/ssh.md#ssh-agent`). The host
+    /// must also set `[forward] agent = true`.
+    #[serde(
+        default,
+        rename = "forward-agent",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub forward_agent: bool,
+
+    /// Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only
+    /// keys the host may list or ask to sign with; absent allows every key
+    /// the agent holds.
+    #[serde(
+        default,
+        rename = "forward-agent-keys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub forward_agent_keys: Option<Vec<String>>,
 }
 
 impl RemoteConfigEntry {

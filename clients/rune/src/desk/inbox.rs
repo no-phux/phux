@@ -91,6 +91,10 @@ impl Desk {
             self.connection.topology.as_ref(),
             &self.activities,
             &self.inbox.approvals,
+            self.machines
+                .current
+                .as_deref()
+                .unwrap_or(crate::machines::LOCAL),
         );
         for item in &mut items {
             if let Item::Terminal(waiting) = item
@@ -500,7 +504,7 @@ impl Desk {
 
 /// The exact chord a decision takes: ⌘ on macOS, Ctrl+Shift elsewhere, where
 /// Ctrl alone belongs to the reply field. Plain Return never qualifies.
-const fn decision_chord(mods: &Mods, macos: bool) -> bool {
+pub(super) const fn decision_chord(mods: &Mods, macos: bool) -> bool {
     mods.cmd && mods.shift != macos && !mods.alt
 }
 

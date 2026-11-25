@@ -54,7 +54,7 @@ fn refreshing_the_catalog_preserves_a_nondefault_keyboard_pick_by_id() {
         desk.palette_hits()[1].item.target,
         Target::Extension(selected.clone())
     );
-    desk.install_action_catalog(Ok(vec![selected.clone(), first]));
+    desk.install_action_catalog(Ok((vec![selected.clone(), first], Vec::new())));
     assert_eq!(
         desk.palette_hits()[desk.palette_picked].item.target,
         Target::Extension(selected)

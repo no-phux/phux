@@ -15,6 +15,7 @@ use crate::desk::{Desk, Pending, Tab};
 use crate::test_support::server::{self, agent, pane, session};
 
 mod attention;
+mod sidebar_focus;
 
 /// The pixel scale every page paints at.
 fn scale() -> f32 {
@@ -107,6 +108,8 @@ fn window(dark: bool) -> Runtime<Desk> {
     let mut replica = crate::test_support::terminal::Replica::new(120, 40, 1);
     replica.feed("\x1b[2J\x1b[H$ cargo test --locked\r\n   Compiling phux-rune\r\n".to_owned());
     let mut desk = crate::test_support::window();
+    // The gallery reviews the strip beside the sidebar.
+    desk.settings.tab_bar = phux_config_core::rune::TabBar::Top;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
     desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.layout = Some(LayoutNode::Split {

@@ -33,16 +33,11 @@ pub(super) fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
         .py(s.s10)
         .gap(s.s2)
         .child(
-            el().size(s.s12, s.s12)
-                .radius(p.radius.full)
-                .center()
-                .fill(p.roles.layer.raised.paint())
-                .mb(s.s2)
-                .child(
-                    rune::icon(icon, p.icon.size.lg)
-                        .color(p.roles.text.dim.paint())
-                        .a11y_hidden(),
-                ),
+            el().size(s.s12, s.s12).center().mb(s.s2).child(
+                rune::icon(icon, p.icon.size.lg)
+                    .color(p.roles.text.dim.paint())
+                    .a11y_hidden(),
+            ),
         )
         .child(
             text(title)
@@ -50,7 +45,7 @@ pub(super) fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
                 .color(p.roles.text.text.paint())
                 .role("heading")
                 .align(rune::Align::Center)
-                .wrap(),
+                .wrap_anywhere(),
         )
         .child(
             text(detail)
@@ -69,40 +64,33 @@ fn loading(desk: &Desk, p: &Look) -> El {
     let bar = |w: f32, h: f32| {
         el().w(w)
             .h(h)
-            .radius(p.radius.full)
-            // The page's own ground, cut into the raised card: visible in
-            // both modes without a new colour.
-            .fill(p.roles.layer.ground.paint())
+            .radius(p.radius.xs)
+            .fill(p.roles.border.muted.paint())
     };
-    let card = |rows: usize| {
-        let mut card = col()
-            .w_full()
-            .padding(s.s4)
-            .gap(s.s4)
-            .radius(p.radius.xl)
-            .continuous_corners()
-            .fill(p.roles.layer.raised.paint())
-            .child(
-                col()
-                    .gap(s.s2)
-                    .child(bar(s.s16 + s.s12, s.s3))
-                    .child(bar(s.s16, s.s2)),
-            );
+    let section = |rows: usize| {
+        let mut section = col().w_full().gap(s.s4).child(
+            col()
+                .gap(s.s2)
+                .child(bar(s.s16 + s.s12, s.s3))
+                .child(bar(s.s16, s.s2)),
+        );
         for _ in 0..rows {
-            card = card.child(
+            section = section.child(
                 row()
-                    .gap(s.s3)
+                    .min_h(super::row_h(p))
+                    .pl(s.s4)
+                    .gap(s.s2)
                     .items_center()
                     .child(bar(s.s3, s.s3))
                     .child(bar(s.s16 + s.s16, s.s2 + s.s0_5)),
             );
         }
-        card
+        section
     };
     col()
         .key("phone-session-loading")
         .w_full()
-        .gap(s.s3)
+        .gap(s.s6)
         .label("Loading sessions")
         .child(
             text(format!("Reaching {}…", desk.machines.label()))
@@ -111,6 +99,6 @@ fn loading(desk: &Desk, p: &Look) -> El {
                 .px(s.s1)
                 .a11y_hidden(),
         )
-        .child(card(2).a11y_hidden())
-        .child(card(1).a11y_hidden())
+        .child(section(2).a11y_hidden())
+        .child(section(1).a11y_hidden())
 }

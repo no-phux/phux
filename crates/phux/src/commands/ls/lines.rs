@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use phux_client::org::OrgInventory;
 use phux_client::resource;
-use phux_client::state::Degradation;
+use phux_client::state::StateView;
 use phux_core::activation::SessionLifetime;
 use phux_core::session_list::{ExecCounts, SessionJson, SessionListJson};
 
@@ -273,14 +273,9 @@ pub(super) fn attached_note(clients: u16) -> String {
 }
 
 /// Emit the session list as the stable [`SessionListJson`] contract, built
-/// by [`phux_client::session_list::document`] — the one builder the MCP
+/// by [`phux_client::session_list::view_document`] — the one builder the MCP
 /// `phux_ls` tool also returns, so the two surfaces cannot drift.
-pub(crate) fn print_sessions_json(
-    snapshot: &SessionSnapshot,
-    organization: Option<&OrgInventory>,
-    degradation: &Degradation,
-) -> ExitCode {
-    let list: SessionListJson =
-        phux_client::session_list::document(snapshot, organization, degradation);
+pub(crate) fn print_sessions_json(view: &StateView) -> ExitCode {
+    let list: SessionListJson = phux_client::session_list::view_document(view);
     crate::output::json(&list)
 }

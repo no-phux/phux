@@ -14,6 +14,13 @@ pub struct RelaunchReview {
     document: String,
 }
 
+impl std::fmt::Debug for RelaunchReview {
+    // Recipe, environment and session details stay out of logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelaunchReview").finish_non_exhaustive()
+    }
+}
+
 impl RelaunchReview {
     /// Prepare one local-owner review; no execution is admitted.
     ///

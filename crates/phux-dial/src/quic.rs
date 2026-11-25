@@ -262,8 +262,14 @@ pub(crate) async fn dial_relayed(
         inner: None,
         ..d.clone()
     };
-    let (endpoint, conn, send, recv) =
-        dial_inner(&outer, QUIC_ALPN, Some(&TlsClientIdentity::None)).await?;
+    // No preamble, not even the empty one `dial_inner` writes to a routable
+    // address: the relay splices the stream to the server's connector, whose
+    // first-byte gate admits only the inner `ClientHello`.
+    let (endpoint, conn) = handshake(&outer, QUIC_ALPN, Some(&TlsClientIdentity::None)).await?;
+    let (send, recv) = conn
+        .open_bi()
+        .await
+        .map_err(|err| DialError::Connect(format!("open QUIC stream: {err}")))?;
     let (config, refusal) =
         crate::tls::client_config_reporting(&inner.trust, Some(&inner.identity), Some(alpn))?;
     let name = rustls::pki_types::ServerName::try_from(inner.server_name.clone())

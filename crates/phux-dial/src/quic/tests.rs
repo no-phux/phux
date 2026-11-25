@@ -229,3 +229,50 @@ fn native_planning_refuses_missing_route_trust_even_in_development() {
         "WebSocket has no end-to-end relay session"
     );
 }
+
+/// A relayed dial opens its stream with the inner `ClientHello`, also to a
+/// routable relay address: the connector's first-byte gate refuses any
+/// preamble. Loopback skips the preamble anyway, so the relay is dialed at
+/// its v4-mapped address, which `is_loopback` does not count as loopback.
+#[tokio::test]
+async fn relayed_dial_to_a_routable_relay_starts_with_the_client_hello() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let endpoint = crate::testing::quic_server(dir.path(), QUIC_ALPN);
+    let port = endpoint.local_addr().expect("local").port();
+    let server = tokio::spawn(async move {
+        let conn = endpoint
+            .accept()
+            .await
+            .expect("incoming")
+            .await
+            .expect("handshake");
+        let (_send, mut recv) = conn.accept_bi().await.expect("stream");
+        let mut first = [0u8; 1];
+        recv.read_exact(&mut first).await.expect("first byte");
+        first[0]
+    });
+
+    let addr: SocketAddr = format!("[::ffff:127.0.0.1]:{port}").parse().expect("addr");
+    assert!(!addr.ip().is_loopback());
+    let plan = QuicDial {
+        addr,
+        server_name: "localhost".to_owned(),
+        token: None,
+        trust: CertTrust::SkipVerify,
+        identity: None,
+        inner: None,
+    };
+    let inner = InnerTls {
+        trust: CertTrust::SkipVerify,
+        identity: TlsClientIdentity::None,
+        server_name: "route".to_owned(),
+    };
+    // The server never answers the inner handshake; only the first byte matters.
+    let client = tokio::spawn(async move { dial_relayed(&plan, &inner, QUIC_ALPN).await.is_ok() });
+    assert_eq!(
+        server.await.expect("server"),
+        0x16,
+        "a TLS handshake record"
+    );
+    client.abort();
+}

@@ -1,50 +1,8 @@
 //! Independent-view admission and teardown on the serialized engine owner.
 
-use super::super::render::RetiredFrames;
-use super::super::{
-    CanonicalGeometry, DocumentAnchorId, EngineDocumentSelection, EngineError, Owner,
-    PointerGesture, Predictor, ResourceId, engine_error,
-};
+use super::super::{EngineError, Owner, Presentation, ResourceId, View, engine_error};
 use crate::ViewId;
 use crate::engine::views::{ViewCommand, ViewSource};
-
-pub(in crate::engine::owner) struct Presentation {
-    pub(in crate::engine::owner) predictor: Predictor,
-    pub(in crate::engine::owner) retired: RetiredFrames,
-    pub(in crate::engine::owner) viewport: Option<DocumentAnchorId>,
-    pub(in crate::engine::owner) selection: Option<EngineDocumentSelection>,
-    pub(in crate::engine::owner) gesture: Option<PointerGesture>,
-    pub(in crate::engine::owner) search: Vec<u64>,
-    pub(in crate::engine::owner) gesture_anchors: Vec<u64>,
-    pub(in crate::engine::owner) unread_rows: u64,
-    pub(super) tail_distance: Option<u64>,
-    // A closed replica has no kernel anchors; retained content is immutable.
-    pub(super) closed_offset: Option<u64>,
-    pub(super) alternate: Option<bool>,
-}
-
-impl Presentation {
-    pub(super) fn new(geometry: CanonicalGeometry) -> Self {
-        Self {
-            predictor: Predictor::new(geometry.cols, geometry.rows),
-            retired: RetiredFrames::default(),
-            viewport: None,
-            selection: None,
-            gesture: None,
-            search: Vec::new(),
-            gesture_anchors: Vec::new(),
-            unread_rows: 0,
-            tail_distance: None,
-            closed_offset: None,
-            alternate: None,
-        }
-    }
-}
-
-pub(in crate::engine::owner) struct View {
-    pub(in crate::engine::owner) terminal: ResourceId,
-    pub(super) presentation: Presentation,
-}
 
 impl Owner {
     pub(in crate::engine::owner) fn view_command(&mut self, command: ViewCommand) {
@@ -83,6 +41,8 @@ impl Owner {
             terminal: id.clone(),
             presentation: Presentation::new(geometry),
         });
+        // A live view can wait for synchronized output without a frame yet.
+        self.publication.register_view(view);
         if let Err(error) = self.render_views(id) {
             let _ = self.destroy_view(view);
             return Err(error);
