@@ -27,7 +27,7 @@ class OnboardingTests(unittest.TestCase):
                 app, phux, out = root / "App", root / "phux", root / "out"
                 app.mkdir()
                 phux.write_bytes(b"fixture")
-                (app / "Info.plist").write_bytes(plistlib.dumps(build.bundle_plist("1.0", True, [])))
+                (app / "Info.plist").write_bytes(plistlib.dumps(build.bundle_plist(build.preview_identity("1.0"), True, [])))
                 with patch.object(qualify, "Qualification") as constructor, patch.object(qualify.sys, "stderr"):
                     lane = constructor.return_value
                     lane.launch.side_effect = native_failure

@@ -221,7 +221,7 @@ class QualificationTests(unittest.TestCase):
             root = Path(temporary)
             app = root / "App"
             app.mkdir()
-            (app / "Info.plist").write_bytes(plistlib.dumps(build.bundle_plist("1.0", True, [])))
+            (app / "Info.plist").write_bytes(plistlib.dumps(build.bundle_plist(build.preview_identity("1.0"), True, [])))
             with patch.object(qualify, "Qualification") as constructor:
                 lane = constructor.return_value
                 lane.launch.side_effect = ValueError("native launch failed")
