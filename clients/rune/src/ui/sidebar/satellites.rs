@@ -2,18 +2,17 @@
 //! `host · session` header, its terminals and mirrors as rows.
 
 use phux_client_runtime::control::Topology;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, ResourceKind};
 use rune::{El, memo};
 
 use super::{Counts, Desk, Forced, Header, Row, Tokens, pane_row, session_header, source_list};
 use crate::host_color;
 use crate::palette::pane_label;
 
-/// Whether a satellite session member is a Terminal: not a document or an
-/// agent session the hub's topology already knows.
+/// A positively known Terminal. Unknown satellite members never become
+/// unchecked terminal targets merely because they are not documents.
 fn is_terminal_member(topology: &Topology, id: &ResourceId) -> bool {
-    !topology.documents.iter().any(|doc| &doc.id == id)
-        && !topology.agent_sessions.iter().any(|agent| &agent.id == id)
+    topology.pane(id).is_some()
 }
 
 /// A hub's satellite sessions, each under a `host · session` header: its
@@ -35,7 +34,6 @@ pub(super) fn satellite_list(desk: &Desk, topology: &Topology, t: &Tokens) -> El
             current: session.members.iter().any(|id| shown == Some(id)),
             counts: Counts::default(),
             count: session.members.len(),
-            collapsed: false,
             host: Some(host),
             color: crate::session_color::of(&session.name),
             branch: false,
@@ -54,7 +52,7 @@ pub(super) fn satellite_list(desk: &Desk, topology: &Topology, t: &Tokens) -> El
             .filter(|id| is_terminal_member(topology, id))
             .map(|id| {
                 let label = topology.pane(id).map_or_else(|| id.to_string(), pane_label);
-                (id, label, None)
+                (id, label, ResourceKind::Terminal)
             });
         let mirrors = topology
             .documents
@@ -68,24 +66,33 @@ pub(super) fn satellite_list(desk: &Desk, topology: &Topology, t: &Tokens) -> El
             })
             .map(|doc| {
                 let label = doc.name.clone().unwrap_or_else(|| "Mirror".to_owned());
-                (&doc.id, label, Some(desk.mirror_label(&doc.id).to_owned()))
+                (&doc.id, label, doc.kind)
             });
-        for (id, label, place) in terminals.chain(mirrors) {
+        for (id, label, kind) in terminals.chain(mirrors) {
+            let resource = crate::addressable::Addressable {
+                id: id.clone(),
+                label,
+                session_id: 0,
+                session: session.host.clone(),
+                kind,
+                mirror: desk.mirror_label(id),
+                parent: None,
+                program: topology.pane(id).map(crate::addressable::Program::of),
+            };
+            let presentation = resource.presentation(desk);
             let row = Row {
                 id,
                 target: id,
                 session: "",
-                name: label,
-                place,
+                name: presentation.name,
+                place: (!presentation.detail.is_empty()).then_some(presentation.detail),
                 key: None,
                 agent: desk.activities.agent_name(id),
-                kind: desk.activities.agent_kind(id),
+                identity: presentation.identity,
                 mark: desk.activities.mark(id),
                 panes: 1,
                 selected: shown == Some(id),
-                children: 0,
-                open: false,
-                child: false,
+                members: Vec::new(),
                 host,
                 color: None,
                 state: Forced::Rest,

@@ -1,5 +1,6 @@
 //! Project groups in the session list (ADR-0168): a project's name over its
-//! sessions, indented, and a linked worktree's name after a branch glyph. Grouping
+//! sessions, without a duplicate matching header, and a linked worktree's
+//! name after a branch glyph. Grouping
 //! itself is `project_groups`' job; this paints what it was handed.
 
 use phux_client_runtime::control::SessionDescriptor;
@@ -45,7 +46,7 @@ fn project_header(name: &str, waiting: usize, t: &Tokens) -> El {
 }
 
 /// `sessions`, already in the stored order, onto `list` in project order:
-/// each project's header, then its sessions indented; every other session
+/// each project's non-duplicate header, then its sessions; every other session
 /// after. `rows` draws one session's header and rows, told whether it is a
 /// linked worktree.
 pub(super) fn grouped(
@@ -60,13 +61,21 @@ pub(super) fn grouped(
         list = match block {
             Block::Single(index) => list.children(rows(sessions[index], false)),
             Block::Project(project) => list
-                .child(memo(
-                    format!("project-{}", project.key),
-                    (&project.name, project.needs_you, version),
-                    || project_header(&project.name, project.needs_you, t),
-                ))
+                .children(
+                    (!project
+                        .members
+                        .iter()
+                        .any(|m| sessions[m.index].name == project.name))
+                    .then(|| {
+                        memo(
+                            format!("project-{}", project.key),
+                            (&project.name, project.needs_you, version),
+                            || project_header(&project.name, project.needs_you, t),
+                        )
+                    }),
+                )
                 .child(
-                    col().w_full().gap(t.space.s0_5).pl(t.space.s3).children(
+                    col().w_full().gap(t.space.s0_5).children(
                         project
                             .members
                             .iter()

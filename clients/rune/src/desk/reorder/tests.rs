@@ -97,6 +97,30 @@ fn resource_rows_are_session_targets_and_deleted_sessions_are_not() {
 }
 
 #[test]
+fn grouping_a_member_retires_its_old_row_drop_rectangle() {
+    let (_, mut desk) = connected();
+    let topology = desk.connection.topology.as_mut().unwrap();
+    let mut pane = topology.panes[0].clone();
+    pane.terminal_id = live(9);
+    topology.panes.push(pane);
+    let mut resource = topology.resources[0].clone();
+    resource.id = live(9);
+    topology.resources.push(resource);
+    desk.connection.tabs.by_session.insert(
+        1,
+        vec![super::super::Tab {
+            id: [9; 16],
+            name: "Split".to_owned(),
+            resources: vec![live(9), live(7)],
+            active: true,
+            locked: false,
+        }],
+    );
+    // @7 is now inside @9's row, but its old rectangle still exists.
+    assert_eq!(desk.drop_target(Grab::Session(key(2)), [50.0, 80.0]), None);
+}
+
+#[test]
 fn moving_a_document_uses_its_organization_key_not_a_terminal_only_lookup() {
     let (client, mut desk) = connected();
     desk.drag_at(Grab::Resource(8, key(1)), Phase::Up, [50.0, 160.0], false);

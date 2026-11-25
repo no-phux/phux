@@ -17,40 +17,41 @@ fn no_terminal_input(rt: &Runtime<Desk>) {
 }
 
 #[test]
-fn disclosure_targets_are_consistent_and_do_not_select_or_drag_their_parent() {
+fn local_rows_are_visible_and_arrow_free_including_terminal_descendants() {
     for size in [(1100, 720), (640, 360)] {
         let mut rt = window(size, true, "normal");
-        let client = rt.state.connection.client.as_ref().unwrap().clone();
-        let shown = rt.state.connection.shown.as_ref().unwrap().resource.clone();
-        let layout = rt.state.connection.layout.clone();
-        let selected = client.selected_session();
-        let _ = client.take_outbound();
-        for key in ["disclose-session-2", "fold-@1"] {
-            let target = crate::ui::element(&rt, key);
-            let min = phux_design::tokens::SPACE.pointer_min;
-            assert_eq!((target.rect[2], target.rect[3]), (min, min));
-            assert!(
-                !target.focusable,
-                "a disclosure is not another list Tab stop"
-            );
-            press(&mut rt, key);
-            assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, shown);
-            assert_eq!(rt.state.connection.layout, layout);
-            assert_eq!(client.selected_session(), selected);
-            assert!(rt.state.connection.reorder.held.is_none());
+        for id in 1..=5 {
+            let key = format!("pane-{}", ResourceId::local(id));
+            assert!(crate::ui::sidebar::tests::focusable(&rt, &key));
+        }
+        for key in [
+            "disclose-session-2",
+            "fold-@1",
+            "child-count-@1",
+            "identity-layer-1",
+        ] {
+            assert!(rt.find(key).is_none(), "{key} is obsolete");
         }
         assert!(
-            rt.state
-                .sidebar_collapsed
-                .contains(&SessionKey::new([2; 16]).unwrap())
+            rt.elements()
+                .iter()
+                .any(|e| e.path.contains("pane-@2/") && e.label.as_deref() == Some("needs you"))
         );
-        assert!(rt.state.sidebar_unfolded.contains(&ResourceId::local(1)));
-        no_terminal_input(&rt);
+        // The identity leads immediately after row padding, not a blank pointer gutter.
+        let row = crate::ui::element(&rt, "pane-@1");
+        assert_eq!(row.rect[0], crate::ui::element(&rt, "pane-@2").rect[0]);
+        state(&mut rt, "hosts");
+        assert!(
+            rt.state
+                .machines
+                .expanded
+                .contains(&Some("build-mini".to_owned()))
+        );
     }
 }
 
 #[test]
-fn tree_keys_keep_focus_and_do_not_change_the_terminal_arrangement() {
+fn local_horizontal_keys_keep_focus_without_folding_or_terminal_input() {
     for key in ["select-session-1", "pane-@1"] {
         let mut rt = window((1100, 720), true, "normal");
         super::super::sidebar_focus::focus_sidebar(&mut rt);
@@ -74,49 +75,42 @@ fn tree_keys_keep_focus_and_do_not_change_the_terminal_arrangement() {
             rt.frame(3.0);
             assert!(crate::ui::element(&rt, key).focused, "{key}");
             assert_eq!(rt.state.connection.layout, layout);
-            if key == "select-session-1" {
-                assert_eq!(
-                    rt.state
-                        .sidebar_collapsed
-                        .contains(&SessionKey::new([1; 16]).unwrap()),
-                    arrow == rune::Key::Left,
-                );
-            } else {
-                assert_eq!(
-                    rt.state.sidebar_unfolded.contains(&ResourceId::local(1)),
-                    arrow == rune::Key::Right,
-                );
+            for id in 1..=3 {
+                assert!(crate::ui::sidebar::tests::focusable(
+                    &rt,
+                    &format!("pane-@{id}")
+                ));
             }
-        }
-        assert!(
-            !rt.state
-                .sidebar_collapsed
-                .contains(&SessionKey::new([1; 16]).unwrap())
-        );
-        if key == "pane-@1" {
-            assert!(rt.state.sidebar_unfolded.contains(&ResourceId::local(1)));
         }
         no_terminal_input(&rt);
     }
 }
 
 #[test]
-fn dragging_out_of_a_disclosure_cancels_without_selecting_an_unselected_parent() {
-    for key in ["disclose-session-2", "fold-@1"] {
+fn a_single_session_keeps_separate_session_and_resource_drag_ownership() {
+    for (key, grab) in [
+        (
+            "select-session-1",
+            crate::desk::Grab::Session(SessionKey::new([1; 16]).unwrap()),
+        ),
+        (
+            "pane-@1",
+            crate::desk::Grab::Resource(1, SessionKey::new([1; 16]).unwrap()),
+        ),
+    ] {
         let mut rt = window((1100, 720), true, "normal");
-        rt.update(|d, _| {
-            d.connection.shown = Some(crate::desk::Shown {
-                resource: ResourceId::local(5),
-                view: None,
-            });
-            d.connection.layout = Some(LayoutNode::Leaf(ResourceId::local(5)));
-        });
+        state(&mut rt, "single");
         server::settle(&mut rt);
         let layout = rt.state.connection.layout.clone();
         let client = rt.state.connection.client.as_ref().unwrap().clone();
-        let selected = client.selected_session();
         let _ = client.take_outbound();
         let (x, y) = rt.find(key).unwrap();
+        let other = if key == "select-session-1" {
+            "pane-@1"
+        } else {
+            "select-session-1"
+        };
+        let (over_x, over_y) = rt.find(other).unwrap();
         assert!(
             rt.element_at(x, y)
                 .unwrap()
@@ -125,54 +119,142 @@ fn dragging_out_of_a_disclosure_cancels_without_selecting_an_unselected_parent()
                 .any(|part| part == key)
         );
         rt.pointer_down(x, y);
-        rt.pointer_move(x + 100.0, y + 40.0);
+        rt.pointer_move(over_x, over_y);
         rt.frame(3.0);
-        assert!(rt.state.connection.reorder.held.is_none());
+        assert_eq!(
+            rt.state.connection.reorder.held.map(|(from, _)| from),
+            Some(grab)
+        );
         rt.pointer_up(x + 100.0, y + 40.0);
         rt.frame(3.0);
-        assert!(rt.state.sidebar_collapsed.is_empty());
-        assert!(rt.state.sidebar_unfolded.is_empty());
-        press(&mut rt, key);
-        assert_eq!(
-            rt.state.connection.shown.as_ref().unwrap().resource,
-            ResourceId::local(5)
-        );
         assert_eq!(rt.state.connection.layout, layout);
-        assert!(rt.state.connection.wanted.is_none());
         assert!(rt.state.connection.reorder.held.is_none());
-        assert_eq!(client.selected_session(), selected);
         no_terminal_input(&rt);
     }
 }
 
 #[test]
-fn child_counts_remain_legible_on_live_hover_and_press() {
+fn a_flat_single_keeps_close_confirmation_without_selecting_or_dragging() {
+    let mut rt = window((1100, 720), true, "normal");
+    state(&mut rt, "single");
+    let key = SessionKey::new([1; 16]).unwrap();
+    let shown = rt.state.connection.shown.as_ref().unwrap().resource.clone();
+    let layout = rt.state.connection.layout.clone();
+    let client = rt.state.connection.client.as_ref().unwrap().clone();
+    let _ = client.take_outbound();
+    let (x, y) = rt.find("pane-@1").unwrap();
+    rt.pointer_move(x, y);
+    server::settle(&mut rt);
+    press(&mut rt, &format!("session-close-{key}"));
+    assert_eq!(
+        rt.state.pending,
+        Some(crate::desk::Pending::CloseSession(key, "phux".to_owned()))
+    );
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, shown);
+    assert_eq!(rt.state.connection.layout, layout);
+    assert!(rt.state.connection.reorder.held.is_none());
+    no_terminal_input(&rt);
+}
+
+#[test]
+fn real_split_members_are_inline_and_attention_is_not_hidden_by_the_lead() {
     for dark in [true, false] {
         let mut rt = window((1100, 720), dark, "normal");
-        rt.update(|d, _| {
-            d.connection.shown = Some(crate::desk::Shown {
-                resource: ResourceId::local(5),
-                view: None,
-            });
-        });
+        state(&mut rt, "split");
         server::settle(&mut rt);
         let t = crate::ui::tokens_for(dark, None);
         let expected = t.roles.text.dim.paint();
+        for id in 1..=3 {
+            assert!(rt.find(&format!("sidebar-member-@{id}")).is_some());
+        }
         let (x, y) = rt.find("pane-@1").unwrap();
         rt.pointer_move(x, y);
         rt.frame(3.0);
-        assert_eq!(
-            crate::ui::element(&rt, "child-count-@1").text_color,
-            Some(expected)
+        assert!(rt.find("identity-layer-1").is_some());
+        assert!(rt.find("identity-layer-2").is_some());
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.path.contains("pane-@1/") && e.label.as_deref() == Some("needs you"))
+        );
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("needs you"))
         );
         rt.pointer_down(x, y);
         rt.frame(3.0);
-        assert_eq!(
-            crate::ui::element(&rt, "child-count-@1").text_color,
-            Some(expected)
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("·") && e.text_color == Some(expected))
         );
         rt.pointer_up(x + 200.0, y + 50.0);
     }
+}
+
+fn wanted_or_shown(rt: &Runtime<Desk>, id: u32) -> bool {
+    rt.state
+        .connection
+        .wanted
+        .as_ref()
+        .is_some_and(|(wanted, _)| *wanted == ResourceId::local(id))
+        || rt
+            .state
+            .connection
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.resource == ResourceId::local(id))
+}
+
+#[test]
+fn inline_member_gestures_own_their_press_and_never_drag_or_type_into_a_terminal() {
+    let mut rt = window((1100, 720), true, "normal");
+    state(&mut rt, "split");
+    let client = rt.state.connection.client.as_ref().unwrap().clone();
+    let _ = client.take_outbound();
+    let layout = rt.state.connection.layout.clone();
+    let (x, y) = rt.find("sidebar-member-@2").unwrap();
+    rt.pointer_down(x, y);
+    rt.frame(3.0);
+    assert!(!wanted_or_shown(&rt, 2), "press-start does not select");
+    rt.pointer_move(x + 150.0, y + 80.0);
+    rt.frame(3.0);
+    assert!(
+        rt.state.connection.reorder.held.is_none(),
+        "the member is not a drag handle"
+    );
+    rt.pointer_up(x + 150.0, y + 80.0);
+    rt.frame(3.0);
+    assert!(!wanted_or_shown(&rt, 2), "cancelled press does not select");
+    press(&mut rt, "sidebar-member-@2");
+    assert!(
+        wanted_or_shown(&rt, 2),
+        "the member, not the lead, was requested"
+    );
+    assert_eq!(rt.state.connection.layout, layout);
+    assert!(rt.state.connection.reorder.held.is_none());
+    rt.update(|_, tx| assert_eq!(tx.focused(), None));
+    no_terminal_input(&rt);
+}
+
+#[test]
+fn split_keyboard_navigation_keeps_the_row_without_terminal_input() {
+    let mut rt = window((1100, 720), true, "normal");
+    state(&mut rt, "split");
+    super::super::sidebar_focus::focus_sidebar(&mut rt);
+    let client = rt.state.connection.client.as_ref().unwrap().clone();
+    let _ = client.take_outbound();
+    let layout = rt.state.connection.layout.clone();
+    rt.key(crate::keys::plain(rune::Key::Right));
+    rt.frame(3.0);
+    assert!(wanted_or_shown(&rt, 2));
+    assert!(
+        crate::ui::element(&rt, "pane-@1").focused,
+        "lead identity stays put"
+    );
+    assert_eq!(rt.state.connection.layout, layout);
+    no_terminal_input(&rt);
 }
 
 #[test]

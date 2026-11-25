@@ -1,11 +1,21 @@
 /** Rune's crates inherit the license at the root of their pinned checkout. */
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import {
   type CanonicalLicenses,
   type Crate,
   licenseTexts,
   noticeTexts,
 } from "./third-party.ts";
+
+/** Fixed, compiled-in identity assets ship their actual license on every platform. */
+export function identityNotices(
+  licensePath = resolve(import.meta.dir, "../assets/identity/LICENSE"),
+): string {
+  const license = readFileSync(licensePath, "utf8").trim();
+  if (!license) throw new Error("Identity asset LICENSE is empty");
+  return `\n@lobehub/icons — Claude, Codex and OpenCode identity marks\nhttps://github.com/lobehub/lobe-icons\n\n${license}\n`;
+}
 
 export function runeNoticeReader(crates: Crate[], canonical: CanonicalLicenses) {
   const rune = crates.find((crate) => crate.name === "rune");

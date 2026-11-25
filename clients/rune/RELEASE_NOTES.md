@@ -1,7 +1,7 @@
-**Phux Rune 0.1.56**
+**Phux Rune 0.1.57**
 
-- Give sidebar sessions, child panes and machines one clear disclosure gutter,
-  quieter attention summaries and a readable machine header below Mac controls.
-- Clear a Sessions search in one touch without losing the editor or keyboard.
-- Open a pane's links on the machine in front of you (#2992).
-- Support opt-in SSH-agent forwarding for each host (#2994).
+- Navigate compact, arrow-free resource rows with naturally visible local work.
+- Recognize declared tools and resource kinds through shared identities;
+  only actual split groups receive subtle layered edges and inline members.
+- Keep session actions, attention and remembered split selection independent,
+  without changing the server's pane arrangement or terminal input ownership.

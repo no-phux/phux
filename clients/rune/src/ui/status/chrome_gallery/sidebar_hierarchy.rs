@@ -54,10 +54,9 @@ fn machines(desk: &mut Desk) {
 }
 
 fn window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
-    let mut replica = crate::test_support::terminal::Replica::new(120, 40, 1);
+    let mut replica = crate::test_support::terminal::Replica::new(120, 40, 5);
     replica.feed("\x1b[2J\x1b[H$ cargo test --locked\r\n   Compiling phux-rune\r\n".to_owned());
-    let mut desk = crate::test_support::window();
-    desk.connection.client = Some(replica.client.clone());
+    let mut desk = replica.window();
     desk.connection.shown = Some(crate::desk::Shown {
         resource: replica.terminal.clone(),
         view: Some(replica.views[0]),
@@ -132,18 +131,27 @@ fn press(rt: &mut Runtime<Desk>, key: &str) {
 
 fn state(rt: &mut Runtime<Desk>, state: &str) {
     match state {
-        "collapsed" => {
-            press(rt, "disclose-session-2");
-            assert!(
-                rt.state
-                    .sidebar_collapsed
-                    .contains(&SessionKey::new([2; 16]).unwrap())
-            );
+        "single" => {
+            rt.update(|d, _| {
+                let top = d.connection.topology.as_mut().unwrap();
+                top.sessions.retain(|s| s.id == 1);
+                top.panes.retain(|p| p.terminal_id == ResourceId::local(1));
+                top.resources.retain(|r| r.id == ResourceId::local(1));
+            });
         }
-        "children" => {
-            press(rt, "fold-@1");
-            assert!(rt.find("fold-@1").is_some());
-            assert!(crate::ui::sidebar::tests::focusable(rt, "pane-@2"));
+        "split" => {
+            rt.update(|d, _| {
+                d.connection.tabs.by_session.insert(
+                    1,
+                    vec![Tab {
+                        id: [1; 16],
+                        name: "Polish session navigation".to_owned(),
+                        resources: [1, 2, 3].map(ResourceId::local).to_vec(),
+                        active: true,
+                        locked: false,
+                    }],
+                );
+            });
         }
         "hosts" => {
             press(rt, "host-build-mini");
@@ -175,14 +183,7 @@ fn sidebar_hierarchy_visual_review_frames() {
     for size in [(1100, 720), (640, 360)] {
         for (dark, theme) in [(true, "dark"), (false, "light")] {
             for mode in ["normal", "large", "forced"] {
-                for scene in [
-                    "expanded",
-                    "collapsed",
-                    "children",
-                    "hosts",
-                    "focused",
-                    "empty",
-                ] {
+                for scene in ["expanded", "single", "split", "hosts", "focused", "empty"] {
                     let mut rt = window(size, dark, mode);
                     state(&mut rt, scene);
                     let format = rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix();

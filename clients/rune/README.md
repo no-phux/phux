@@ -124,8 +124,9 @@ session (or `--session NAME`). It never creates a session on its own.
   goes back, double-click renames, and a drag reorders them on the server. The strip appears from two tabs up; a
   dot marks a tab that needs you, and a jump from anywhere lands on the
   right tab.
-- **Sidebar.** One hierarchy of sessions and terminals, with independent
-  disclosure, selection and drag targets, plus unboxed attention summaries.
+- **Sidebar.** Compact sessions and resources, always visible locally, with
+  inline split members, shared tool/kind identities, independent session and
+  resource drag targets, and unboxed attention summaries.
   ⌘J jumps to what needs you; ⌘B folds the sidebar.
   [Sidebar navigation](./SIDEBAR.md) covers states, child panes, session actions
   and moving work between sessions.
