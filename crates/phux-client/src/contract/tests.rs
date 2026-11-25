@@ -109,6 +109,29 @@ fn transport_refusals_use_the_closed_vocabulary() {
     assert!(err.remedy.contains("phux doctor"));
 }
 
+/// A socket path too long for `sockaddr_un` is named as such, with the
+/// platform limit the server's bind check states, not the kernel's
+/// "path must be shorter than `SUN_LEN`".
+#[test]
+fn an_over_long_socket_path_names_the_platform_limit() {
+    let limit = phux_config::socket::MAX_SOCKET_PATH_LEN;
+    let socket = std::path::PathBuf::from(format!("/{}", "s".repeat(limit + 10)));
+    let invalid = std::io::Error::new(std::io::ErrorKind::InvalidInput, "SUN_LEN");
+    let err = transport_refusal(&AttachError::Io(invalid), &socket, "status", None);
+    assert!(
+        err.message.starts_with("status: socket path /s"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.message.contains(&format!("limited to {limit} bytes")),
+        "{}",
+        err.message
+    );
+    assert!(!err.message.contains("SUN_LEN"), "{}", err.message);
+    assert_eq!(err.remedy, "", "the message carries the fix");
+}
+
 /// A message carrying `hint: ` remedy lines keeps only its failure as
 /// the message; the remedies lead the remedy, one per line.
 #[test]

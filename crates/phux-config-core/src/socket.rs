@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use crate::{guard, instance};
 
+mod path_len;
+pub use path_len::{MAX_SOCKET_PATH_LEN, path_too_long, path_too_long_message};
+
 /// Resolve the default Unix-domain-socket path.
 ///
 /// Precedence (the daemon binds this; every consumer connects to it):

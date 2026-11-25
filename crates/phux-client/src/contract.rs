@@ -212,10 +212,15 @@ pub fn transport_refusal(
             format!("server closed the connection during {verb}"),
             doctor,
         ),
+        // An over-long path names its own fix; no log or health check helps.
         AttachError::Io(io_err) => Refusal::new(
             codes::TRANSPORT,
             unreachable_socket_message(verb, io_err, socket),
-            doctor,
+            if phux_config::socket::path_too_long(socket).is_some() {
+                String::new()
+            } else {
+                doctor
+            },
         ),
         // Same `transport` code as any other non-connect failure. The remedy
         // is the old-server recovery, not a new JSON code.
@@ -294,6 +299,9 @@ pub fn target_miss(target: Option<&str>, degradation: &crate::state::Degradation
 /// loop" wording.
 #[must_use]
 pub fn unreachable_socket_message(verb: &str, io_err: &std::io::Error, socket: &Path) -> String {
+    if let Some(too_long) = phux_config::socket::path_too_long(socket) {
+        return format!("{verb}: {too_long}");
+    }
     format!(
         "{verb}: cannot reach the server socket {}: {io_err}",
         socket.display()
