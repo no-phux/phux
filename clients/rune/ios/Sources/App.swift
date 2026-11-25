@@ -3,6 +3,23 @@ import UIKit
 @main
 @MainActor
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    static func main() {
+        EarlierApp.forgetScenes() // Before UIKit reads its saved sessions.
+        UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(Self.self))
+    }
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        EarlierApp.clearBadge()
+        NotificationCenter.default.addObserver(self, selector: #selector(connecting),
+                                               name: UIScene.willConnectNotification, object: nil)
+        return true
+    }
+
+    @objc private func connecting(_ note: Notification) {
+        if let scene = note.object as? UIScene { EarlierApp.claim(scene) }
+    }
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name:"Rune", sessionRole:session.role)
@@ -18,10 +35,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var root: RuneController?
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
+        open(scene, url: options.urlContexts.first?.url)
+    }
+    func open(_ scene: UIWindowScene, url: URL?) {
         phux_rune_ios_prewarm() // Compile the renderer while UIKit builds the window.
         let controller = RuneController()
         root = controller
-        if let url = options.urlContexts.first?.url { controller.importPairing(url) }
+        if let url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
         // UIKit's own controls take the house accent (the generated
         // AccentColor, with its dark and increased-contrast appearances).
