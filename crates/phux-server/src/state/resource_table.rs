@@ -502,6 +502,11 @@ impl ResourceTable {
                 true
             }
         });
+    }
+
+    /// Forget `client`'s generation ids; only when its connection ends. A
+    /// `DETACH` keeps the connection, whose peer still holds what it retired.
+    pub(super) fn forget_bootstrap_ids(&mut self, client: ClientId) {
         self.next_bootstrap.remove(&client);
     }
 
