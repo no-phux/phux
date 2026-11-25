@@ -331,6 +331,54 @@ async fn an_upgrade_keeps_the_user_title_beside_the_program_title() {
     .await;
 }
 
+/// phux-dsako.4: an open question crosses with its source and asked flag,
+/// except a streamed one whose session did not: nothing could retract it.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_question_crosses_while_its_source_does() {
+    use phux_agent_session::asked::{AskedPayload, AskedSource, AskedState};
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async {
+        for (source, crosses) in [
+            (AskedSource::Hook, true),
+            (AskedSource::Sentinel, true),
+            (AskedSource::Stream, false),
+        ] {
+            let mut state = ServerState::new();
+            let (_, pane) = state.seed_session("main");
+            let bundle = seeded_terminal(20, 5, b"hello");
+            tokio::task::spawn_local(bundle.actor.run());
+            state
+                .register_resource_handle(pane, bundle.handle, bundle.token)
+                .unwrap();
+            let payload = AskedPayload {
+                id: "q2".to_owned(),
+                question: "Keep me?".to_owned(),
+                suggestions: vec!["Yes".to_owned()],
+                elapsed_seconds: None,
+            };
+            state.report_agent_asked(pane, source, payload.clone());
+            let blob = state.build_upgrade_blob(7).await;
+
+            let mut fresh = ServerState::new();
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut fresh, &blob)
+                .expect("rebuild");
+            let wire = WireResourceId::local(blob.panes[0].wire_id);
+            let held = fresh
+                .idspace
+                .resource_from_wire(&wire)
+                .and_then(|pane| fresh.asked_observation(pane));
+            let want = crosses.then_some(AskedState { source, payload });
+            assert_eq!(held, want.as_ref());
+            let flag = fresh.metadata().get(
+                &phux_protocol::wire::frame::Scope::Resource(wire),
+                phux_protocol::wire::frame::RESOURCE_ASKED_KEY,
+            );
+            assert_eq!(flag.is_some(), crosses, "{source:?}");
+        }
+    }))
+    .await;
+}
+
 mod merge;
 mod validation;
 

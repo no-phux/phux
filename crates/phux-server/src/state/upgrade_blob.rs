@@ -194,6 +194,7 @@ fn pane_blob(
         scrollback_bytes: Vec::new(),
         retained_exit,
         retain_secs,
+        asked: None,
         key: None,
     }
 }

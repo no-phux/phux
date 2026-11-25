@@ -91,7 +91,7 @@ pub(crate) fn handle_report_asked(
     if question.is_empty() && !id.is_empty() {
         state.with_mut(|s| {
             if s.asked_observation(terminal)
-                .is_some_and(|(source, ask)| source == AskedSource::Hook && ask.id == id)
+                .is_some_and(|held| held.source == AskedSource::Hook && held.payload.id == id)
             {
                 s.retract_agent_asked(terminal, AskedSource::Hook);
                 crate::hub::metadata_mirror::publish_asked_flag(

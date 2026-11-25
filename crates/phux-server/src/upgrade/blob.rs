@@ -326,6 +326,9 @@ pub struct PaneBlob {
     /// exits (ADR-0124), so the request survives the upgrade.
     #[serde(default)]
     pub retain_secs: Option<u32>,
+    /// The question a person has not answered yet, if any. Additive.
+    #[serde(default)]
+    pub asked: Option<phux_agent_session::asked::AskedState>,
     /// The resource record's key in [`StateBlob::org`]. Additive.
     #[serde(default)]
     pub key: Option<phux_core::ResourceKey>,
