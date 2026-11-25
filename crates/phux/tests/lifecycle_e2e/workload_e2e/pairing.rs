@@ -152,8 +152,14 @@ fn pair_enroll_ticket_failure_preserves_credentials_and_output() {
         &[("PHUX_WORKLOAD_KEYS", &registry)],
     );
     assert!(plain.status.success(), "{}", text(&plain.stderr));
-    assert!(text(&plain.stdout).contains("Enrollment ticket t-"));
-    assert!(text(&plain.stdout).contains("Pairing token"));
+    let shown = text(&plain.stdout);
+    assert!(
+        shown
+            .lines()
+            .any(|line| line.trim_start().starts_with("Ticket") && line.contains(" t-")),
+        "{shown}"
+    );
+    assert!(shown.contains("Pairing token"), "{shown}");
 }
 
 /// ADR-0154 end to end through the CLI: a `paired` server mints a ticket

@@ -3574,16 +3574,18 @@ registers a peer this hub dials for its users instead of a server you attach to.
 
 `phux host add NAME --code LINK` registers NAME from the connect link `phux
 pair` printed on the other machine, relay links included, without ssh and
-without attaching.
+without attaching. A link pasted as ENDPOINT does the same, and one pasted alone
+registers under the name it carries.
 
 Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
   <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, an endpoint URI
-              (`quic://`, `wss://`, `ssh://`) to register as is, or with
-              `--code` the name to register the link under.
+              (`quic://`, `wss://`, `ssh://`) to register as is, a connect link
+              to register under its own name (or `--name`), or with `--code` the
+              name to register the link under.
   [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
-              entry's name.
+              entry's name. A connect link here is `--code LINK`.
 
 Flags:
       --role <ROLE>              Which registry the machine lands in: a server

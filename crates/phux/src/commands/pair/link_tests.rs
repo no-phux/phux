@@ -58,28 +58,29 @@ fn the_expiry_line_states_a_single_use_deadline_plainly() {
         token: "ab",
         fingerprint: None,
         link: Some("https://phux.sh/connect?url=wss://h:1#token=ab"),
+        host_name: "mini",
+        ticket: None,
+        pins: Vec::new(),
         expires_at: None,
         expires_label: None,
         first_use_by: Some(deadline),
         qr: false,
         default_qr: false,
         secret_file: None,
+        surface: super::SecretSurface::Text,
         hide_bearer: false,
     };
-    let line = super::expiry_line(&secret);
+    let line = super::card::expiry_text(&secret);
     assert!(
-        line.starts_with("SINGLE USE — EXPIRES 2027-01-15T08:00:00Z (10 minutes)"),
+        line.starts_with("2027-01-15T08:00:00Z (10 minutes) unless a device pairs first"),
         "{line}"
     );
-    assert!(
-        line.contains("keeps working until `phux pair revoke cred`"),
-        "{line}"
-    );
-    let body = super::secret_file_body(&secret);
+    assert!(line.ends_with("SINGLE USE"), "{line}");
+    let body = super::card::secret_file_body(&secret);
     assert!(
         body.contains("link_expires_at=2027-01-15T08:00:00Z\n"),
         "{body}"
     );
     secret.first_use_by = None;
-    assert!(super::expiry_line(&secret).starts_with("EXPIRES NEVER"));
+    assert!(super::card::expiry_text(&secret).starts_with("NEVER"));
 }

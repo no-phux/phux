@@ -47,6 +47,7 @@ fn hardware_key_applies_only_where_a_certificate_is_enrolled() {
     };
     let code = AddMode::Code {
         name: "mini".to_owned(),
+        link: "-".to_owned(),
     };
     assert!(hardware_key_misplaced(HostRole::Remote, Some(&manual)).is_some());
     assert!(hardware_key_misplaced(HostRole::Satellite, Some(&ssh)).is_some());
@@ -402,7 +403,8 @@ fn add_mode_code_form_takes_only_a_name() {
     assert_eq!(
         AddMode::classify("mini", None, &code()).expect("code"),
         AddMode::Code {
-            name: "mini".to_owned()
+            name: "mini".to_owned(),
+            link: "-".to_owned(),
         }
     );
     let refused = [
@@ -449,4 +451,83 @@ fn add_mode_code_form_takes_only_a_name() {
         );
         assert!(err.remedy.contains("--code LINK"), "{}", err.remedy);
     }
+}
+
+/// A connect link pasted as the ENDPOINT, or as TARGET alone, is the
+/// `--code` form, under every link prefix; a flag that names what the link
+/// carries is refused the same way.
+#[test]
+fn a_pasted_connect_link_is_the_code_form() {
+    let link = "https://phux.sh/connect?quic=quic://relay:4433&sni=lab&name=studio\
+                &fp=AB:CD#enroll=ticket&token=secret";
+    let code = |name: &str| AddMode::Code {
+        name: name.to_owned(),
+        link: link.to_owned(),
+    };
+    assert_eq!(
+        AddMode::classify("lab", Some(link), &opts()).expect("NAME LINK"),
+        code("lab")
+    );
+    assert_eq!(
+        AddMode::classify(link, None, &opts()).expect("LINK alone"),
+        code("studio"),
+        "the link's own name"
+    );
+    let named = AddOpts {
+        name: Some("lab".to_owned()),
+        ..opts()
+    };
+    assert_eq!(
+        AddMode::classify(link, None, &named).expect("LINK --name"),
+        code("lab")
+    );
+    let legacy = link.replace("https://phux.sh/connect", "phux://connect");
+    assert!(matches!(
+        AddMode::classify("lab", Some(&legacy), &opts()),
+        Ok(AddMode::Code { .. })
+    ));
+    let satellite = AddOpts {
+        role: HostRole::Satellite,
+        ..opts()
+    };
+    let refused = [
+        AddMode::classify("lab", Some(link), &satellite),
+        AddMode::classify("lab", Some(link), &named),
+        AddMode::classify(
+            "https://phux.sh/connect?url=wss://m:1#token=secret",
+            None,
+            &opts(),
+        ),
+        AddMode::classify("https://phux.sh/connect?broken#token=secret", None, &opts()),
+    ];
+    for err in refused {
+        let err = err.expect_err("refused");
+        let text = format!("{} {}", err.message, err.remedy);
+        assert!(
+            !text.contains("secret") && !text.contains("ticket"),
+            "{text}"
+        );
+        assert!(err.remedy.contains("--code LINK"), "{}", err.remedy);
+    }
+}
+
+/// No refusal on the manual path echoes what follows `?` or `#`, where a
+/// pasted link or URI carries its token.
+#[test]
+fn endpoint_refusals_never_echo_a_secret() {
+    let secret_bearing = [
+        "https://example.com/connect?token=secret",
+        "ftp://mini#token=secret",
+        "wss://mini:8787?token=secret",
+    ];
+    for endpoint in secret_bearing {
+        let err = crate::commands::remote::NewRemote::new("mini", endpoint, None, None, None)
+            .expect_err("refused");
+        assert!(!err.contains("secret"), "{err}");
+    }
+    let err = crate::commands::remote_target::parse_target(
+        "https://phux.sh/connect?url=wss://m:1#token=secret",
+    )
+    .expect_err("a URI");
+    assert!(!err.contains("secret"), "{err}");
 }

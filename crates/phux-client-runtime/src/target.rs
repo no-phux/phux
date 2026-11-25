@@ -108,7 +108,8 @@ impl RemoteTarget {
             return Err(TargetError::Empty);
         }
         if trimmed.contains("://") {
-            return Err(TargetError::Uri(trimmed.to_owned()));
+            // A pasted link carries its token after `?` or `#`: never echo it.
+            return Err(TargetError::Uri(crate::pairing::redact_uri(trimmed)));
         }
         // Split on the LAST `@`: a username cannot contain `@`, but this way
         // an address that does is still parsed the way the operator meant.

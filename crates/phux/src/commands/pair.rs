@@ -19,6 +19,7 @@ use std::time::Duration;
 use phux_client_runtime::pairing::{CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX};
 pub(crate) use phux_client_runtime::pairing::{ConnectLink, parse_connect_link};
 
+mod card;
 mod connector;
 #[cfg(test)]
 mod endpoint_tests;
@@ -27,6 +28,7 @@ mod mint;
 pub(crate) use mint::run;
 #[cfg(test)]
 mod link_tests;
+use card::{HumanSecret, finish_human_mint, listener_pins, relay_pins};
 use connector::relay_connector;
 use link_name::{link_name, percent_encode};
 mod manage;
@@ -495,7 +497,7 @@ fn warn_on_uncovered_names(cert: &std::path::Path, key: &std::path::Path, advert
     }
     warn!(
         "pair: this certificate does not name {} — a device that pins \
-         the fingerprint above is unaffected, but a client that validates the server \
+         its fingerprint is unaffected, but a client that validates the server \
          name (a browser, or curl --cacert) will refuse the handshake.",
         uncovered.join(", ")
     );
@@ -537,25 +539,14 @@ fn present_listener_credential(
     output: LinkOutput<'_>,
 ) -> ExitCode {
     let token = minted.secret();
-    let hide_bearer = hides_bearer(output.qr, output.secret_file.is_some(), output.json);
-    if !output.json && !hide_bearer {
-        print_credential_block(&minted.id, token);
-    }
-
-    let fingerprint = read_pairing_fingerprint(&certificate.cert, output.json || hide_bearer);
-    let authority = read_pairing_authority(&certificate.cert, output.json);
-    if let Some(ticket) = ticket {
-        print_enrollment_ticket(ticket, output.json, secret_surface(output));
-    }
+    let fingerprint = read_pairing_fingerprint(&certificate.cert);
+    let authority = read_pairing_authority(&certificate.cert);
     let checked = addresses.checked_names();
     warn_on_uncovered_names(&certificate.cert, &certificate.key, &checked);
 
-    if !output.json {
-        print_overlay_addresses(&addresses.overlay);
-    }
-
-    // The one-tap link (and its QR form) carries the token — it is as much
-    // a secret as the token line above, shown once on the same terminal.
+    // The one-tap link (and its QR form) carries the token: it is the
+    // secret, shown once on this terminal.
+    let host_name = link_name(output.name, addresses.magic_dns_name.as_deref());
     let pins = ServerPins {
         leaf: fingerprint.as_deref(),
         authority: authority.as_deref(),
@@ -565,7 +556,7 @@ fn present_listener_credential(
         build_connect_link_pinned(
             url,
             addresses.quic_endpoint.as_deref(),
-            Some(&link_name(output.name, addresses.magic_dns_name.as_deref())),
+            Some(&host_name),
             pins,
             token,
         )
@@ -588,12 +579,15 @@ fn present_listener_credential(
         return crate::output::json(&document);
     }
 
-    let secret = HumanSecret::new(
-        &minted.id,
-        token,
+    let mut secret = HumanSecret::new(&minted.id, token, output);
+    secret.fingerprint = fingerprint.as_deref();
+    secret.link = link.as_deref();
+    secret.host_name = &host_name;
+    secret.ticket = ticket;
+    secret.pins = listener_pins(
         fingerprint.as_deref(),
-        link.as_deref(),
-        output,
+        authority.as_deref(),
+        &addresses.overlay,
     );
     finish_human_mint(&secret, tokens)
 }
@@ -777,11 +771,8 @@ fn mint_relay_link(
         return ExitCode::FAILURE;
     };
     let token = minted.secret().to_owned();
-    let hide_bearer = hides_bearer(output.qr, output.secret_file.is_some(), output.json);
     let fingerprint = connector.cert_fingerprint.as_deref();
-    if let Some(ticket) = ticket.as_ref() {
-        print_enrollment_ticket(ticket, output.json, secret_surface(output));
-    }
+    let host_name = link_name(output.name, None);
     let pins = ServerPins {
         leaf: fingerprint,
         authority: Some(authority.as_str()),
@@ -790,7 +781,7 @@ fn mint_relay_link(
     let link = build_relay_connect_link(
         &connector.relay,
         &relay.route,
-        Some(&link_name(output.name, None)),
+        Some(&host_name),
         pins,
         &token,
     );
@@ -814,25 +805,12 @@ fn mint_relay_link(
         add_pins_to_document(&mut doc, Some(authority.as_str()), ticket.as_ref(), output);
         return crate::output::json(&doc);
     }
-    if !hide_bearer {
-        print_credential_block(&minted.id, &token);
-    }
-    outln!(
-        "Relay route (the device dials {} naming route \"{}\"):",
-        connector.relay,
-        relay.route
-    );
-    match fingerprint {
-        Some(fingerprint) => {
-            outln!(
-                "  relay certificate SHA-256 {fingerprint} (the device pins the relay, which sees only ciphertext)"
-            );
-        }
-        None => outln!("  no relay pin configured: a loopback relay only"),
-    }
-    outln!("  server certificate authority {authority} (verified end to end through the relay)");
-    outln!();
-    let secret = HumanSecret::new(&minted.id, &token, fingerprint, Some(&link), output);
+    let mut secret = HumanSecret::new(&minted.id, &token, output);
+    secret.fingerprint = fingerprint;
+    secret.link = Some(&link);
+    secret.host_name = &host_name;
+    secret.ticket = ticket.as_ref();
+    secret.pins = relay_pins(&connector.relay, &relay.route, fingerprint, &authority);
     finish_human_mint(&secret, tokens)
 }
 
@@ -1025,33 +1003,20 @@ fn mint_pairing_credential(
     Some(minted)
 }
 
-/// Print the credential ID and its secret for a human operator.
-fn print_credential_block(credential_id: &str, token: &str) {
-    outln!("Credential ID (use with `phux pair ls|prune|rotate|revoke`):");
-    outln!("  {credential_id}");
-    outln!();
-    outln!("Pairing token (a secret — give it to the device once):");
-    outln!("  {token}");
-    outln!();
+/// The certificate fingerprint the device pins; an unreadable certificate
+/// is reported on stderr and pins nothing.
+fn read_pairing_fingerprint(cert: &std::path::Path) -> Option<String> {
+    phux_server::transport::tls::cert_fingerprint(cert)
+        .map_err(|err| warn!("pair: could not read certificate fingerprint: {err}"))
+        .ok()
 }
 
-/// Read the certificate fingerprint the device pins, printing it for a human
-/// operator and reporting an unreadable certificate on stderr.
-fn read_pairing_fingerprint(cert: &std::path::Path, json: bool) -> Option<String> {
-    match phux_server::transport::tls::cert_fingerprint(cert) {
-        Ok(fingerprint) => {
-            if !json {
-                outln!("Server certificate SHA-256 (verify on the device to defeat MITM):");
-                outln!("  {fingerprint}");
-                outln!();
-            }
-            Some(fingerprint)
-        }
-        Err(err) => {
-            warn!("pair: could not read certificate fingerprint: {err}");
-            None
-        }
-    }
+/// The workload CA the server's certificate chains to (ADR-0153); `None` for
+/// a self-signed or operator-supplied leaf.
+fn read_pairing_authority(cert: &std::path::Path) -> Option<String> {
+    phux_server::transport::tls::presented_authority(cert)
+        .ok()
+        .flatten()
 }
 
 /// Mint the single-use enrollment ticket a `--enroll` link carries
@@ -1072,65 +1037,6 @@ fn mint_enrollment_ticket() -> Option<phux_server::workload::tickets::MintedTick
             None
         }
     }
-}
-
-/// Report a committed ticket only after its companion credential was minted.
-fn print_enrollment_ticket(
-    ticket: &phux_server::workload::tickets::MintedTicket,
-    json: bool,
-    surface: SecretSurface,
-) {
-    if json {
-        return;
-    }
-    let where_held = match surface {
-        SecretSurface::Text => "in the link below",
-        SecretSurface::Qr => "in the QR below, not printed as text",
-        SecretSurface::File => "in the secret file, not printed",
-        SecretSurface::QrAndFile => "in the QR and the secret file, not printed as text",
-    };
-    let when = jiff::Timestamp::from_second(ticket.expires_at)
-        .ok()
-        .map_or_else(
-            || format!("unix {}", ticket.expires_at),
-            |stamp| format!("{stamp:.0}"),
-        );
-    outln!(
-        "Enrollment ticket {} ({where_held}; single use):",
-        ticket.id
-    );
-    outln!(
-        "  EXPIRES {when} ({} minutes)",
-        phux_server::workload::tickets::DEFAULT_TICKET_SECONDS / 60
-    );
-    outln!("  the device enrolls its own key with it; nothing secret leaves the device");
-    outln!();
-}
-
-/// The workload CA the server's certificate chains to, printed for a human
-/// operator (ADR-0153); `None` for a self-signed or operator-supplied leaf.
-fn read_pairing_authority(cert: &std::path::Path, json: bool) -> Option<String> {
-    let authority = phux_server::transport::tls::presented_authority(cert)
-        .ok()
-        .flatten()?;
-    if !json {
-        outln!("Server certificate authority (pinned by the device; it survives leaf renewal):");
-        outln!("  {authority}");
-        outln!();
-    }
-    Some(authority)
-}
-
-/// List the overlay addresses a device can dial.
-fn print_overlay_addresses(overlay: &[IpAddr]) {
-    if overlay.is_empty() {
-        return;
-    }
-    outln!("Overlay network addresses (dial one of these from the device):");
-    for addr in overlay {
-        outln!("  {addr}");
-    }
-    outln!();
 }
 
 /// Where a human mint puts the bearer. JSON is a separate path and always
@@ -1190,231 +1096,8 @@ fn format_rfc3339(stamp: jiff::Timestamp) -> String {
     format!("{stamp:.0}")
 }
 
-/// The fields a human mint may show. `token` is written only to the secret
-/// file, and only when `hide_bearer` is false is it absent from this path's
-/// stdout by the caller having already printed it. This function never prints
-/// `token` or `link` when `hide_bearer` is set.
-struct HumanSecret<'a> {
-    credential_id: &'a str,
-    token: &'a str,
-    fingerprint: Option<&'a str>,
-    link: Option<&'a str>,
-    expires_at: Option<jiff::Timestamp>,
-    expires_label: Option<&'a str>,
-    first_use_by: Option<jiff::Timestamp>,
-    qr: bool,
-    /// Render the QR beneath the text link (never with `hide_bearer`).
-    default_qr: bool,
-    secret_file: Option<&'a Path>,
-    hide_bearer: bool,
-}
-
-impl<'a> HumanSecret<'a> {
-    const fn new(
-        credential_id: &'a str,
-        token: &'a str,
-        fingerprint: Option<&'a str>,
-        link: Option<&'a str>,
-        output: LinkOutput<'a>,
-    ) -> Self {
-        Self {
-            credential_id,
-            token,
-            fingerprint,
-            link,
-            expires_at: output.expires_at,
-            expires_label: output.expires_label,
-            first_use_by: output.first_use_by,
-            qr: output.qr,
-            default_qr: output.default_qr,
-            secret_file: output.secret_file,
-            hide_bearer: hides_bearer(output.qr, output.secret_file.is_some(), output.json),
-        }
-    }
-}
-
-fn finish_human_mint(secret: &HumanSecret<'_>, tokens: &Path) -> ExitCode {
-    if present_human_secret(secret) != ExitCode::SUCCESS {
-        return ExitCode::FAILURE;
-    }
-    outln!("Token written to {}", tokens.display());
-    ExitCode::SUCCESS
-}
-
-fn present_human_secret(secret: &HumanSecret<'_>) -> ExitCode {
-    print_expiry_banner(secret);
-    if secret.hide_bearer {
-        outln!(
-            "Credential ID (not the token; revoke with `phux pair revoke {}`):",
-            secret.credential_id
-        );
-        outln!("  {}", secret.credential_id);
-        outln!();
-        if let Some(fingerprint) = secret.fingerprint {
-            outln!("Server certificate SHA-256 (compare on the device; not the token):");
-            outln!("  {fingerprint}");
-            outln!();
-        }
-        let mut failed = false;
-        if let Some(path) = secret.secret_file {
-            match write_secret_file(path, secret) {
-                Ok(()) => {
-                    outln!(
-                        "Secret written to {} (mode 0600). The bearer is not shown here.",
-                        path.display()
-                    );
-                    outln!();
-                }
-                Err(err) => {
-                    error!(
-                        "pair: credential {} was minted but the secret file could not be written: {err}",
-                        secret.credential_id
-                    );
-                    hint!(
-                        "pair: the bearer was not printed. Delete {} if it exists, revoke with `phux pair revoke {}`, and retry.",
-                        path.display(),
-                        secret.credential_id
-                    );
-                    failed = true;
-                }
-            }
-        }
-        if secret.qr {
-            match secret.link {
-                Some(link) if print_camera_qr(link) => print_app_floor(),
-                Some(_) => failed = true,
-                None => {
-                    warn!("pair: no connect link to render; nothing scannable was printed");
-                    failed = true;
-                }
-            }
-        }
-        return if failed {
-            ExitCode::FAILURE
-        } else {
-            ExitCode::SUCCESS
-        };
-    }
-    if let Some(link) = secret.link {
-        print_connect_link(link);
-        // A QR that cannot render has already warned; the text link stands.
-        if secret.default_qr {
-            print_camera_qr(link);
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-fn print_expiry_banner(secret: &HumanSecret<'_>) {
-    let line = expiry_line(secret);
-    if secret.hide_bearer {
-        outln!("================================================================");
-        outln!("PAIRING — the bearer is not printed on this screen.");
-        outln!("{line}");
-        if secret.expires_at.is_none() && secret.first_use_by.is_none() {
-            outln!("Do not film a credential that does not expire.");
-        }
-        outln!("================================================================");
-        outln!();
-        return;
-    }
-    outln!("{line}");
-    outln!();
-}
-
-/// When the credential stops working, in words (#2398).
-fn expiry_line(secret: &HumanSecret<'_>) -> String {
-    let id = secret.credential_id;
-    if let Some(deadline) = secret.first_use_by {
-        let minutes = LINK_SECONDS / 60;
-        return format!(
-            "SINGLE USE — EXPIRES {} ({minutes} minutes) unless a device pairs with it first.\n\
-             The device that pairs keeps working until `phux pair revoke {id}`.\n\
-             (`--reusable` or `--expires DURATION` mints a link any device can use.)",
-            format_rfc3339(deadline)
-        );
-    }
-    match (secret.expires_at.map(format_rfc3339), secret.expires_label) {
-        (Some(stamp), Some(label)) => format!("EXPIRES {stamp} ({label} from mint)"),
-        (Some(stamp), None) => format!("EXPIRES {stamp}"),
-        (None, _) => format!("EXPIRES NEVER — valid until `phux pair revoke {id}`"),
-    }
-}
-
-fn secret_file_body(secret: &HumanSecret<'_>) -> String {
-    use std::fmt::Write;
-    let mut body = String::new();
-    let expires = secret
-        .expires_at
-        .map_or_else(|| "never".to_owned(), format_rfc3339);
-    let _ = write!(
-        body,
-        "# phux pairing secret. Mode 0600. Delete after the device has paired.\n\
-         credential_id={}\n\
-         expires_at={expires}\n\
-         token={}\n",
-        secret.credential_id, secret.token
-    );
-    if let Some(deadline) = secret.first_use_by {
-        let _ = writeln!(body, "link_expires_at={}", format_rfc3339(deadline));
-    }
-    if let Some(link) = secret.link {
-        let _ = writeln!(body, "connect_link={link}");
-        if let Some(legacy) = legacy_connect_link(link) {
-            let _ = writeln!(body, "legacy_connect_link={legacy}");
-        }
-    }
-    if let Some(fingerprint) = secret.fingerprint {
-        let _ = writeln!(body, "cert_fingerprint={fingerprint}");
-    }
-    body
-}
-
-fn write_secret_file(path: &Path, secret: &HumanSecret<'_>) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let body = secret_file_body(secret);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|err| format!("could not create {}: {err}", path.display()))?;
-    file.write_all(body.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|err| format!("could not write {}: {err}", path.display()))?;
-    Ok(())
-}
-
-/// Print the connect link as text. The QR form never uses this: the link
-/// contains the bearer.
-fn print_connect_link(link: &str) {
-    outln!("One-tap connect link (open on the device — carries the token):");
-    outln!("  {link}");
-    outln!();
-    // App builds without the Universal Link entitlement cannot claim the
-    // https form and would open it in a browser; the custom-scheme spelling
-    // of the same credentials reaches them. Same secret, same query and fragment.
-    if let Some(legacy) = legacy_connect_link(link) {
-        outln!("Same link for app builds that predate Universal Link support:");
-        outln!("  {legacy}");
-        outln!();
-    }
-    print_app_floor();
-}
-
-/// The link keeps its secrets after `#` (#2396); app builds older than this
-/// read only the query and refuse it as malformed. Say so where it is seen.
-fn print_app_floor() {
-    outln!(
-        "The phone app needs version {MIN_FRAGMENT_APP} or newer to read this link; an older one says \"not a phux link\" until it is updated."
-    );
-    outln!();
-}
-
-/// The first phux iOS and Android release that reads secrets from the fragment.
-const MIN_FRAGMENT_APP: &str = "0.4.83";
-
+/// Print the QR of `link` scaled to the terminal; `false` after warning that
+/// it could not be rendered.
 fn print_camera_qr(link: &str) -> bool {
     let columns = stdout_columns();
     let scale = columns.map_or(1, |columns| qr_scale_that_fits(link, columns));
@@ -2030,15 +1713,19 @@ mod tests {
             token: &token,
             fingerprint: Some("AB:CD"),
             link: Some(&link),
+            host_name: "mini",
+            ticket: None,
+            pins: Vec::new(),
             expires_at: None,
             expires_label: None,
             first_use_by: None,
             qr: true,
             default_qr: false,
             secret_file: Some(Path::new("/tmp/pair-secret")),
+            surface: super::SecretSurface::QrAndFile,
             hide_bearer: true,
         };
-        let body = super::secret_file_body(&secret);
+        let body = super::card::secret_file_body(&secret);
         assert!(body.contains(&format!("token={token}")));
         assert!(body.contains(&format!("connect_link={link}")));
         assert!(body.contains("expires_at=never"));
@@ -2052,7 +1739,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secret");
         super::prepare_secret_file(&path).expect("new path");
-        super::write_secret_file(&path, &secret).expect("write");
+        super::card::write_secret_file(&path, &secret).expect("write");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert!(
