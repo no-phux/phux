@@ -315,7 +315,11 @@ fn a_session_ended_in_the_handshake_reads_as_a_refused_machine() {
     );
     let refused = remote.failure(&AttachError::Io(eof), "ls");
     assert_eq!(refused.code, codes::TRANSPORT);
-    assert!(!refused.message.contains("close_notify"), "{}", refused.message);
+    assert!(
+        !refused.message.contains("close_notify"),
+        "{}",
+        refused.message
+    );
     assert!(refused.message.contains("ended the encrypted session"));
     assert!(
         refused.remedy.contains("no enrolled client certificate")
