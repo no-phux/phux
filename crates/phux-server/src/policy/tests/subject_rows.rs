@@ -423,16 +423,6 @@ fn rows(world: &mut World) -> Vec<Row> {
             "input",
         ),
         on_terminal(
-            command(Command::OpenUrl {
-                terminal_id: t.clone(),
-                op: phux_protocol::open_url::OpenUrlOp::Reply {
-                    id: 1,
-                    opened: true,
-                },
-            }),
-            "input",
-        ),
-        on_terminal(
             command(Command::Transcribe {
                 upload_id: upload,
                 terminal_id: t.clone(),
@@ -589,7 +579,7 @@ fn rows(world: &mut World) -> Vec<Row> {
     rows.extend(mirror_rows());
     rows.extend(child_spawn_rows(world));
     rows.extend(credential_rows());
-    rows.extend(viewport_colors_row(&rows));
+    rows.extend(same_gate_rows(&rows));
     rows.extend(question_rows(world));
     rows
 }

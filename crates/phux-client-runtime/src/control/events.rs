@@ -20,47 +20,10 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::approvals::{Decision, DecisionOutcome};
 
 mod observation;
+mod status;
 
 pub use observation::Observation;
-
-/// Where the session is in its life.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    /// No connection has been opened yet.
-    Idle,
-    /// Dialing, or waiting out the reconnect ladder.
-    Connecting,
-    /// `HELLO_OK` accepted; no attach has completed on this connection.
-    Negotiated,
-    /// The attach barrier released; frames are flowing.
-    Attached,
-    /// The consumer ended the session, or the server detached it at the
-    /// consumer's request. Terminal.
-    Closed,
-    /// A refusal no retry can satisfy, or the initial ladder ran out.
-    /// Terminal; the message is in `last_error`.
-    Failed,
-}
-
-impl Status {
-    /// Whether no further transition can happen.
-    #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Closed | Self::Failed)
-    }
-}
-
-/// How one acknowledged input operation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// The server acknowledged the write.
-    Delivered,
-    /// Nothing was written; retyping is safe.
-    Refused,
-    /// Some, all, or none of the bytes may have landed; read the pane
-    /// before retyping.
-    Unknown,
-}
+pub use status::{DeliveryOutcome, Status};
 
 /// The catalog's facts about an `AgentSession` resource (ADR-0103).
 ///

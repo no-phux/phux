@@ -550,16 +550,3 @@ fn viewport_colors() -> FrameKind {
         },
     }
 }
-
-/// `VIEWPORT_COLORS` is gated exactly as `VIEWPORT_RESIZE`: `BIND` on the
-/// Terminals the connection views.
-fn viewport_colors_row(rows: &[Row]) -> Option<Row> {
-    let resize = rows
-        .iter()
-        .find(|row| matches!(row.frame, FrameKind::ViewportResize { .. }))?;
-    Some(Row {
-        frame: viewport_colors(),
-        admit: resize.admit.clone(),
-        deny: resize.deny.clone(),
-    })
-}
