@@ -7,7 +7,11 @@ use phux_client_core::layout::leaves;
 use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
+use super::layout::neighbour;
 use super::{Desk, NoticeKind};
+
+/// How many left panes a window remembers.
+const RECENT: usize = 32;
 
 impl Desk {
     /// Number the tab's panes, the first nine, until the next key.
@@ -67,22 +71,47 @@ impl Desk {
         if from.is_some() && from != to {
             tabs.left_tab = from;
         }
-        tabs.last_pane = Some(old.clone());
+        tabs.recent.retain(|id| id != old && id != new);
+        tabs.recent.push(old.clone());
+        if tabs.recent.len() > RECENT {
+            tabs.recent.remove(0);
+        }
+    }
+
+    /// Where the keyboard goes when the shown `closed` does: the pane used
+    /// before it on screen, else the one beside it, else the newest the
+    /// session still has. A phone walks its own group.
+    pub(super) fn after_closing(&self, closed: &[ResourceId]) -> Option<ResourceId> {
+        if self.phone.is_some() {
+            return None;
+        }
+        let tree = self.connection.layout.as_ref();
+        let on_screen = tree.map(leaves).unwrap_or_default();
+        let tabs = &self.connection.tabs;
+        let newest = |held: &dyn Fn(&ResourceId) -> bool| {
+            (tabs.recent.iter().rev())
+                .find(|id| !closed.contains(id) && self.lists_resource(id) && held(id))
+                .cloned()
+        };
+        newest(&|id| on_screen.contains(id))
+            .or_else(|| {
+                let beside = tree.and_then(|tree| neighbour(tree, closed));
+                beside.filter(|id| self.lists_resource(id))
+            })
+            .or_else(|| newest(&|id| tabs.list.iter().any(|tab| tab.resources.contains(id))))
     }
 
     /// `last-pane`: back to the terminal the keyboard left last, in
     /// whichever tab holds it.
     pub(super) fn last_pane(&mut self) {
-        let Some(pane) = self.connection.tabs.last_pane.clone() else {
+        let Some(topology) = &self.connection.topology else {
             return;
         };
-        let topology = self.connection.topology.as_ref();
-        let Some(session) = topology
-            .and_then(|t| t.pane(&pane))
-            .map(|p| p.session_name.clone())
-        else {
+        let recent = self.connection.tabs.recent.iter().rev();
+        let Some(pane) = recent.filter_map(|id| topology.pane(id)).next() else {
             return;
         };
+        let (pane, session) = (pane.terminal_id.clone(), pane.session_name.clone());
         self.show(pane, &session);
     }
 
@@ -191,14 +220,58 @@ mod tests {
         };
         desk.connection.tabs.list = vec![tab(1, &[1, 2], true), tab(2, &[3], false)];
         desk.leaving(&id(1), &id(2));
-        assert_eq!(desk.connection.tabs.last_pane, Some(id(1)));
+        assert_eq!(desk.connection.tabs.recent, [id(1)]);
         assert_eq!(desk.connection.tabs.left_tab, None, "same tab");
         desk.leaving(&id(2), &id(3));
-        assert_eq!(desk.connection.tabs.last_pane, Some(id(2)));
+        assert_eq!(desk.connection.tabs.recent, [id(1), id(2)]);
         assert_eq!(desk.connection.tabs.left_tab, Some([1; 16]));
         // A new tab's terminal is in no listed tab yet.
         desk.leaving(&id(3), &id(9));
         assert_eq!(desk.connection.tabs.left_tab, Some([2; 16]));
+    }
+
+    #[test]
+    fn a_closed_pane_goes_back_to_the_one_used_before_it() {
+        use crate::test_support::server;
+        use phux_client_core::layout::{LayoutNode, SplitDir};
+
+        let mut desk = crate::test_support::window();
+        let id = ResourceId::local;
+        let leaf = |n| Box::new(LayoutNode::Leaf(id(n)));
+        let session = server::session(1, "work", 1);
+        let panes = (1..=4).map(|n| server::pane(n, &session, "sh", None));
+        let topology = crate::desk::topology(vec![session.clone()], panes.collect());
+        desk.connection.topology = Some(topology);
+        let tab = |n: u8, ids: &[u32]| crate::desk::Tab {
+            id: [n; 16],
+            name: "t".into(),
+            resources: ids.iter().map(|&i| id(i)).collect(),
+            active: n == 1,
+            locked: false,
+        };
+        desk.connection.tabs.list = vec![tab(1, &[1, 2, 3]), tab(2, &[4])];
+        // 2, then 1, then 3, which closes: 1 and not its split sibling 2.
+        desk.connection.layout = Some(LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: leaf(1),
+            right: Box::new(LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                left: leaf(2),
+                right: leaf(3),
+            }),
+        });
+        desk.leaving(&id(2), &id(1));
+        desk.leaving(&id(1), &id(3));
+        assert_eq!(desk.after_closing(&[id(3)]), Some(id(1)));
+        // Nothing else on screen was used: the one beside it.
+        desk.connection.tabs.recent = vec![id(4)];
+        assert_eq!(desk.after_closing(&[id(3)]), Some(id(2)));
+        // A tab's only pane: back to the tab it came from.
+        desk.connection.layout = Some(LayoutNode::Leaf(id(4)));
+        desk.connection.tabs.recent = vec![id(1), id(3), id(9)];
+        assert_eq!(desk.after_closing(&[id(4)]), Some(id(3)), "9 is not listed");
     }
 
     #[test]

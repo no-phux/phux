@@ -28,7 +28,7 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
             let sidebar_preference = rt.state.sidebar_open;
             let shown = rt.state.connection.shown.as_ref().unwrap().resource.clone();
             let layout = rt.state.connection.layout.clone();
-            let remembered = rt.state.connection.tabs.last_pane.clone();
+            let remembered = rt.state.connection.tabs.recent.clone();
             let tab_ids: Vec<_> = rt.state.connection.tabs.list.iter().map(|t| t.id).collect();
             let other = SessionKey::new([2; 16]).unwrap();
             rt.update(|d, _| {
@@ -50,7 +50,7 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
             );
             assert_eq!(rt.state.connection.shown.as_ref().unwrap().resource, shown);
             assert_eq!(rt.state.connection.layout, layout);
-            assert_eq!(rt.state.connection.tabs.last_pane, remembered);
+            assert_eq!(rt.state.connection.tabs.recent, remembered);
             assert_eq!(
                 rt.state
                     .connection

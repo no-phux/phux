@@ -44,8 +44,9 @@ pub struct Tabs {
     pub by_session: HashMap<u32, Vec<Tab>>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
-    /// The terminal the keyboard left last (`last-pane`).
-    pub last_pane: Option<ResourceId>,
+    /// What the keyboard left, newest last: `last-pane`, and where a close
+    /// goes back to.
+    pub recent: Vec<ResourceId>,
     /// The tab the keyboard left last (`last-tab`).
     pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
@@ -296,6 +297,8 @@ impl Desk {
             return;
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
+            // The question is about the tab on screen.
+            self.select_tab(index);
             self.pending = Some(Pending::CloseTab(terminals));
         } else {
             self.request_terminal_close(terminals);

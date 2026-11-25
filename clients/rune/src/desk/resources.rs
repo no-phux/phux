@@ -485,12 +485,7 @@ impl Desk {
             .map(|s| s.resource.clone())
             .filter(|id| !self.is_document(id));
         let Some(gone) = gone else { return false };
-        let next = self
-            .connection
-            .layout
-            .as_ref()
-            .filter(|_| self.phone.is_none())
-            .and_then(|tree| super::layout::neighbour(tree, &gone));
+        let next = self.after_closing(&[gone]);
         self.close_shown(client, &[]);
         if let Some(next) = next {
             self.want_automatic(next);
@@ -524,15 +519,7 @@ impl Desk {
             .as_ref()
             .is_some_and(|s| ids.contains(&s.resource))
         {
-            let next = self
-                .connection
-                .layout
-                .as_ref()
-                .filter(|_| self.phone.is_none())
-                .map(phux_client_core::layout::leaves)
-                .unwrap_or_default()
-                .into_iter()
-                .find(|id| !ids.contains(id));
+            let next = self.after_closing(ids);
             self.close_shown(&client, ids);
             if let Some(next) = next {
                 self.want_automatic(next);
