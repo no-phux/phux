@@ -40,6 +40,18 @@ pub(super) fn shell_integration(enabled: bool) {
     }
 }
 
+/// Make the state directory owner-only before anything writes into it: every
+/// other writer takes it as it finds it. Best effort; what needs it private
+/// checks for itself.
+pub(super) fn private_state_dir() {
+    let dir = phux_config::instance::state_dir();
+    let made =
+        phux_server::owner_dir::create(&dir).and_then(|()| phux_server::owner_dir::tighten(&dir));
+    if let Err(err) = made {
+        tracing::debug!("could not make {} owner-only: {err}", dir.display());
+    }
+}
+
 /// The stand-in browser: the link on the person's clipboard (OSC 52, the
 /// path copy uses) and in the pane. It opens nothing.
 const BROWSER_SHIM: &str = "#!/bin/sh

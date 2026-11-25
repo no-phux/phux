@@ -457,8 +457,8 @@ fn report_created(name: &str, created: &Created, elapsed: Duration, json: bool) 
     outln!("On their machine: phux chat join <local-name>, then paste:");
     outln!("{}", created.invite);
     outln!(
-        "Single use; expires at Unix time {}. Keep this invite secret.",
-        created.expires_at
+        "Single use; expires {}. Keep this invite secret.",
+        crate::commands::status::format_utc(created.expires_at)
     );
     outln!("Check their confirmation: phux chat status {name}");
     outln!("Open the conversation: phux chat open {name}");

@@ -247,6 +247,7 @@ pub(crate) fn run_server(
         Err(code) => return code,
     };
 
+    super::startup::private_state_dir();
     let autosave = match open_autosave(autosave) {
         Ok(autosave) => autosave,
         Err(code) => return code,
