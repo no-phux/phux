@@ -50,14 +50,23 @@ impl TerminalEngineFactory for TerminalEngine {
             ));
         }
         let bundle = match source {
-            EngineSource::Fresh(intent) => crate::TerminalActor::build_with_token_and_colors(
+            EngineSource::Fresh {
+                command: intent,
+                seed,
+            } => crate::TerminalActor::build_with_token_and_colors(
                 cols,
                 rows,
                 intent.as_ref().map(command),
                 scrollback,
                 token,
                 default_colors,
-            ),
+            )
+            .map(|mut bundle| {
+                if !seed.is_empty() {
+                    bundle.actor.seed_before_run(&seed);
+                }
+                bundle
+            }),
             EngineSource::Adopt {
                 master_fd,
                 child_pid,
@@ -99,6 +108,9 @@ impl TerminalEngineFactory for TerminalEngine {
             }
             source
         });
+        if let Some(keep) = reports.keep_scrollback {
+            actor.keep_scrollback(keep);
+        }
         let program_status = actor.subscribe_program_status();
         let resume = actor.subscribe_resume();
         let program_note = actor.subscribe_program_note();
@@ -275,7 +287,10 @@ mod tests {
             .build(EngineBuild {
                 cols: 80,
                 rows: 24,
-                source: EngineSource::Fresh(None),
+                source: EngineSource::Fresh {
+                    command: None,
+                    seed: Vec::new(),
+                },
                 scrollback: phux_config_core::limits::ScrollbackLimits::default(),
                 token: token.clone(),
                 default_colors: None,
@@ -283,6 +298,7 @@ mod tests {
                     event_capacity: 1,
                     agent_capacity: 1,
                     live_session: None,
+                    keep_scrollback: None,
                 },
             })
             .expect("engine");

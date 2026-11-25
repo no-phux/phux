@@ -7,6 +7,7 @@ use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
 use crate::runtime::apps::terminal::commands::seed::{
     AGENT_STATE_SINK_CAPACITY, EVENT_SINK_CAPACITY, spawn_cwd_of, stamp_spawn_cwd,
 };
+use crate::runtime::apps::terminal::scrollback;
 use crate::runtime::commands::SpawnAttribution;
 use crate::runtime::connections::PaneEvents;
 use crate::runtime::spawn_resource_exit_watcher;
@@ -130,7 +131,8 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
 ) -> Result<phux_protocol::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
-    let reports = engine_reports(state, terminal);
+    let reports = engine_reports(state, terminal, scrollback::keeper(state));
+    let seed = scrollback::seed(state, terminal, rows);
     // A spawn racing shutdown would start a child the engine drain may
     // already have passed; refuse it before anything forks.
     let engine = if root_token.is_cancelled() {
@@ -144,7 +146,7 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
             engine.build(phux_terminal_api::EngineBuild {
                 cols,
                 rows,
-                source: phux_terminal_api::EngineSource::Fresh(cmd),
+                source: phux_terminal_api::EngineSource::Fresh { command: cmd, seed },
                 scrollback,
                 token: terminal_token.clone(),
                 default_colors,
@@ -236,11 +238,13 @@ type ProgramNoteRx =
 pub(crate) fn engine_reports(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
+    keeper: Option<std::sync::Arc<scrollback::Keeper>>,
 ) -> phux_terminal_api::EngineReports {
     phux_terminal_api::EngineReports {
         event_capacity: EVENT_SINK_CAPACITY,
         agent_capacity: AGENT_STATE_SINK_CAPACITY,
         live_session: Some(live_session_probe(state, terminal)),
+        keep_scrollback: keeper.map(|keeper| keeper.ask(state, terminal)),
     }
 }
 

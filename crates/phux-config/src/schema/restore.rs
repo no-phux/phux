@@ -18,7 +18,21 @@ pub struct RestoreCfg {
     /// A program with no entry here is never resumed.
     #[serde(deserialize_with = "programs")]
     pub program: Vec<RestoreProgram>,
+    /// Lines of each pane's output to keep on disk, at most 10000, and show
+    /// above a divider when the pane starts again after the server stopped.
+    /// `0`, the default, keeps nothing, and deletes what an earlier setting
+    /// kept when the server next starts. The files are readable by you only
+    /// and not encrypted.
+    #[serde(deserialize_with = "scrollback")]
+    #[schemars(range(max = 10_000))]
+    pub scrollback: u32,
+    /// Panes whose output is never kept: each entry is a session's name, a
+    /// pane's name (`phux rename`), or the program a pane was started with.
+    pub scrollback_exclude: Vec<String>,
 }
+
+/// Most lines [`RestoreCfg::scrollback`] keeps: what one screen read covers.
+const MAX_RESTORE_SCROLLBACK: u32 = 10_000;
 
 /// One `[[restore.program]]` entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -50,6 +64,16 @@ impl RestoreCfg {
                 .collect(),
         )
     }
+}
+
+fn scrollback<'de, D: serde::Deserializer<'de>>(de: D) -> Result<u32, D::Error> {
+    let lines = u32::deserialize(de)?;
+    if lines > MAX_RESTORE_SCROLLBACK {
+        return Err(serde::de::Error::custom(format!(
+            "restore.scrollback must be at most {MAX_RESTORE_SCROLLBACK}"
+        )));
+    }
+    Ok(lines)
 }
 
 /// The token is one whole argument after the program name, or the entry is
@@ -128,6 +152,17 @@ command = ["nvim", "-S", "${PHUX_RESUME_TOKEN}", "$HOME", "${PHUX_RESUME_TOKEN}"
         );
         assert_eq!(restore.resume_argv("vim", "abc"), None);
         assert!(load("").expect("defaults").program.is_empty());
+    }
+
+    #[test]
+    fn scrollback_is_off_by_default_and_capped() {
+        let restore = load("[restore]\nscrollback = 10000\nscrollback-exclude = [\"psql\"]\n")
+            .expect("valid");
+        assert_eq!(restore.scrollback, 10_000);
+        assert_eq!(restore.scrollback_exclude, ["psql"]);
+        assert_eq!(load("").expect("defaults").scrollback, 0);
+        let err = load("[restore]\nscrollback = 10001\n").expect_err("over the cap");
+        assert!(err.contains("at most 10000"), "{err}");
     }
 
     #[test]

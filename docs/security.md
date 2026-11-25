@@ -148,6 +148,29 @@ raw hash bytes. A failed write never fails a command; `phux doctor` warns
 and `phux perf` counts `audit.write_failures`. A second server on the same
 state directory runs without a log rather than fork the chain.
 
+## Kept scrollback
+
+Off by default. With [`[restore] scrollback`](./concepts.md#kept-scrollback)
+the server writes what each pane last printed to disk, and that can hold
+secrets. `org/v1.scrollback/` in the [state directory](./reference/files.md#state)
+(0700, one 0600 file per pane; a server on another socket has its own beside
+its store in `org/sockets/`) holds the last lines of each pane's main screen,
+as text and colors.
+
+- The files are not encrypted; use full-disk encryption. Your own backups of
+  the state directory include them; phux's reports, archives and logs do
+  not.
+- A pane's file is deleted within a second of the pane being killed, closed
+  or removed, and at the next server start after a crash. A process that
+  exits in a pane that stays keeps its file.
+- `scrollback-exclude` keeps a session, a pane (by its `phux rename` name) or
+  a program out. Moving or renaming a pane into it deletes its file.
+- `scrollback = 0` deletes every file when the server next starts.
+- Clearing a pane's history (`CSI 3 J`) clears its file a few seconds later.
+- The text is stripped of everything but colors when written and again when
+  read, and goes only into the pane's history: never to a program, agent
+  detection, or `phux wait` on the screen.
+
 ## 1Password credentials
 
 Supply 1Password secrets to a program only when you approve each request.

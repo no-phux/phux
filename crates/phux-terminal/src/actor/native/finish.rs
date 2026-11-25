@@ -339,6 +339,9 @@ impl TerminalActor {
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        if let Some(keep) = &mut self.keep {
+            keep.touch(std::time::Instant::now());
+        }
     }
 
     pub(in crate::actor) fn buffer_native_live_output(&mut self, seq: u64, bytes: &Bytes) -> bool {

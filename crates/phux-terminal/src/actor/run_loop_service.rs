@@ -10,7 +10,7 @@ use tokio::time::Sleep;
 
 use super::{RunLoopState, TerminalActor};
 
-const SERVICE_SLOTS: usize = 14;
+const SERVICE_SLOTS: usize = 15;
 
 #[derive(Default)]
 pub(super) struct ServiceRotation {
@@ -140,6 +140,12 @@ impl TerminalActor {
                 .tick()
                 .now_or_never()
                 .map(|scheduled| self.service_detector_deadline(scheduled, state))
+                .is_some(),
+            14 if self.keep_owed() => state
+                .keep_tick
+                .tick()
+                .now_or_never()
+                .map(|_| self.service_keep())
                 .is_some(),
             _ => false,
         }

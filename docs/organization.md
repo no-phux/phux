@@ -128,7 +128,7 @@ and applied by [`mission_project.rs`](../crates/phux/src/commands/mission_projec
 ## Restore and executable authority
 
 Importing dormant records is not permission to run them. Restore creates a new
-execution; it never resurrects the old PTY or scrollback.
+execution; it never resurrects the old PTY.
 
 - **Terminal `agent_session` resume** stores a bounded native id and the
   owning integration. Resume argv comes from the currently enabled, trusted

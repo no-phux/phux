@@ -59,6 +59,9 @@ impl TerminalActor {
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        if let Some(keep) = &mut self.keep {
+            keep.touch(std::time::Instant::now());
+        }
     }
 
     /// Test-only: run one state-sync tick exactly as the `run` loop's tick

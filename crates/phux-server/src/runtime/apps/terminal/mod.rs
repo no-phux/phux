@@ -21,6 +21,7 @@ pub(crate) mod parent;
 mod program_note;
 pub(crate) mod program_status;
 pub(crate) mod resume;
+pub(crate) mod scrollback;
 pub(crate) mod standing;
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -263,6 +263,7 @@ mod tests {
                         .map(str::to_owned)
                         .to_vec(),
                 }],
+                ..phux_config::RestoreCfg::default()
             };
         });
         state.with(|s| {
