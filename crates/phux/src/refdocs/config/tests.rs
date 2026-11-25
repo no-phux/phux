@@ -76,6 +76,8 @@ fn fully_populated_sample() -> Config {
         color: Some("violet".to_owned()),
         theme: None,
         paused: false,
+        forward_agent: true,
+        forward_agent_keys: Some(vec!["SHA256:abc".to_owned()]),
     }];
     config.host.color = Some("sky".to_owned());
     config

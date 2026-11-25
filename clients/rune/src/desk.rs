@@ -21,6 +21,7 @@ use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 pub mod accessibility;
+mod agent_forward;
 mod attach;
 pub(crate) mod bare;
 mod changes;
@@ -459,6 +460,7 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.pump_agent(&client);
         changed |= self.take_paths(&client) | self.take_screens();
         changed |= self.take_changes(&client);
         changed |= self.sync_alerts();

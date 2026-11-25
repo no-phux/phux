@@ -3129,6 +3129,7 @@ dependencies = [
 name = "phux-client-runtime"
 version = "0.168.0"
 dependencies = [
+ "base64 0.23.1",
  "bytes",
  "core-foundation",
  "futures-util",

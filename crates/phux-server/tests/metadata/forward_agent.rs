@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::forward::ForwardOp;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ErrorCode, FrameKind};
 use phux_server::LaunchCommand;
 use tempfile::TempDir;
@@ -78,10 +79,23 @@ async fn reply(stream: &mut UnixStream, request_id: u32, id: u64, message: &[u8]
 async fn request(stream: &mut UnixStream) -> (u64, Vec<u8>) {
     recv_until(stream, |_, frame| match frame {
         FrameKind::Event {
-            terminal: None,
             event: AgentEvent::SshAgentRequest { id, message },
             stamp: None,
+            ..
         } => Some((id, message)),
+        _ => None,
+    })
+    .await
+}
+
+/// The pane the next `agent_request` names, and the request's id.
+async fn request_from(stream: &mut UnixStream) -> (Option<ResourceId>, u64) {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Event {
+            terminal,
+            event: AgentEvent::SshAgentRequest { id, .. },
+            ..
+        } => Some((terminal, id)),
         _ => None,
     })
     .await
@@ -203,4 +217,43 @@ fn a_client_that_disconnects_mid_request_fails_it_at_once() {
         assert_eq!(reply(&mut stream, 2, id, &[12, 0]).await, CommandResult::Ok);
         assert_eq!(answer(&mut pane).await, [12, 0]);
     }));
+}
+
+/// A request names the pane whose process made it: one the pane's shell
+/// runs, and one that moved to its own session but still has the shell for
+/// an ancestor. One from outside every pane names none.
+#[test]
+fn a_request_names_the_pane_it_came_from() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let env = tmp.path().join("env");
+        let list = "import os,socket;s=socket.socket(socket.AF_UNIX);\
+                    s.connect(os.environ['SSH_AUTH_SOCK']);\
+                    s.sendall(bytes([0,0,0,1,11]));s.recv(64)";
+        let detach = format!("import os;os.setsid() if os.getpgrp()!=os.getpid() else None;{list}");
+        let mut seed = LaunchCommand::new("/bin/sh");
+        seed.arg("-c");
+        seed.arg(format!(
+            "while [ ! -e '{0}' ]; do sleep 0.05; done; \
+             python3 -c \"{list}\"; (python3 -c \"{detach}\"); sleep 600",
+            env.display()
+        ));
+        let server = SpawnedServer::start_in(tmp, Some("main"), |cfg| {
+            cfg.forward.agent = true;
+            seed_pty(cfg, seed);
+        });
+        let (mut stream, _) = client(&server.socket, "agent-pane").await;
+        assert_eq!(offer(&mut stream, 1).await, CommandResult::Ok);
+        let mut outside = pane(&server.socket).await;
+        send(&mut outside, LIST).await;
+        assert_eq!(request_from(&mut stream).await.0, None);
+        std::fs::write(&env, b"go").unwrap();
+        for turn in 0..2 {
+            let (from, id) = request_from(&mut stream).await;
+            assert!(matches!(from, Some(ResourceId::Local { .. })), "{from:?}");
+            let answered = reply(&mut stream, 2 + turn, id, &[12, 0, 0, 0, 0]).await;
+            assert_eq!(answered, CommandResult::Ok);
+        }
+        server.stop().await;
+    });
 }

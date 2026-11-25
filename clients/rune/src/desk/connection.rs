@@ -15,8 +15,8 @@ use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 
 use super::{
-    Fitted, Painted, Placement, Shown, SplitPath, copy_mode, events, find, mouse, palette, popup,
-    quick, reorder, resources, screenshot, splits, tabs,
+    Fitted, Painted, Placement, Shown, SplitPath, agent_forward, copy_mode, events, find, mouse,
+    palette, popup, quick, reorder, resources, screenshot, splits, tabs,
 };
 
 pub struct Connection {
@@ -39,6 +39,8 @@ pub struct Connection {
     pub(super) pending_session: Option<String>,
     /// What a `phux://` link asked to show, until it can be.
     pub(super) reveal: Option<super::reveal::Reveal>,
+    /// The ssh-agent this client serves to its server's panes.
+    pub(super) agent: agent_forward::AgentForward,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.
@@ -125,6 +127,7 @@ impl Default for Connection {
             wanted: None,
             pending_session: None,
             reveal: None,
+            agent: agent_forward::AgentForward::default(),
             epoch: 0,
             paths: None,
             origins: HashMap::new(),

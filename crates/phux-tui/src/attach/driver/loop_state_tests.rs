@@ -118,3 +118,4 @@ include!("loop_state_tests/newer_server.rs");
 include!("loop_state_tests/surface_leaves.rs");
 include!("loop_state_tests/kitty_heal.rs");
 include!("loop_state_tests/mouse_hover.rs");
+include!("loop_state_tests/agent_forward.rs");

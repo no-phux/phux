@@ -173,10 +173,9 @@ mod start {
         Some(*BOOT_SECS.get_or_init(|| secs))
     }
 
-    /// `proc_pidinfo(PROC_PIDTBSDINFO)` start time as microseconds (seconds
-    /// alone would miss a same-second pgid reuse).
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` for `pid`.
     #[cfg(target_os = "macos")]
-    pub(super) fn start_time(pid: i32) -> Option<u64> {
+    fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
         // SAFETY: `proc_bsdinfo` is a plain C struct of integers and char
         // arrays; all-zero is a valid value for every field.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -193,14 +192,37 @@ mod start {
                 size,
             )
         };
-        if written < size {
-            return None;
-        }
+        (written >= size).then_some(info)
+    }
+
+    /// The start time as microseconds (seconds alone would miss a
+    /// same-second pgid reuse).
+    #[cfg(target_os = "macos")]
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        let info = bsd_info(pid)?;
         Some(
             info.pbi_start_tvsec
                 .saturating_mul(1_000_000)
                 .saturating_add(info.pbi_start_tvusec),
         )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        i32::try_from(bsd_info(pid)?.pbi_ppid).ok()
+    }
+
+    /// Field 4 (`ppid`) of `/proc/<pid>/stat`, parsed after the last `)`.
+    #[cfg(target_os = "linux")]
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = stat.rsplit_once(')')?.1;
+        after_comm.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) const fn parent(_pid: i32) -> Option<i32> {
+        None
     }
 
     /// macOS already reports wall-clock microseconds.
@@ -536,4 +558,4 @@ pub use exe::runs_replaced_executable;
 
 mod tree;
 
-pub use tree::background_descendant;
+pub use tree::{background_descendant, lineage};

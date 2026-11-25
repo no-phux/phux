@@ -394,7 +394,7 @@
       "properties": {
         "agent": {
           "default": false,
-          "description": "Broker ssh-agent requests from this server's panes to a client that\nruns `phux forward --agent`. On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
+          "description": "Broker ssh-agent requests from this server's panes to a client that\nserves its agent (`forward-agent` on its `[[remote]]` entry, or\n`phux forward --agent`). On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
           "type": "boolean"
         },
         "allow": {
@@ -1029,6 +1029,30 @@
         "endpoint": {
           "description": "Transport endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or\n`ssh://HOST` for the stdio bridge.",
           "type": "string"
+        },
+        "forward-agent": {
+          "description": "Serve this machine's ssh-agent to the host's panes while attached to\nit; each signature is asked first (`docs/ssh.md#ssh-agent`). The host\nmust also set `[forward] agent = true`.",
+          "type": "boolean"
+        },
+        "forward-agent-keys": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "forward-agent-keys-append": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "name": {
           "description": "Local label `phux attach <name>` resolves (not a routable identity).",
