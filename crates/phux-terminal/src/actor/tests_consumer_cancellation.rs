@@ -112,8 +112,11 @@ async fn installed_raw_and_gated_consumers_retire_with_full_detach_mailbox() {
             !pending.output.is_closed(),
             "the connection is still usable"
         );
+        // Draining the full mailbox spent this task's coop budget, so a
+        // budgeted poll of the reply would report Pending; read it directly.
+        let mut reply = pending.reply;
         assert!(
-            pending.reply.now_or_never().unwrap().unwrap().is_ok(),
+            reply.try_recv().unwrap().is_ok(),
             "late success is not renewed interest"
         );
     }

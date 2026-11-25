@@ -80,8 +80,13 @@ fn launch(
 /// activation, or a failure already reported by the engine, is untouched.
 pub(super) fn fail_launch(state: &SharedState, token: ActivationToken) {
     state.with_mut(|s| {
-        // A stop cut the launch off: `activation_ended` drops evidence while
-        // stopping, and the next start reconciles it.
+        // The effect itself failed, so no process started. While stopping
+        // that failure is the stop's doing: record it as interrupted, not as
+        // the program's failure.
+        if s.shutting_down() {
+            s.activation_interrupted(token);
+            return;
+        }
         // Retry evidence, never this launch effect or a replacement execution.
         s.activation_ended(token, phux_core::ExitOutcome::UNKNOWN, true);
     });

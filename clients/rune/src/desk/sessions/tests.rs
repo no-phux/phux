@@ -23,12 +23,11 @@ fn window() -> (Arc<Client>, Desk) {
                 .build(),
         )
         .expect("HELLO_OK");
-    let request = sent(&client)
-        .into_iter()
-        .find_map(|(request, command)| {
-            matches!(command, Command::GetOrganization { .. }).then_some(request)
-        })
-        .expect("seed");
+    // The handshake's own follow-ups (the event subscription, the inventory
+    // read) are connection work, not workflow work; only find the seed.
+    let request =
+        crate::wire_fixture::organization_request(&crate::wire_fixture::outbound(&client))
+            .expect("seed");
     client
         .feed(FrameKind::CommandResult {
             request_id: request,

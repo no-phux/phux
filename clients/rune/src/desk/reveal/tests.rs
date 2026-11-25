@@ -229,7 +229,7 @@ mod source_admission {
             let replica = if pending {
                 Replica::pending(80, 24, 2)
             } else {
-                Replica::new(80, 24, 2)
+                Replica::durable(80, 24, 2)
             };
             let client = &replica.client;
             let mut desk = replica.window();

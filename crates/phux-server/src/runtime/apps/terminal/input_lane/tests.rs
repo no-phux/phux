@@ -85,6 +85,8 @@ struct Pane {
     core: phux_core::ids::ResourceId,
     credits: InputCreditPool,
     writer_rx: mpsc::Receiver<EncodedInputRequest>,
+    /// Held open: a closed PTY event channel is EOF, which closes input admission.
+    _pty_events: mpsc::Sender<phux_terminal::actor::PtyEvent>,
     token: CancellationToken,
 }
 
@@ -94,7 +96,7 @@ fn spawn_pane(state: &SharedState, session: &str, seed: &[u8]) -> Pane {
     let credits = handle.terminal().expect("facet").ordered_input.credits();
     let token = bundle.token.clone();
     let mut actor = bundle.actor;
-    let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
+    let (pty_events, writer_rx) = actor.install_test_pty_channels();
     let (wire, core) = state.with_mut(|s| {
         let (_sid, core) = s.seed_session(session);
         (
@@ -109,6 +111,7 @@ fn spawn_pane(state: &SharedState, session: &str, seed: &[u8]) -> Pane {
         core,
         credits,
         writer_rx,
+        _pty_events: pty_events,
         token,
     }
 }

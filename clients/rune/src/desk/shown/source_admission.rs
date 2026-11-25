@@ -9,7 +9,7 @@ fn id(n: u32) -> ResourceId {
 
 #[test]
 fn a_captured_focus_source_cannot_rebind_identical_wire_ids_on_another_server() {
-    let replica = Replica::new(80, 24, 2);
+    let replica = Replica::durable(80, 24, 2);
     let client = &replica.client;
     let mut desk = replica.window();
     desk.want(id(2)); // Captures before the deferred open.
@@ -156,7 +156,7 @@ fn runtime_replacement_drops_numeric_intent_and_rejects_old_owner_observations()
 
 #[test]
 fn a_pending_session_name_cannot_select_a_same_named_session_on_a_replacement_epoch() {
-    let replica = Replica::new(80, 24, 1);
+    let replica = Replica::durable(80, 24, 1);
     let client = &replica.client;
     let mut desk = replica.window();
     desk.wait_for_session("budget".to_owned());
@@ -195,7 +195,7 @@ fn connecting_with_cached_hello_does_not_requalify_the_old_topology_scope() {
 
 #[test]
 fn negotiated_replacement_does_not_relabel_cached_inventory_before_fresh_attach() {
-    let replica = Replica::new(80, 24, 2);
+    let replica = Replica::durable(80, 24, 2);
     let client = &replica.client;
     let desk = replica.window();
     client.with_control(phux_client_runtime::control::ControlPlane::connection_opened);
@@ -203,7 +203,9 @@ fn negotiated_replacement_does_not_relabel_cached_inventory_before_fresh_attach(
         .feed(
             phux_wire_fixtures::HelloOk::new(
                 vec![2; 16],
-                phux_protocol::caps::ServerCapabilities::new(),
+                crate::test_support::terminal::organized(
+                    phux_protocol::caps::ServerCapabilities::new(),
+                ),
             )
             .build(),
         )

@@ -3,7 +3,13 @@
 
 use super::*;
 
+/// A server whose `main` keeps its durable identity across incarnations, so
+/// a restart re-attaches it by exact key (see [`seed_durable_main`]).
 pub(super) fn agent_hello(resume: bool, incarnation: u8) -> FrameKind {
+    with_organization(agent_hello_without_organization(resume, incarnation))
+}
+
+fn agent_hello_without_organization(resume: bool, incarnation: u8) -> FrameKind {
     let mut hello = hello_ok_with(&[ServerFeature::SpawnIdempotency]);
     if let FrameKind::HelloOk {
         server_caps,
@@ -48,7 +54,7 @@ pub(super) fn reconnect_agents(
     plane.connection_lost(None);
     assert_eq!(plane.agent_after_seq(&ResourceId::local(AGENT)), None);
     reopen(plane, agent_hello(resume, incarnation));
-    let attach_id = plane.queued_attach_id();
+    let attach_id = seed_durable_main(plane);
     attach_ready_to(plane, attach_id, with_agent(terminal()));
     agent_requests(plane)
 }

@@ -558,7 +558,7 @@ pub(super) fn spawn(ctx: &CommandContext, spec: &SpawnNativeAgent) -> CommandRes
     if spec.guardian.is_some() || spec.guardian_key.is_some() {
         let mut current = match super::integrations::admit_saved(spec) {
             Ok(current) => current,
-            Err(error) => return error,
+            Err(reason) => return refusal(reason),
         };
         current.session.clone_from(&spec.session);
         current.guardian.clone_from(&spec.guardian);

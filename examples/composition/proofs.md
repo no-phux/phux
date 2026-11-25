@@ -51,7 +51,10 @@ argv and checkout paths are recorded, so do not pass credentials as arguments.
 - **Execution:** `intent_committed` does not mean the program succeeded.
   `current_execution` is a level read; `original_execution_matches` tells
   whether its activation and instance match the original receipt. A moved,
-  removed, or relaunched anchor is not silently adopted.
+  removed, or relaunched anchor is not silently adopted. A saved raw command
+  runs again only after the local owner reviews its exact recipe: the smoke
+  test relaunches its anchor with `phux relaunch ^KEY --approve-raw` and a
+  typed yes at a terminal ([restore and executable authority](../../docs/organization.md#restore-and-executable-authority)).
 
 Git and phux do not share a transaction. If Git refuses, phux is not called.
 If the launcher is interrupted between worktree creation and phux commitment,

@@ -212,7 +212,7 @@ The kind's facet.
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
 | `APPEND_RESOURCE_OUTPUT` | command `0x1a` | BIND, INPUT | yes | `resource_kinds` | shipped |
-| `NATIVE_AGENT` | command `0x38` | INVENTORY, OBSERVE, CREATE, BIND, INPUT | yes | none | shipped |
+| `NATIVE_AGENT` | command `0x38` | INVENTORY, OBSERVE, CREATE, BIND, INPUT (owner socket only) | yes | none | shipped |
 
 ### Events
 

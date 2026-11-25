@@ -132,6 +132,22 @@ impl ServerState {
         }
     }
 
+    /// A stop cut off a launch whose own effect reported that no process
+    /// started. That is positive evidence, unlike the identity-less Starting
+    /// record a crash leaves, so it alone may end `Failed`/`Unobserved` and
+    /// read as `launch_interrupted` (restorable). Persisted now, while
+    /// stopping; if the store refuses, the next start still reconciles the
+    /// Starting record as unresolved, never as interrupted.
+    pub fn activation_interrupted(&mut self, token: ActivationToken) {
+        if !self.accepts_activation_evidence(token) {
+            return;
+        }
+        self.activation_report(token)
+            .end
+            .get_or_insert((Outcome::Unobserved, true, None));
+        self.retry_activation_reports();
+    }
+
     fn accepts_activation_evidence(&self, token: ActivationToken) -> bool {
         self.activation_matches(token)
             && self

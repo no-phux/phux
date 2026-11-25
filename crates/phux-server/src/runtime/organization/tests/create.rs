@@ -189,6 +189,8 @@ fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
         assert!(record.activation.is_none(), "dormant: no activation");
         assert!(record.live.is_none(), "dormant: no live handle");
 
+        // Dormant intent is inert: with no current trusted template for its
+        // integration, an ordinary relaunch never runs the stored argv.
         let relaunch = Command::ResourceRelaunch {
             operation: op(2),
             resource,
@@ -196,6 +198,25 @@ fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
         };
         assert!(matches!(
             handle(&state, CLIENT, relaunch, &root),
+            CommandResult::Refused(_)
+        ));
+        let key = phux_core::ResourceKey::from_bytes(*resource.as_bytes());
+        let stored = state.with(|s| {
+            let record = s.org().resource(&key).unwrap();
+            assert!(record.activation.is_none(), "a refusal starts nothing");
+            record.launch.clone()
+        });
+        // The exact recipe once admitted (owner approval or a template).
+        let admitted = phux_core::Command {
+            operation: ow::core_operation(&op(3)),
+            op: phux_core::Op::ResourceRelaunch {
+                resource: key,
+                expected: ow::core_revision(record.revision),
+                launch: stored,
+            },
+        };
+        assert!(matches!(
+            crate::state::org_operation::relaunch_admitted(&state, CLIENT, admitted, &root),
             CommandResult::Accepted { .. }
         ));
         let wire = state.with_mut(|s| {
@@ -236,7 +257,9 @@ fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
             operation: op(1),
             session,
             kind: phux_protocol::ids::ResourceKind::Terminal,
-            launch: Some(Box::new(LaunchSpec::new(vec!["sh".to_owned()]))),
+            // The current default-shell template: a delegated caller can
+            // relaunch only what a current trusted template admits.
+            launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
             name: None,
             on_exit: phux_protocol::wire::frame::ExitPolicy::Remove,
             launch_mode: LaunchMode::Deferred,

@@ -188,26 +188,24 @@ fn resolve(config: &Path, integration: &str, cwd: &str) -> Result<SpawnNativeAge
 
 /// Re-resolve a saved SDK intent against enabled current-host templates.
 /// Provider identity must have a unique current template; archived argv/env
-/// never becomes an implicit template or an archive trust bit.
-pub(super) fn admit_saved(saved: &SpawnNativeAgent) -> Result<SpawnNativeAgent, CommandResult> {
+/// never becomes an implicit template or an archive trust bit. The error is
+/// why no current template admits it; each caller projects it.
+pub(super) fn admit_saved(saved: &SpawnNativeAgent) -> Result<SpawnNativeAgent, String> {
     admit_saved_at(&phux_config::loader::config_path(), saved)
 }
 
-fn admit_saved_at(
-    config: &Path,
-    saved: &SpawnNativeAgent,
-) -> Result<SpawnNativeAgent, CommandResult> {
+fn admit_saved_at(config: &Path, saved: &SpawnNativeAgent) -> Result<SpawnNativeAgent, String> {
     if !saved.env.is_empty() {
-        return Err(refusal(
+        return Err(String::from(
             "saved native environment requires exact local-owner raw recipe approval",
         ));
     }
     let cwd = saved
         .cwd
         .as_deref()
-        .ok_or_else(|| refusal("saved native cwd is missing"))?;
+        .ok_or_else(|| String::from("saved native cwd is missing"))?;
     let templates = phux_plugin::list_launchable(config, LaunchMode::Native)
-        .map_err(|error| refusal(error.to_string()))?;
+        .map_err(|error| error.to_string())?;
     let mut admitted = None;
     for template in templates {
         let Ok(mut current) = resolve(config, &template.integration_id, cwd) else {
@@ -221,12 +219,12 @@ fn admit_saved_at(
             continue;
         }
         if admitted.is_some() {
-            return Err(refusal(
+            return Err(String::from(
                 "saved native provider has ambiguous current templates; exact local-owner raw recipe approval is required",
             ));
         }
         current.native_id.clone_from(&saved.native_id);
         admitted = Some(current);
     }
-    admitted.ok_or_else(|| refusal("no current trusted native template admits this saved intent; exact local-owner raw recipe approval is required"))
+    admitted.ok_or_else(|| String::from("no current trusted native template admits this saved intent; exact local-owner raw recipe approval is required"))
 }

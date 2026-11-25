@@ -6915,8 +6915,11 @@ Relaunch every pane a server restart ended
 
 Starts each pane whose process ended because the server stopped while it ran,
 and each pane imported but never started, in its session, with its directory and
-agent resume. With `SESSION`, only that session's panes. Prints one summary line
-plus one line per pane that was refused (`-v`: every pane).
+agent resume, through a current trusted host template. A saved raw command no
+current template admits is refused and nothing runs; its line names `phux
+relaunch ^KEY --approve-raw`, which prints the exact recipe for an interactive
+yes. With `SESSION`, only that session's panes. Prints one summary line plus one
+line per pane that was refused (`-v`: every pane).
 
 Usage: phux restore [-v --verbose] [--json] [SESSION]
 

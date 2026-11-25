@@ -70,7 +70,7 @@ impl Desk {
         self.raw_relaunch.preparing = Some(receiver);
         super::worker::spawn(sender, self.waker.clone(), move |send| {
             send(RelaunchReview::prepare(
-                Target::uds(socket),
+                &Target::uds(socket),
                 phux_client_runtime::control::mint_operation(),
                 resource,
                 expected,

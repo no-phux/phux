@@ -13,6 +13,8 @@ use phux_server_testkit::{
 };
 
 async fn seed_agent(socket: &Path) -> (tokio::net::UnixStream, ResourceId) {
+    // The server binds on this LocalSet; wait for it before a one-shot connect.
+    let mut producer = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
     let mut creator = Connection::connect(socket).await.unwrap();
     let receipt = phux_client::org::create_session(
         &mut creator,
@@ -28,7 +30,6 @@ async fn seed_agent(socket: &Path) -> (tokio::net::UnixStream, ResourceId) {
     let target = phux_client::org::attach_target_for_receipt(&mut creator, &receipt)
         .await
         .unwrap();
-    let mut producer = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut producer,
         &FrameKind::Attach {

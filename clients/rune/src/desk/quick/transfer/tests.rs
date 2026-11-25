@@ -279,9 +279,11 @@ fn an_old_failure_settles_even_while_the_new_connection_is_unverified() {
     let mut tx = rune::Tx::default();
     desk.observe(&client, client.take_activity(), &mut tx);
     let (_, operation, result) = begin(&mut desk, &client);
+    // A real reconnect: a window qualifies an observation by the client's
+    // own epoch, so the new socket must actually exist.
+    client.with_control(ControlPlane::connection_opened);
     let mut observation = client.take_activity();
-    observation.connection_epoch += 1;
-    observation.status = Status::Connecting;
+    assert_eq!(observation.status, Status::Connecting);
     observation.events = vec![
         Event::OrganizationOperation {
             operation,
@@ -324,11 +326,15 @@ fn an_older_quick_move_completion_preserves_the_newer_pending_focus_intent() {
     let (request, operation, result) = begin(&mut desk, &client);
     let latest = ResourceId::local(8);
     desk.want(latest.clone());
+    // Even the committed receipt, the only one that places, keeps the choice.
     reply(
         &mut desk,
         &client,
         request,
-        CommandResult::Accepted { operation },
+        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+            operation,
+            Revision::new(2),
+        )))),
     );
     assert!(
         result

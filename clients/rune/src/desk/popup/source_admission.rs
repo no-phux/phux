@@ -16,8 +16,10 @@ fn replica() -> Replica {
         80,
         24,
         2,
-        ServerCapabilities::new()
-            .with_features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources])),
+        crate::test_support::terminal::organized(
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::CloseTabResources])),
+        ),
     )
 }
 fn window(replica: &Replica) -> rune::Runtime<Desk> {

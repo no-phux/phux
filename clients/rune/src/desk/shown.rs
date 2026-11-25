@@ -145,10 +145,14 @@ impl Desk {
 
     /// A transport epoch is not a publication replacement. Retained offline
     /// views stay valid; dead views retry only their original source below.
+    /// A gesture in flight was aimed at the previous connection's screen and
+    /// never lands on this one. True when that dropped one.
     pub(super) fn reopen_after_reconnect(&mut self, _client: &Client) -> bool {
         self.connection.fetched.clear();
         self.connection.fitted.clear();
-        false
+        self.phone
+            .as_mut()
+            .is_some_and(super::phone::Phone::forget_gesture)
     }
 
     /// Let go of views the engine forgot. A terminal whose replica leaves

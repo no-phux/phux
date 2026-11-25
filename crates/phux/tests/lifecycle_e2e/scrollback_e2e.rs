@@ -3,6 +3,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -50,6 +51,20 @@ fn kept(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// The [`kept`] files a save finished: not the sibling temp file an atomic
+/// write renames into place, which a `kill -9` can leave half-done (the next
+/// start removes it).
+fn saved(dir: &Path) -> Vec<PathBuf> {
+    let mut files = kept(dir);
+    files.retain(|path| {
+        !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".autosave.tmp"))
+    });
+    files
+}
+
 fn lines(screen: &serde_json::Value, field: &str) -> Vec<String> {
     screen[field]
         .as_array()
@@ -67,32 +82,44 @@ fn a_sigkilled_servers_lines_come_back_above_a_divider() {
     let dir = root.path().canonicalize().expect("canonical");
     hermetic::prepare_dirs(&dir);
     let config = dir.join("config/phux/config.toml");
+    // The pane runs the host's shell template, not a raw `new -- CMD`
+    // recipe: restore relaunches archived intent only through a current
+    // trusted template, and a raw recipe needs an interactive owner review
+    // (`relaunch --approve-raw`) that a headless restore cannot give.
+    let shell = dir.join("pane.sh");
+    let again = dir.join("again");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho run-$$; [ -e '{0}' ] || {{ touch '{0}'; seq 40 80; }}; exec sleep 600\n",
+            again.display()
+        ),
+    )
+    .expect("pane script");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let defaults = format!("[defaults]\nshell = {:?}\n", shell.display().to_string());
+    std::fs::write(&config, &defaults).expect("config");
 
     // Off: the same pane writes nothing.
     let mut server = start(&dir);
-    let run = [
-        "new",
-        "--json",
-        "-s",
-        "work",
-        "--",
-        "/bin/sh",
-        "-c",
-        "echo run-$$; [ -e again ] || { touch again; seq 40 80; }; exec sleep 600",
-    ];
+    let run = ["new", "--json", "-s", "work"];
     phux(&dir, &run);
     std::thread::sleep(Duration::from_secs(4));
     assert_eq!(kept(&dir), Vec::<PathBuf>::new());
     phux(&dir, &["kill", "work", "--yes", "--json"]);
     server.sigkill();
     drop(server);
-    std::fs::remove_file(dir.join("again")).expect("the pane ran");
+    std::fs::remove_file(&again).expect("the pane ran");
 
-    std::fs::write(&config, "[restore]\nscrollback = 100\n").expect("config");
+    std::fs::write(
+        &config,
+        format!("{defaults}\n[restore]\nscrollback = 100\n"),
+    )
+    .expect("config");
     let mut server = start(&dir);
     phux(&dir, &run);
     common::until(BUDGET, || {
-        let files = kept(&dir);
+        let files = saved(&dir);
         let text = std::fs::read_to_string(files.first()?).ok()?;
         text.contains("80").then_some(())
     })
@@ -111,7 +138,9 @@ fn a_sigkilled_servers_lines_come_back_above_a_divider() {
     })
     .expect("relaunched");
     let history = lines(&screen, "scrollback");
-    let (divider, old) = history.split_last().expect("history");
+    let (divider, old) = history
+        .split_last()
+        .unwrap_or_else(|| panic!("no history: {screen}"));
     assert!(
         divider.starts_with("-- before the restart, "),
         "{history:?}"
@@ -127,7 +156,7 @@ fn a_sigkilled_servers_lines_come_back_above_a_divider() {
         "new output only: {screen}"
     );
 
-    assert_eq!(kept(&dir).len(), 1);
+    assert_eq!(saved(&dir).len(), 1);
     phux(&dir, &["kill", "work", "--yes", "--json"]);
     common::until(BUDGET, || kept(&dir).is_empty().then_some(())).expect("deleted with its pane");
     server.sigkill();

@@ -2,7 +2,21 @@ use super::*;
 use crate::state::SharedState;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 
+/// The proposal binds the server's whole inherited environment, and a
+/// document past the bounded approval payload is refused (a `nix develop`
+/// or direnv shell alone exceeds it). These authorization tests must not
+/// depend on the developer's shell, so each starts from an empty inherited
+/// environment; the budget refusal is covered on its own below.
+fn hermetic_environment() {
+    for (key, _) in std::env::vars_os() {
+        // SAFETY: nextest runs each test in its own process, and no other
+        // thread is reading the environment while setup runs.
+        unsafe { std::env::remove_var(key) };
+    }
+}
+
 fn setup() -> (CommandContext, ResourceKey, Revision) {
+    hermetic_environment();
     let state = SharedState::new();
     let (client, resource, revision) = state.with_mut(|s| {
         let client = s.clients_mut().new_client_id();
@@ -247,6 +261,30 @@ fn an_agent_principal_cannot_approve_even_when_it_arrives_on_an_owner_socket() {
         approve(&ctx, &approval),
         CommandResult::Refused(_)
     ));
+}
+
+#[test]
+fn a_proposal_past_the_approval_payload_is_refused_and_never_held() {
+    let (ctx, resource, revision) = setup();
+    let inherited = "x".repeat(phux_protocol::native_agent::MAX_NATIVE_PAYLOAD_BYTES);
+    // SAFETY: as in `hermetic_environment`; set after it, before any read.
+    unsafe { std::env::set_var("PHUX_TEST_LARGE_INHERITED", inherited) };
+    let result = prepare(&ctx, operation(61), resource, revision);
+    assert!(
+        matches!(
+            result,
+            CommandResult::Error {
+                code: phux_protocol::wire::frame::ErrorCode::Unsupported,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(
+        ctx.state
+            .with(|s| s.native_agents().relaunch_proposals.is_empty()),
+        "a refused proposal is never held for approval"
+    );
 }
 
 #[test]

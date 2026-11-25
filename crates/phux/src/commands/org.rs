@@ -247,7 +247,7 @@ fn finish(
             outln!("{line}");
             ExitCode::SUCCESS
         }
-        Err(err) => Refusal::org(verb, &err).emit(json),
+        Err(err) => raw_relaunch::refusal(verb, target, &err).emit(json),
     }
 }
 
@@ -329,6 +329,8 @@ fn restore_document(
                 "result": "refused",
                 "code": err.code(),
                 "message": err.to_string(),
+                "review": raw_relaunch::needs_review(err)
+                    .then(|| raw_relaunch::review_command(&names.display(*key.as_bytes()))),
             }),
         })
         .collect();
@@ -396,7 +398,7 @@ fn restore_lines(
                 },
             )),
             Ok(_) => {}
-            Err(err) => lines.push(format!("  {key}  refused: {err}")),
+            Err(err) => lines.extend(raw_relaunch::refused_lines(&key, err)),
         }
     }
     lines

@@ -41,6 +41,29 @@ impl ControlPlane {
         }
     }
 
+    /// A once-only spawn's receipt was correlated to the socket that just
+    /// dropped, so it can never arrive. Report it unknown now rather than at
+    /// the next dial; it is never resent. Replayable spawns keep waiting for
+    /// the reconnect that resends them under their idempotency key.
+    pub(super) fn strand_once_only_spawns(&mut self, message: &str) {
+        let once_only: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, pending)| {
+                matches!(pending, Pending::Spawn { replay: None, .. }).then_some(*id)
+            })
+            .collect();
+        for request_id in once_only {
+            self.pending.remove(&request_id);
+            self.publish_spawn_outcome(
+                request_id,
+                super::TerminalCreationOutcome::Unknown {
+                    message: message.to_owned(),
+                },
+            );
+        }
+    }
+
     /// Resolve every outstanding correlation as failed: the socket that
     /// carried it is gone. Topology refreshes drop silently, as a fresh
     /// `ATTACHED` is on its way.

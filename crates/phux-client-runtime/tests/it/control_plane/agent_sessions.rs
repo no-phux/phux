@@ -28,7 +28,7 @@ fn subscribing_with_resume(subscribe_agent_sessions: bool, resume: bool) -> (Con
         },
     );
     reopen(&mut plane, agent_hello(resume, 0xAB));
-    let attach_id = plane.queued_attach_id();
+    let attach_id = seed_durable_main(&mut plane);
     (plane, attach_id)
 }
 
@@ -156,7 +156,7 @@ fn followed_home() -> ControlPlane {
 
 fn replace_attached(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
     reopen(plane, agent_hello(true, 0xAB));
-    let attach_id = plane.queued_attach_id();
+    let attach_id = seed_durable_main(plane);
     attach_ready_to(plane, attach_id, snapshot);
 }
 

@@ -165,7 +165,7 @@ impl Desk {
             self.place_quick_tab(client, &mut pending)
         } else {
             Err(format!(
-                "Quick terminal move operation {} did not settle: {outcome:?}. Inspect the original operation and server's panes before retrying.",
+                "Quick terminal move operation {} did not settle: {outcome:?}. Check the original operation and the server's panes before retrying.",
                 phux_protocol::ids::hex16(operation.as_bytes())
             ))
         };

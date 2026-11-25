@@ -31,8 +31,10 @@ async fn kill_under_a_partial_view_still_kills() {
 async fn kill_unknown_projects_original_wire_operation_and_target_instead_of_success() {
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
     let dir = tempfile::tempdir().expect("tempdir");
+    // A code this build cannot read must cross the wire as one: 65535 is
+    // the defined `InternalError`, so use the reserved unreadable value.
     let spec = org_spec(org_fixture().0).mutation_reply(CommandResult::Error {
-        code: ErrorCode::Unknown(65535),
+        code: ErrorCode::UNREADABLE_REPLY,
         message: "unreadable close outcome".into(),
     });
     let (socket, server) = testkit::serve_one(dir.path(), spec);

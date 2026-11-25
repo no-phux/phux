@@ -260,7 +260,7 @@ mod tests {
         );
         assert!(
             log.contains(
-                "shutdown with undurable executor evidence; restart can only reconcile committed state"
+                "shutdown with undurable lifecycle evidence or retirement; restart can only reconcile committed state"
             ),
             "{log}"
         );

@@ -409,6 +409,9 @@ impl ControlPlane {
         self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_native_pending("the connection ended before the server answered");
+        self.strand_once_only_spawns(
+            "the connection ended before the spawn was confirmed; check its panes before retrying",
+        );
         if let Some(message) = &message {
             self.error = Some(message.clone());
         }

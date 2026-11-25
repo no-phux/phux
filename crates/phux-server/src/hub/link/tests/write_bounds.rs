@@ -297,6 +297,12 @@ async fn blocked_session(cancel: CancellationToken) -> Blocked {
         )
         .await
     });
+    // A request is pinned to the link it observed; one stamped before this
+    // session took the link would be refused as an expired link's.
+    let before = relay.link_epoch();
+    while relay.link_epoch() == before {
+        tokio::task::yield_now().await;
+    }
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(4);
     let started = write_started.notified();
     tokio::pin!(started);

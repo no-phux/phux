@@ -199,7 +199,7 @@ impl Desk {
         };
         if !matches!(outcome, OrgOutcome::Committed(_)) {
             self.say(NoticeKind::Error, format!(
-                "Resource move operation {} did not settle: {outcome:?}. Inspect the original operation and server's resources before retrying.",
+                "Resource move operation {} did not settle: {outcome:?}. Check the original operation and the server's resources before retrying.",
                 phux_protocol::ids::hex16(operation.as_bytes())
             ));
             return true;

@@ -68,7 +68,10 @@ impl Owner {
     }
 
     fn render_presentations(&mut self, id: &ResourceId, paced: bool) -> Result<bool, EngineError> {
-        let published = if paced && self.deferred(&FrameKey::Default(id.clone())) {
+        let published = if paced
+            && !self.default_source_moved(id)
+            && self.deferred(&FrameKey::Default(id.clone()))
+        {
             false
         } else {
             self.render_and_publish(id)?
@@ -87,6 +90,18 @@ impl Owner {
             }
         }
         failure.map_or(Ok(published), Err)
+    }
+
+    /// The default slot's frame names the source generation a view capture
+    /// takes. Pacing may hold back damage within a generation, never a new
+    /// generation: deferring it would hand a fresh capture the replaced
+    /// source, which admission then rejects as stale.
+    fn default_source_moved(&self, id: &ResourceId) -> bool {
+        let published = self
+            .publication
+            .slot(id)
+            .and_then(|slot| slot.source_generation());
+        published.is_some() && published != self.replica_identity(id).map(|(token, ..)| token)
     }
 
     fn deferred(&self, key: &FrameKey) -> bool {

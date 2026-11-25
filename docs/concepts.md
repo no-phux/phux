@@ -128,7 +128,11 @@ phux rm @4         # forget it instead
 ```
 
 `phux restore` never replays an agent's one-shot task, and never types into
-a program. To restore automatically, and to resume other programs that
+a program. It starts your default shell, enabled agent integrations and
+`[[restore.program]]` resumes. Any other saved command is refused, and
+nothing runs, until you review its exact recipe and type yes:
+`phux relaunch ^KEY --approve-raw`, with the key `phux restore` prints
+([why](./organization.md#restore-and-executable-authority)). To restore automatically, and to resume other programs that
 report a resume token ([Resume](./program-protocol.md#resume)):
 
 ```toml

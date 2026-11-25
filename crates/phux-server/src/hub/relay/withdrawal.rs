@@ -20,8 +20,9 @@ impl RelaySession {
     }
 
     /// Whether a withdrawal pinned to an earlier link names a subscription
-    /// this one holds, which it can only have resumed from that link. The
-    /// registration `seq` still keeps it off a newer re-attach.
+    /// this one resumed from that link: one registered before the withdrawal
+    /// was issued. A newer re-attach on this link is not the old link's to
+    /// withdraw, so that withdrawal finds no live registration of its own.
     fn resumed_from(&self, epoch: u64, unsubscribe: &Unsubscribe) -> bool {
         if epoch >= self.epoch {
             return false;
@@ -33,11 +34,14 @@ impl RelaySession {
                 .flatten()
                 .any(|sub| sub.client == client),
             Unsubscribe::Terminal {
-                client, terminal, ..
+                client,
+                terminal,
+                seq,
+                ..
             } => self
                 .subscribers
                 .get(&terminal)
-                .is_some_and(|subs| subs.iter().any(|sub| sub.client == client)),
+                .is_some_and(|subs| subs.iter().any(|sub| sub.client == client && sub.seq < seq)),
         }
     }
 

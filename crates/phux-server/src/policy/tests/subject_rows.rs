@@ -521,30 +521,29 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&["observe,create,bind,input,signal,organize,terminate@global"]],
         ),
         on_global(org[1].clone(), "create"),
-        on_alpha(&org[2], "organize"),
-        on_alpha(&org[3], "terminate"),
-        on_alpha(&org[4], "create"),
-        moving(&org[5]),
+        on_global(org[2].clone(), "create"),
+        on_alpha(&org[3], "organize"),
+        on_alpha(&org[4], "terminate"),
+        on_alpha(&org[5], "create"),
         moving(&org[6]),
-        on_alpha_resource(&org[7], "organize"),
-        on_terminal(org[8].clone(), "terminate"),
-        on_alpha_resource(&org[9], "terminate"),
-        on_alpha_resource(&org[10], "create"),
+        moving(&org[7]),
+        on_alpha_resource(&org[8], "organize"),
+        on_terminal(org[9].clone(), "terminate"),
+        on_alpha_resource(&org[10], "terminate"),
+        on_alpha_resource(&org[11], "create"),
         // An undo whose receipt records no inverse needs Global.
-        on_global(org[11].clone(), "organize"),
-        on_alpha(&org[12], "inventory"),
-        on_alpha(&org[13], "organize"),
+        on_global(org[12].clone(), "organize"),
+        on_alpha(&org[13], "inventory"),
         on_alpha(&org[14], "organize"),
-        on_alpha(&org[15], "inventory"),
-        on_alpha(&org[16], "create,organize"),
+        on_alpha(&org[15], "organize"),
+        on_alpha(&org[16], "inventory"),
+        on_alpha(&org[17], "create,organize"),
     ]);
     rows.push(on_terminal(
         command(Command::ReleaseInput { terminal_id: t }),
         "bind",
     ));
-    // Owner-socket only: no scoped grant mints or
-    // withdraws a delegation.
-    rows.extend(delegation_samples(world).into_iter().map(denied));
+    rows.extend(owner_socket_rows(world));
     rows.extend([
         row(
             native[0].clone(),

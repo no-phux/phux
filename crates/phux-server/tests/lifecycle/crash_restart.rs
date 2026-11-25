@@ -283,13 +283,16 @@ fn a_crash_losing_start_evidence_cannot_prove_the_process_was_never_launched() {
                 .unwrap(),
         );
         let mut state = ServerState::new();
-        let store = SqliteOrgStore::open(&store_path).unwrap();
-        // Refuse only the later start transition; admission inserts the
-        // row as `starting` and so still commits.
+        // Create the schema, then refuse only the later start transition;
+        // admission inserts the row as `starting` and so still commits.
+        drop(SqliteOrgStore::open(&store_path).unwrap());
         let db = rusqlite::Connection::open(&store_path).unwrap();
         db.execute_batch(
             "CREATE TRIGGER reject_start BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test lost start'); END;",
         ).unwrap();
+        // Open the writer only after that schema change: a store fences any
+        // write it did not make, the trigger included.
+        let store = SqliteOrgStore::open(&store_path).unwrap();
         state.install_org(
             Box::new(store),
             fresh_org(state.instance_id(), now_stamp()),

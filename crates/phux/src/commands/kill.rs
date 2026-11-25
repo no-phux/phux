@@ -450,7 +450,7 @@ mod tests {
         let spec = ScriptSpec::new()
             .organization(fixture)
             .mutation_reply(CommandResult::Error {
-                code: ErrorCode::Unknown(65535),
+                code: ErrorCode::UNREADABLE_REPLY,
                 message: "unreadable close outcome".into(),
             });
         let (socket, server) = serve_one(dir.path(), spec);

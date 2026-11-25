@@ -155,7 +155,14 @@ fn native_relaunch_spec(
         ));
     }
     if !raw_approved {
-        spec = super::integrations::admit_saved(&spec)?;
+        // The same typed refusal as an untrusted terminal recipe, so a
+        // client can name the exact review that alone can admit it.
+        spec = super::integrations::admit_saved(&spec).map_err(|reason| {
+            CommandResult::Refused(ow::refusal(&Refusal::InvalidArgument {
+                field: "archived_recipe",
+                reason,
+            }))
+        })?;
     }
     let session = s
         .registry()

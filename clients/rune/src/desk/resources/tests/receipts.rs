@@ -313,7 +313,7 @@ fn unknown_organization_outcome_does_not_masquerade_as_a_success_or_retry() {
     crate::wire_fixture::refuse(
         &client,
         request_id,
-        ErrorCode::Unknown(65535),
+        ErrorCode::UNREADABLE_REPLY,
         "unreadable layout reply",
     );
     client.with_control(ControlPlane::connection_opened);

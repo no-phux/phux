@@ -81,8 +81,12 @@ impl ControlPlane {
                 .features_ext2
                 .contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)
         }) {
+            // Reports re-enter this flush through the bulk-move advance; only
+            // an actual rejection may do so, or every flush recurses.
             let reports = self.org.journal.reject_unenforced_relaunches();
-            self.handle_org_reports(reports);
+            if !reports.is_empty() {
+                self.handle_org_reports(reports);
+            }
         }
         let mut seq = self.request_seq;
         let frames = self.org.journal.next_frames(&mut || {

@@ -29,27 +29,61 @@ fn missing_exit_evidence_never_becomes_zero_in_inventory() {
     assert!(!exact.resources[0].ended_by_restart());
 }
 
+/// A stop that cuts a launch off before any process identity is recorded
+/// leaves no proof the OS never ran it: the next start reports it
+/// unresolved (`Lost`), and restore never relaunches it. A launch that
+/// really failed is not restorable either (above).
 #[test]
 fn a_launch_a_stop_cut_off_is_restorable_and_a_failed_one_is_not() {
+    let only = |state: &SharedState, session| {
+        let session =
+            state.with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
+        page(state, OrgFilter::Session(session)).resources[0].clone()
+    };
+    let stopping = SharedState::new();
+    let (session, id) = stopping.with_mut(|s| s.seed_session("cut-off"));
+    let token = stopping.with(|s| s.activation_token(id).unwrap());
+    // Shutdown starts while the launch is in flight; the effect's own failure
+    // proves no process started, and is the stop's doing, not the program's.
+    stopping.with_mut(ServerState::begin_shutdown);
+    super::effects::fail_launch(&stopping, token);
+    let record = only(&stopping, session);
+    let activation = record.activation.unwrap();
+    assert_eq!(activation.state, ExecState::Failed);
+    assert!(activation.launch_interrupted);
+    assert!(record.ended_by_restart(), "restore relaunches it");
+    stopping.with_mut(|s| {
+        let reconciled = s.reconcile_with(None, |_| panic!("must not probe"));
+        assert_eq!((reconciled.unresolved, reconciled.lost), (0, 0));
+    });
+
+    // The same failure outside a stop is the program's: not restorable.
+    let running = SharedState::new();
+    let (session, id) = running.with_mut(|s| s.seed_session("failed"));
+    let token = running.with(|s| s.activation_token(id).unwrap());
+    super::effects::fail_launch(&running, token);
+    let record = only(&running, session);
+    assert_eq!(record.activation.unwrap().state, ExecState::Failed);
+    assert!(!record.ended_by_restart());
+}
+
+/// A crash leaves Starting without an identity and without the effect's
+/// failure: no proof it never launched, so it stays unresolved.
+#[test]
+fn a_starting_record_without_evidence_stays_unresolved_and_is_never_restorable() {
     let state = SharedState::new();
-    let (session, id) = state.with_mut(|s| s.seed_session("cut-off"));
-    let token = state.with(|s| s.activation_token(id).unwrap());
-    // Shutdown starts while the launch is in flight; its late failure is the
-    // stop's doing and must not be recorded as the program's.
-    state.with_mut(ServerState::begin_shutdown);
-    super::effects::fail_launch(&state, token);
+    let (session, _) = state.with_mut(|s| s.seed_session("cut-off"));
     state.with_mut(|s| {
-        assert_eq!(
-            s.reconcile_with(None, |_| panic!("must not probe"))
-                .unresolved,
-            1
-        );
+        let reconciled = s.reconcile_with(None, |_| panic!("must not probe"));
+        assert_eq!((reconciled.unresolved, reconciled.lost), (1, 0));
     });
     let session =
         state.with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
-    let record = &page(&state, OrgFilter::Session(session)).resources[0];
-    assert_eq!(record.activation.unwrap().state, ExecState::Failed);
-    assert!(record.ended_by_restart());
+    let record = page(&state, OrgFilter::Session(session)).resources[0].clone();
+    let activation = record.activation.unwrap();
+    assert_eq!(activation.state, ExecState::Lost);
+    assert!(!activation.launch_interrupted, "no proof it never launched");
+    assert!(!record.ended_by_restart(), "it may still be running");
 }
 
 #[test]

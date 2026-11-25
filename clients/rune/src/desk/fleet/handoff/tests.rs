@@ -128,7 +128,7 @@ fn a_watch_reconnect_cannot_requalify_an_old_numeric_agent_target() {
 #[test]
 fn a_different_destination_server_cannot_reuse_the_watched_terminal_id() {
     let watched = Replica::new(80, 24, 2);
-    let destination = Replica::new(80, 24, 2);
+    let destination = Replica::durable(80, 24, 2);
     let mut desk = destination.window();
     install(&mut desk, &watched, 2);
     destination.replace_server(2);

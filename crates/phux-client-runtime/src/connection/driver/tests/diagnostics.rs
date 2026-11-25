@@ -188,15 +188,24 @@ fn written(peer: &mut tokio::io::DuplexStream, buffer: &mut BytesMut) -> Vec<Fra
 }
 
 /// What `desk::input::send_input` does with one typed line: refuse it
-/// while the terminal isn't input-ready, else queue it.
-fn type_line(shared: &Shared, terminal: &ResourceId, line: &str) -> bool {
-    let mut control = lock(shared);
-    if !control.input_ready(terminal) {
-        trace::phase("input_refused");
-        return false;
-    }
-    let sent = control.send_text(terminal, line);
-    trace::phase(if sent {
+/// while the terminal isn't input-ready, else queue it. The UI thread runs
+/// outside the pump's task, so like `Client::trace_input` it records on the
+/// attempt the driver published into `Signals::trace`.
+fn type_line(
+    shared: &Shared,
+    published: &Mutex<Option<AttemptTrace>>,
+    terminal: &ResourceId,
+    line: &str,
+) -> bool {
+    let sent = {
+        let mut control = lock(shared);
+        control.input_ready(terminal) && control.send_text(terminal, line)
+    };
+    let attempt = published
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .expect("the driver publishes its attempt when it opens");
+    attempt.record(if sent {
         "input_injected"
     } else {
         "input_refused"
@@ -226,6 +235,7 @@ async fn attach_then_type(prompt: bool) -> (Vec<serde_json::Value>, u64, Vec<Fra
         },
     )));
     let outbound = Arc::clone(&fixture.signals.outbound);
+    let attempt_slot = Arc::clone(&fixture.signals.trace);
     let WriteFixture {
         mut io,
         mut peer,
@@ -316,7 +326,12 @@ async fn attach_then_type(prompt: bool) -> (Vec<serde_json::Value>, u64, Vec<Fra
         assert_eq!(lock(&shared).input_ready(&terminal), prompt);
 
         // The probe's one-shot `insertText(command)`, `insertText("\n")`.
-        let typed = type_line(&shared, &terminal, "printf phux-qualification-marker\n");
+        let typed = type_line(
+            &shared,
+            &attempt_slot,
+            &terminal,
+            "printf phux-qualification-marker\n",
+        );
         assert_eq!(typed, prompt, "typed input accepted only once attached");
         turn!(running);
         sent_to_server.extend(written(&mut peer, &mut buffer));

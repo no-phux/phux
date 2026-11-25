@@ -4,16 +4,20 @@ use super::*;
 use phux_client_runtime::Client;
 use phux_client_runtime::engine::{EngineError, Scroll};
 
-fn reconnect(client: &Client, server: [u8; 16], bytes: &[u8]) {
+/// Reconnect to `server`, which keeps `main`'s durable identity, and
+/// re-attach it with `generation`. A new incarnation may reuse every wire id;
+/// the same incarnation subscribes again on a new stream.
+fn reconnect(client: &Client, server: [u8; 16], generation: [u64; 2], bytes: &[u8]) {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
-        .feed(phux_wire_fixtures::HelloOk::new(server, phux_wire_fixtures::l3_caps()).build())
+        .feed(with_organization(
+            phux_wire_fixtures::HelloOk::new(server, phux_wire_fixtures::l3_caps()).build(),
+        ))
         .unwrap();
     client.with_control(|plane| {
-        let attach_id = plane.queued_attach_id();
-        // The replacement deliberately reuses resource, stream and bootstrap.
-        attach_with_history(plane, attach_id, bytes, None);
+        let attach_id = seed_durable_main(plane);
+        attach_generation(plane, attach_id, generation, bytes, None);
     });
     assert_eq!(client.status(), Status::Attached);
     let _ = client.take_outbound();
@@ -21,7 +25,7 @@ fn reconnect(client: &Client, server: [u8; 16], bytes: &[u8]) {
 
 #[test]
 fn client_reset_with_identical_wire_ids_rejects_original_source_without_wire_interest() {
-    let client = embedded_with_history(None);
+    let client = durable_embedded();
     let original = client
         .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
         .unwrap();
@@ -29,13 +33,17 @@ fn client_reset_with_identical_wire_ids_rejects_original_source_without_wire_int
     let old_slot = client.view_slot(original_view).unwrap();
     let old_default = client.slot(&terminal()).unwrap();
     let held = old_slot.acquire().unwrap();
+    // A restart resets the client's replicas, and the replacement
+    // deliberately reuses resource, stream and bootstrap: only the
+    // publication slot distinguishes it from the captured source.
     reconnect(
         &client,
-        [0xAB; 16],
+        [0xCD; 16],
+        [1, 1],
         b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
     );
     let fresh = client
-        .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
+        .view_source(&terminal(), Some(&[0xCD; 16]), client.connection_epoch())
         .unwrap();
     let left = client.create_view(&fresh).unwrap();
     let right = client.create_view(&fresh).unwrap();
@@ -86,13 +94,13 @@ fn client_reset_with_identical_wire_ids_rejects_original_source_without_wire_int
 
 #[test]
 fn delayed_native_intent_cannot_replace_its_original_expected_server_with_the_new_hello() {
-    let client = embedded_with_history(None);
+    let client = durable_embedded();
     let original_server = client.server().unwrap().id;
     let original_epoch = client.connection_epoch();
     let original = client
         .view_source(&terminal(), Some(&original_server), original_epoch)
         .unwrap();
-    reconnect(&client, [0xCD; 16], b"replacement");
+    reconnect(&client, [0xCD; 16], [1, 1], b"replacement");
     let before = client.acquire(&terminal()).unwrap();
 
     // A callback waiting for its first source must keep the scope it observed,
@@ -158,10 +166,12 @@ fn retained_offline_source_admits_independent_views_without_transport_or_interes
 
 #[test]
 fn first_source_capture_keeps_original_epoch_even_when_reconnect_reports_the_same_server() {
-    let client = embedded_with_history(None);
+    let client = durable_embedded();
     let original_server = client.server().unwrap().id;
     let original_epoch = client.connection_epoch();
-    reconnect(&client, [0xAB; 16], b"same server, new subscription");
+    // The same incarnation keeps the replica, so its new subscription is a
+    // new generation, not a second begin of the published one.
+    reconnect(&client, [0xAB; 16], [2, 1], b"same server, again");
     assert_eq!(client.server().unwrap().id, original_server);
     assert_ne!(client.connection_epoch(), original_epoch);
     let before = client.acquire(&terminal()).unwrap();
@@ -186,7 +196,7 @@ fn first_source_capture_keeps_original_epoch_even_when_reconnect_reports_the_sam
     let view = client.create_view(&fresh).unwrap();
     assert_eq!(
         client.acquire_view(view).unwrap().text(),
-        "same server, new subscription"
+        "same server, again"
     );
     client.destroy_view(view).unwrap();
     assert!(client.take_outbound().is_empty());

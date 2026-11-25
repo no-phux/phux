@@ -152,7 +152,7 @@ fn server_refusal_and_uncertain_outcomes_are_visible_without_retry_or_selection_
 fn successful_receipt_refreshes_inventory_and_follows_only_the_still_selected_resource() {
     for navigate_away in [false, true] {
         let (client, mut desk) = connected();
-        desk.connection.shown = shown(7);
+        show(&mut desk, 7);
         desk.drag_at(Grab::Resource(7, key(1)), Phase::Up, [50.0, 160.0], false);
         let (request, operation) = move_request(&client);
         assert_eq!(
@@ -230,7 +230,7 @@ fn unverified_server_identity_retires_pending_resource_moves() {
 fn a_pending_navigation_does_not_follow_the_previously_shown_moved_resource() {
     for before_submission in [false, true] {
         let (client, mut desk) = connected();
-        desk.connection.shown = shown(7);
+        show(&mut desk, 7);
         if before_submission {
             desk.want(live(8));
         }
@@ -345,14 +345,36 @@ fn moving_a_tab_preserves_its_split_tree_name_and_group_identity() {
     assert_eq!(written.groups[0].state.tree, source.groups[0].state.tree);
 }
 
-/// Accept move `operation`, the reply to `request`.
+/// Commit move `operation`, the reply to `request`: a server answers a
+/// committed move with its receipt, the only outcome a follow trusts.
 fn accept(
     client: &Client,
     desk: &mut Desk,
     request: u32,
     operation: phux_protocol::ids::OperationId,
 ) {
-    reply(client, desk, request, CommandResult::Accepted { operation });
+    let receipt =
+        phux_protocol::wire::frame::Committed::new(operation, phux_protocol::ids::Revision::new(2));
+    reply(
+        client,
+        desk,
+        request,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(receipt))),
+    );
+}
+
+/// `@n` on screen, without a view, as a focus leaves it: under the intent
+/// that chose it in the desk's observed server and epoch.
+fn show(desk: &mut Desk, n: u32) {
+    let client = desk.connection.client.clone().expect("fixture client");
+    let intent = crate::desk::view_intent::ViewIntent::new(
+        &client,
+        &live(n),
+        desk.connection.view_server.clone(),
+        desk.connection.view_epoch,
+    );
+    desk.connection.view_intents.insert(live(n), intent);
+    desk.connection.shown = shown(n);
 }
 
 /// `@n` on screen, without a view.

@@ -53,12 +53,23 @@ pub fn attach_with_history(
     bytes: &[u8],
     history_cursor: Option<Vec<u8>>,
 ) {
+    attach_generation(plane, attach_id, [1, 1], bytes, history_cursor);
+}
+
+/// [`attach_with_history`] bootstrapping `generation` (stream, bootstrap).
+pub fn attach_generation(
+    plane: &mut ControlPlane,
+    attach_id: u32,
+    generation: [u64; 2],
+    bytes: &[u8],
+    history_cursor: Option<Vec<u8>>,
+) {
     plane.attached(attach_id, snapshot());
     let options = BootstrapOptions {
         history_cursor,
         ..BootstrapOptions::default()
     };
-    for frame in bootstrap_frames_with(&terminal(), [1, 1], [20, 4], bytes, options) {
+    for frame in bootstrap_frames_with(&terminal(), generation, [20, 4], bytes, options) {
         plane.feed(frame).expect("bootstrap frame");
     }
     plane
@@ -68,6 +79,18 @@ pub fn attach_with_history(
 
 #[cfg(feature = "engine")]
 pub fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_runtime::Client {
+    embedded_from(hello_ok(PROTOCOL_VERSION.patch), history_cursor)
+}
+
+/// [`embedded_with_history`] on a peer whose `main` has a durable identity,
+/// so a later new-incarnation reconnect can recover it by exact key.
+#[cfg(feature = "engine")]
+pub fn durable_embedded() -> phux_client_runtime::Client {
+    embedded_from(with_organization(hello_ok(PROTOCOL_VERSION.patch)), None)
+}
+
+#[cfg(feature = "engine")]
+fn embedded_from(hello: FrameKind, history_cursor: Option<Vec<u8>>) -> phux_client_runtime::Client {
     let client = phux_client_runtime::Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("main".into())),
         viewport: (20, 4),
@@ -75,15 +98,8 @@ pub fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_run
     });
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
-    client.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let attach_id = client
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match decode(bytes) {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .unwrap();
+    client.feed(hello).unwrap();
+    let attach_id = client.with_control(seed_durable_main);
     client.with_control(|plane| {
         attach_with_history(
             plane,
@@ -201,4 +217,64 @@ pub fn negotiate(
         assert_eq!(followups.len(), expected, "{followups:?}");
     }
     (plane, followups)
+}
+
+/// The organization authority the fixture server keeps across restarts.
+pub const DURABLE_AUTHORITY: [u8; 16] = [0x0A; 16];
+/// `main`'s durable session key in [`DURABLE_AUTHORITY`].
+pub const MAIN_KEY: [u8; 16] = [0x01; 16];
+
+/// `hello` from a peer that also serves the organization replica, and with
+/// it each session's durable authority and key. A client recovers a session
+/// on a new server incarnation only through that exact key, never through a
+/// reused name or numeric id.
+pub const fn with_organization(mut hello: FrameKind) -> FrameKind {
+    use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+    if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
+        let organization = ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]);
+        server_caps.features_ext = ServerFeatureExtSet::from_wire(
+            server_caps.features_ext.as_wire() | organization.as_wire(),
+        );
+    }
+    hello
+}
+
+/// Drain the queued frames and return the `ATTACH` id among them. A queued
+/// organization seed is first answered with `main` live as session 1 under
+/// [`DURABLE_AUTHORITY`]: after a restart that is what releases the exact-key
+/// attach, so the id may come from the frames the seed queues.
+pub fn seed_durable_main(plane: &mut ControlPlane) -> u32 {
+    use phux_protocol::ids::{AuthorityId, Revision, SessionKey};
+    use phux_protocol::wire::frame::{CommandValue, OrganizationPage, SessionRecord};
+    fn attach(frames: &[FrameKind]) -> Option<u32> {
+        frames.iter().find_map(|frame| match frame {
+            FrameKind::Attach { attach_id, .. } => Some(*attach_id),
+            _ => None,
+        })
+    }
+    let queued: Vec<FrameKind> = plane.take_outbound().iter().map(|b| decode(b)).collect();
+    let seed = queued.iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command: Command::GetOrganization { .. },
+        } => Some(*request_id),
+        _ => None,
+    });
+    if let Some(request_id) = seed {
+        let main = SessionRecord::new(SessionKey::new(MAIN_KEY).unwrap(), "main", Revision::new(1))
+            .with_live(Some(SessionId::new(1)));
+        let page = OrganizationPage::new(
+            AuthorityId::new(DURABLE_AUTHORITY).unwrap(),
+            Revision::new(1),
+            0,
+        )
+        .with_sessions(vec![main]);
+        answer(
+            plane,
+            request_id,
+            CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page))),
+        );
+    }
+    let after: Vec<FrameKind> = plane.take_outbound().iter().map(|b| decode(b)).collect();
+    attach(&queued).or_else(|| attach(&after)).expect("ATTACH")
 }

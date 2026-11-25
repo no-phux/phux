@@ -1,9 +1,11 @@
 //! Native construction, driver lifetime, and synchronous control handoff.
 
+#[cfg(feature = "engine")]
+use super::Publication;
 use super::wakes::Wakes;
 use super::{
     Arc, Client, ClientOptions, ControlOptions, ControlPlane, Lane, Mutex, Notify, PoisonError,
-    Publication, Runtime, RuntimeError, Shared, Signals, Target, lock, run_session, watch,
+    Runtime, RuntimeError, Shared, Signals, Target, lock, run_session, watch,
 };
 
 impl Runtime {
@@ -40,9 +42,9 @@ impl Runtime {
     /// the socket — the control plane, the engine owner thread, and the
     /// published grid — is the same as [`Runtime::connect`]'s.
     ///
-    /// Nothing dials, so [`ConnectOptions`] does not apply and the reconnect
-    /// ladder stays the embedder's. Prefer `connect` unless the embedder has
-    /// a socket the runtime cannot own.
+    /// Nothing dials, so [`ConnectOptions`](super::ConnectOptions) does not
+    /// apply and the reconnect ladder stays the embedder's. Prefer `connect`
+    /// unless the embedder has a socket the runtime cannot own.
     #[must_use]
     pub fn embedded(options: ControlOptions) -> Client {
         // The signals are constructed and dropped: with no driver reading

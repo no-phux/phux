@@ -268,8 +268,8 @@ fn report_operation_conflict(json: bool, name: &str) -> ExitCode {
     report_create_failed_with(
         json,
         format!("the operation identity for session '{name}' already belongs to another request"),
-        "reuse an idempotency key only for the identical request; reconcile the original \
-         operation before choosing a different identity for a different creation",
+        "reuse an --idempotency-key only to retry the identical request; reconcile the \
+         original operation before choosing a different key for a different creation",
     )
 }
 

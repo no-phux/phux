@@ -415,6 +415,33 @@ fn restored_agent(server: &common::ServerGuard) -> String {
         .to_owned()
 }
 
+/// `phux restore work` on a host with no current template for the archived
+/// ACP recipe: refused with the exact review command, and the peer is never
+/// started again. Returns the key the review command names.
+fn restore_refuses_untrusted_peer(dest: &common::ServerGuard, ledger: &Path) -> String {
+    let (code, stdout, stderr) = dest.run(&["restore", "work"]);
+    assert_eq!(
+        code, 2,
+        "an untrusted ACP recipe must be refused: {stdout} {stderr}"
+    );
+    assert!(
+        stdout.contains("invalid archived_recipe: no current trusted native template"),
+        "{stdout}"
+    );
+    let calls = std::fs::read_to_string(ledger).unwrap();
+    assert_eq!(count(&calls, "\"method\": \"session/new\""), 1, "{calls}");
+    assert_eq!(count(&calls, "\"method\": \"session/load\""), 0, "{calls}");
+    stdout
+        .lines()
+        .find_map(|line| {
+            line.split_once("review and approve it: phux relaunch ")?
+                .1
+                .strip_suffix(" --approve-raw")
+        })
+        .unwrap_or_else(|| panic!("restore must name the exact review command: {stdout}"))
+        .to_owned()
+}
+
 #[test]
 #[ignore = "real isolated daemon and ACP peer; run via just e2e"]
 fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
@@ -435,11 +462,20 @@ fn cli_acp_archive_load_is_capability_gated_and_history_is_finalized() {
         assert!(saved.contains("peer-stable-session"));
         assert!(!saved.contains("PHUX_NATIVE_BINDING"));
         drop(source);
-        let dest = common::ServerGuard::builder("acpload")
-            .session("destination")
-            .start();
+        let dest = common::raw_review::hermetic_server(
+            common::ServerGuard::builder("acpload").session("destination"),
+        )
+        .start();
         dest.success(&["archive", "import", archive.to_str().unwrap()]);
-        dest.success(&["restore", "work"]);
+        let key = restore_refuses_untrusted_peer(&dest, &ledger);
+        if supports_load {
+            // The destination host's own current template admits the resume.
+            profile_mode(&dest, root.path(), &ledger, supports_load);
+            dest.success(&["restore", "work"]);
+        } else {
+            // Without one, only the exact local-owner review of the recipe does.
+            common::raw_review::approve(&dest.socket, &key);
+        }
         let agent = restored_agent(&dest);
         if supports_load {
             let view = await_view(&dest, &agent, |view| view["connected"] == true);

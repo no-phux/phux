@@ -108,8 +108,9 @@ impl ViewIntent {
         });
     }
 
-    /// Session selection follows the exact terminal in this id space, never
-    /// an old session name that may now denote another session.
+    /// Session selection follows the exact resource in this id space, never
+    /// an old session name that may now denote another session. A document
+    /// is no pane, so its own inventory row names its session.
     pub(super) fn select_terminal_session(&self, client: &Client, terminal: &ResourceId) {
         if self.refused || terminal.local_id().is_none() || !self.owns_client(client) {
             return;
@@ -120,8 +121,7 @@ impl ViewIntent {
                 && control.server().map(|server| server.id.as_slice()) == self.server.as_deref()
                 && let Some(session) = control
                     .topology()
-                    .and_then(|topology| topology.pane(terminal))
-                    .map(|pane| pane.session_id)
+                    .and_then(|topology| resource_session(topology, terminal))
                 && control.selected_session() != Some(session)
             {
                 control.attach_session(AttachTarget::ById(phux_protocol::ids::SessionId::new(
@@ -175,4 +175,22 @@ pub(super) fn select_keyed_session(
         }
         control.selected_session() == Some(id)
     })
+}
+
+/// The live session `resource` belongs to: its pane's, or for a resource that
+/// is no pane (a document), its inventory row's.
+fn resource_session(
+    topology: &phux_client_runtime::control::Topology,
+    resource: &ResourceId,
+) -> Option<u32> {
+    topology
+        .pane(resource)
+        .map(|pane| pane.session_id)
+        .or_else(|| {
+            topology
+                .resources
+                .iter()
+                .find(|row| &row.id == resource && row.session_id != 0)
+                .map(|row| row.session_id)
+        })
 }

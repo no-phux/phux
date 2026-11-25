@@ -23,6 +23,20 @@ pub(super) async fn controller_spawn_cat(
     .await
 }
 
+/// A server seeded with `main` whose organization store lives in `dir`, so a
+/// restart is a new incarnation of the same durable authority. Recovery
+/// follows `main`'s exact authority and key; a memory store would make the
+/// restart a different authority whose reused name a client never follows.
+pub(super) fn spawn_durable_server(
+    socket: &std::path::Path,
+    dir: &std::path::Path,
+) -> phux_server_testkit::ServerHandles {
+    let store = dir.join("org.v1.sqlite3");
+    phux_server_testkit::spawn_server_with(socket.to_path_buf(), Some("main"), move |config| {
+        config.org_store = phux_server::OrgStoreLocation::Path(store);
+    })
+}
+
 /// A real server on a fresh socket, seeded with session `main`.
 pub(super) struct Live {
     _tmp: TempDir,
