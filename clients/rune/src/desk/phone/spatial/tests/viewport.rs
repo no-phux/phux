@@ -20,8 +20,7 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
         map[1] + map[3] <= viewport[1],
         "map belongs in the header, above all terminal text"
     );
-    let area = rt.state.pane_area(&id(1)).unwrap();
-    assert!((area[1] - (viewport[3] - 2.0 * crate::ui::PAD)).abs() < 0.5);
+    assert_flush_grid(rt, viewport);
     assert_eq!(
         rt.state.phone.as_ref().unwrap().stage,
         [viewport[2], viewport[3]]
@@ -29,7 +28,7 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
     let grid_top = rt.state.connection.origins[&id(1)][1];
     let last_row_bottom = grid_top + f32::from(rows) * rt.state.metrics().cell_h;
     assert!(
-        last_row_bottom <= toolbar[1] - crate::ui::PAD + 0.5,
+        last_row_bottom <= toolbar[1] + 0.5,
         "every proposed row fits above the toolbar"
     );
     for key in ["phone-navigation", "phone-pane-picker"] {
@@ -44,6 +43,18 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
     assert!(
         rt.find("phone-command").is_some(),
         "accessory still provides Commands"
+    );
+}
+
+fn assert_flush_grid(rt: &rune::Runtime<Desk>, [x, y, w, h]: [f32; 4]) {
+    let terminal = focus(rt);
+    assert_eq!(x, 0.0);
+    assert_eq!(w, geometry(rt, "phone-screen").rect[2]);
+    assert_eq!(rt.state.connection.origins[&terminal], [x, y]);
+    assert_eq!(rt.state.pane_area(&terminal), Some([w, h]));
+    assert_eq!(
+        rt.state.connection.fitted[&terminal].0,
+        rt.state.metrics().fit([w, h]),
     );
 }
 
@@ -99,6 +110,7 @@ fn a_single_terminal_keeps_more_and_gives_its_whole_stage_to_the_terminal() {
     let toolbar = geometry(&rt, "phone-navigation-toolbar").rect;
     let viewport = geometry(&rt, "phone-spatial-stage").rect;
     assert_eq!(toolbar[3], 0.0, "nothing to move between: no toolbar");
+    assert_flush_grid(&rt, viewport);
     assert!(viewport[1] + viewport[3] <= toolbar[1] + 0.5);
     no_input(&client);
 }
