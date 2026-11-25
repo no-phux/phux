@@ -75,16 +75,15 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     // gets phux installed or updated.
     let remote_phux = match provisioned_phux(&name, &ssh_host, opts, &mut narrate) {
         Ok(phux) => phux,
-        Err(err) => return json_err::emit(json, &err, 1),
+        Err((err, code)) => return json_err::emit(json, &err, code),
     };
 
     // Prefer credentials already on file for this name when re-enrolling so
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
     let remotes_dir = phux_config::instance::state_dir().join("remotes");
-    let workload = previous
-        .held
-        .replacement(&remotes_dir, &name, opts.hardware_key);
+    let held = &previous.held;
+    let workload = held.replacement(&remotes_dir, &name, opts.hardware_key);
     let req = EnrollRequest {
         ssh_host: &ssh_host,
         remote_phux: &remote_phux,
@@ -103,7 +102,8 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     let outcome = match enroll::enroll_over_ssh(&req, &mut |event| narrate(&event)) {
         Ok(outcome) => outcome,
         Err(failure) => {
-            return json_err::emit(json, &add_failure_error(&ssh_host, opts.role, &failure), 1);
+            let err = add_failure_error(&ssh_host, opts.role, &failure);
+            return json_err::emit(json, &err, failure.exit_code());
         }
     };
 
@@ -151,7 +151,7 @@ fn provisioned_phux(
     ssh_host: &str,
     opts: &AddOpts,
     narrate: &mut dyn FnMut(&EnrollEvent),
-) -> Result<String, CliError> {
+) -> Result<String, (CliError, u8)> {
     let remote_phux = if opts.remote_phux == "phux" && opts.role == HostRole::Remote {
         remote::find(name).map_or_else(|| "phux".to_owned(), |entry| entry.remote_phux().to_owned())
     } else {
@@ -160,8 +160,14 @@ fn provisioned_phux(
     if !opts.install {
         return Ok(remote_phux);
     }
-    enroll::provision_remote_phux(ssh_host, &remote_phux, &mut |event| narrate(&event))
-        .map_err(|failure| add_failure_error(ssh_host, opts.role, &failure))
+    enroll::provision_remote_phux(ssh_host, &remote_phux, &mut |event| narrate(&event)).map_err(
+        |failure| {
+            (
+                add_failure_error(ssh_host, opts.role, &failure),
+                failure.exit_code(),
+            )
+        },
+    )
 }
 
 /// A registered remote whose saved route answers and whose workload client

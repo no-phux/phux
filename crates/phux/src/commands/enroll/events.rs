@@ -265,6 +265,14 @@ pub(crate) enum EnrollFailure {
 }
 
 impl EnrollFailure {
+    /// The exit code of a verb that stops on this failure.
+    pub(crate) fn exit_code(&self) -> u8 {
+        match self {
+            Self::SshUnreachable(detail) => crate::exit_codes::ssh_exit(detail),
+            _ => crate::exit_codes::EXIT_FAILURE,
+        }
+    }
+
     /// The failure's own words, for callers that print them inline.
     pub(crate) fn detail(&self) -> &str {
         match self {

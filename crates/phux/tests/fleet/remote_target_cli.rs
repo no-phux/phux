@@ -271,3 +271,34 @@ fn remote_flag_combinations_are_refused_with_their_reason() {
         }
     }
 }
+
+/// A machine ssh gets no answer from is unreachable (exit 4); one that
+/// answered and refused the login is a failure (exit 1).
+#[test]
+fn an_ssh_host_that_never_answers_is_exit_four() {
+    for (said, expected) in [
+        ("ssh: connect to host mini port 22: Operation timed out", 4),
+        ("ssh: connect to host mini port 22: Connection refused", 1),
+        ("me@mini: Permission denied (publickey).", 1),
+    ] {
+        let dir = TempDir::new().expect("tempdir");
+        let ssh = dir.path().join("ssh");
+        crate::common::write_executable(&ssh, format!("#!/bin/sh\necho '{said}' >&2\nexit 255\n"));
+        for args in [
+            &["host", "add", "me@mini"][..],
+            &["host", "add", "me@mini", "--install", "--json"],
+            &["ls", "--remote", "me@mini"],
+        ] {
+            let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
+            cmd.env("HOME", dir.path())
+                .env("XDG_CONFIG_HOME", dir.path().join("config"))
+                .env("XDG_STATE_HOME", dir.path().join("state"))
+                .env("PHUX_PROFILE", "default")
+                .env("PHUX_SSH", &ssh)
+                .args(args);
+            let (code, _stdout, stderr) =
+                crate::common::Out::of(&mut cmd).without_dhat().into_parts();
+            assert_eq!(code, expected, "{args:?}: {stderr}");
+        }
+    }
+}

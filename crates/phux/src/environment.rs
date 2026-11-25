@@ -33,22 +33,28 @@ fn parse_terminal_id(raw: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|id| *id != 0)
 }
 
+/// The server-exchange deadline when [`TIMEOUT_ENV`] is unset.
+pub(crate) const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The deadline on every server exchange; see [`deadline_from`].
 pub(crate) const TIMEOUT_ENV: &str = "PHUX_TIMEOUT";
 
 /// The server-exchange deadline from a [`TIMEOUT_ENV`] value: whole or
-/// fractional seconds, `0` for none. Unset or unparseable is the 10-second
-/// default, so a typo never uncaps the wait.
-pub(crate) fn deadline_from(raw: Option<&str>) -> Option<std::time::Duration> {
-    const DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
-    let parsed = raw
-        .and_then(|raw| raw.trim().trim_end_matches('s').parse::<f64>().ok())
-        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok());
-    match parsed {
-        Some(deadline) if deadline.is_zero() => None,
-        Some(deadline) => Some(deadline),
-        None => Some(DEFAULT),
-    }
+/// fractional seconds, `0` for none. Unset is [`DEFAULT_TIMEOUT`].
+///
+/// # Errors
+///
+/// A value that is not a number of seconds.
+pub(crate) fn deadline_from(raw: Option<&str>) -> Result<Option<std::time::Duration>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(Some(DEFAULT_TIMEOUT));
+    };
+    raw.trim_end_matches('s')
+        .parse::<f64>()
+        .ok()
+        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+        .map(|deadline| (!deadline.is_zero()).then_some(deadline))
+        .ok_or_else(|| format!("{TIMEOUT_ENV}={raw:?} is not a number of seconds"))
 }
 
 /// Every environment variable the binary reads, in the order the topic
@@ -69,8 +75,9 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         lines: &[
             "Seconds to wait for the server to answer the handshake and",
             "each request (default 10; `0` waits forever). On expiry the",
-            "verb exits 4. Streams (attach, watch, forward) are bounded",
-            "only until their handshake.",
+            "verb exits 4; a value that is not a number exits 2. Streams",
+            "(attach, watch, forward) are bounded only until their",
+            "handshake.",
         ],
     },
     EnvVarSpec {
@@ -348,16 +355,22 @@ mod tests {
     #[test]
     fn deadline_reads_seconds_and_zero_disables() {
         use std::time::Duration;
-        let ten = Some(Duration::from_secs(10));
-        assert_eq!(deadline_from(None), ten);
-        assert_eq!(deadline_from(Some("nope")), ten);
-        assert_eq!(deadline_from(Some("-1")), ten);
-        assert_eq!(deadline_from(Some("0")), None);
-        assert_eq!(deadline_from(Some("3")), Some(Duration::from_secs(3)));
-        assert_eq!(
-            deadline_from(Some("1.5s")),
-            Some(Duration::from_millis(1500))
-        );
+        for (raw, deadline) in [
+            (None, Some(Duration::from_secs(10))),
+            (Some(""), Some(Duration::from_secs(10))),
+            (Some("0"), None),
+            (Some("3"), Some(Duration::from_secs(3))),
+            (Some("1.5s"), Some(Duration::from_millis(1500))),
+        ] {
+            assert_eq!(deadline_from(raw), Ok(deadline), "{raw:?}");
+        }
+        for raw in ["nope", "-1", "NaN"] {
+            let refused = deadline_from(Some(raw)).unwrap_err();
+            assert!(
+                refused.contains("PHUX_TIMEOUT") && refused.contains(raw),
+                "{refused}"
+            );
+        }
     }
 
     /// Every variable lands on its own line, in table order, and the

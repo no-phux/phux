@@ -13,7 +13,7 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | Variable | Meaning |
 |---|---|
 | `PHUX_SOCKET` | Server socket for the CLI verbs and the server. `--socket` overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock; when XDG_RUNTIME_DIR is unset, /run/user/<uid>/phux/phux.sock if that directory exists, else /tmp/phux-$USER/phux.sock. |
-| `PHUX_TIMEOUT` | Seconds to wait for the server to answer the handshake and each request (default 10; `0` waits forever). On expiry the verb exits 4. Streams (attach, watch, forward) are bounded only until their handshake. |
+| `PHUX_TIMEOUT` | Seconds to wait for the server to answer the handshake and each request (default 10; `0` waits forever). On expiry the verb exits 4; a value that is not a number exits 2. Streams (attach, watch, forward) are bounded only until their handshake. |
 | `PHUX_CHAT_RECORD` | Private record selected by `phux chat run` (absolute path). Scopes mail only, never path claims or terminal authority. A bad record fails closed; no fallback to another store. |
 | `PHUX_WS_ADDR` | Also accept WebSocket clients on HOST:PORT. Equivalent to `phux server --listen`, which overrides it. |
 | `PHUX_WS_SECURE` | Force TLS and token auth on a loopback --listen address, to exercise the remote path locally. |
