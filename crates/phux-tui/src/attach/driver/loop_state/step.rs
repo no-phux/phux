@@ -23,6 +23,7 @@ impl super::SessionLoop {
     ) -> Result<Step, AttachError> {
         let sidebar = self.sidebar();
         self.settle_iteration(out, sidebar, needs_resync)?;
+        self.send_open_url_answers(conn).await?;
         let stepped = self.select_next_event(conn, out, sidebar).await;
         // Whatever woke the loop may have completed a held switch's view.
         self.release_paint_hold_if_ready(out, self.sidebar());

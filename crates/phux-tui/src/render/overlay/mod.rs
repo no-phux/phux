@@ -148,6 +148,12 @@ pub trait RenderOverlay {
         false
     }
 
+    /// Whether it stopped being answerable: [`OverlayState::dismiss_expired`]
+    /// drops it.
+    fn expired(&self) -> bool {
+        false
+    }
+
     /// Whether this overlay's geometry survives a viewport resize. The
     /// pointer-pinned context menu does not, and is dropped on SIGWINCH.
     fn survives_resize(&self) -> bool {
@@ -431,6 +437,13 @@ impl OverlayState {
     /// Pop the top overlay (no-op when empty).
     pub fn dismiss(&mut self) {
         self.stack.pop();
+    }
+
+    /// Drop every expired overlay; `true` when there was one.
+    pub fn dismiss_expired(&mut self) -> bool {
+        let before = self.stack.len();
+        self.stack.retain(|overlay| !overlay.expired());
+        self.stack.len() < before
     }
 
     /// Pop the top overlay when it is a passthrough notice (a job's

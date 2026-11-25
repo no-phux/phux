@@ -355,6 +355,8 @@ pub(super) struct SessionLoop {
     parser: StdinParser,
     /// OSC 52 reads: grants, prompts, and the host round trip.
     clipboard_reads: crate::attach::clipboard_read::SharedClipboardReads,
+    /// Links panes ask to open here.
+    open_urls: crate::attach::open_url::SharedOpenUrls,
     /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
     stdin: TtyInput,
     /// One read's worth of stdin bytes.
@@ -555,6 +557,7 @@ impl SessionLoop {
                     .server_features_ext
                     .contains(phux_protocol::ServerFeatureExt::ClipboardRead),
             ),
+            open_urls: crate::attach::open_url::SharedOpenUrls::default(),
             stdin: TtyInput::open(),
             stdin_buf: [0u8; 4096],
             input_events: Vec::new(),

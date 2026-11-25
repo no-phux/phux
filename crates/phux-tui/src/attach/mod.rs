@@ -37,6 +37,7 @@ mod jobs;
 mod kitty_heal;
 mod notify;
 mod onboarding;
+mod open_url;
 pub mod paint;
 pub mod palette_recent;
 mod restore_hint;
