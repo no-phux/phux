@@ -74,8 +74,9 @@ impl super::SessionLoop {
             &self.mouse_optout,
         );
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
-        // Hover reporting follows the overlay stack (context menus).
-        sync_hover_tracking(out, self.overlays.wants_pointer_hover()).map_err(AttachError::Io)?;
+        // Both menus and visible any-motion applications need unpressed motion.
+        let hover = self.overlays.wants_pointer_hover() || self.application_wants_hover(sidebar);
+        sync_hover_tracking(out, hover).map_err(AttachError::Io)?;
         // The host's window title names the session and the tab in view.
         let ws = &self.mirror.workspace;
         let window = ws.groups.get(ws.active).map_or_else(String::new, |w| {
@@ -95,6 +96,29 @@ impl super::SessionLoop {
         self.repaint_after_resync(out, sidebar, needs_resync);
         crate::attach::render_prof::tick();
         Ok(())
+    }
+
+    /// Hidden tabs and zoomed-away panes must not keep host hover capture on.
+    pub(super) fn application_wants_hover(&self, sidebar: Option<SidebarReservation>) -> bool {
+        let visible = super::view_rects(
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            self.content(sidebar),
+            self.viewport_dims,
+        );
+        visible
+            .keys()
+            .chain(crate::attach::floating::floating_pane(&self.mirror.panes))
+            .filter(|id| !self.mouse_optout.contains(*id))
+            .filter(|id| !crate::attach::pane_state::pane_exited(&self.mirror.panes, id))
+            .any(|id| {
+                crate::attach::pane_state::published_terminal(&self.mirror.engine_kernel, id)
+                    .is_some_and(|terminal| {
+                        terminal
+                            .mode(libghostty_vt::mode::Mode::ANY_MOUSE)
+                            .unwrap_or(false)
+                    })
+            })
     }
 
     /// Mark the focused pane seen (demoting its attention-ladder row) and

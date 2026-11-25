@@ -4,8 +4,8 @@ use phux_protocol::ids::{
     AuthorityId, KEY_MIN_PREFIX, ResourceKey, ResourceKind, Revision, SessionId, SessionKey,
 };
 use phux_protocol::wire::frame::{
-    ArrangementValue, Command, CommandValue, ExecState, OrgFilter, OrganizationPage, Outcome,
-    ResourceRecord, SessionRecord,
+    ArrangementValue, Command, CommandValue, OrgFilter, OrganizationPage, ResourceRecord,
+    SessionRecord,
 };
 
 use crate::attach::connection::Connection;
@@ -133,20 +133,14 @@ impl OrgInventory {
         }
     }
 
-    /// Resources whose activation ended because a server stopped while it
-    /// ran (outcome unobserved), optionally only in `session`: what
-    /// `phux restore` relaunches.
+    /// Resources a server stop ended ([`ResourceRecord::ended_by_restart`]),
+    /// optionally only in `session`: what `phux restore` relaunches.
     #[must_use]
     pub fn ended_by_restart(&self, session: Option<&SessionKey>) -> Vec<&ResourceRecord> {
         self.resources
             .iter()
             .filter(|resource| session.is_none_or(|key| resource.session == *key))
-            .filter(|resource| {
-                resource.activation.is_some_and(|activation| {
-                    activation.state == ExecState::Completed
-                        && activation.outcome == Some(Outcome::Unobserved)
-                })
-            })
+            .filter(|resource| resource.ended_by_restart())
             .collect()
     }
 

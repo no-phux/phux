@@ -105,13 +105,15 @@ fn try_recv_drains_a_burst_without_waiting() {
 #[test]
 fn a_write_into_a_closed_peer_is_recorded_and_recv_reports_the_eof() {
     block_on(async {
-        let (mut client, peer) = pair();
-        // Shut the socket itself down, not just this handle: a child another
-        // test is spawning may hold a copy of the descriptor until it execs.
-        peer.into_std()
-            .expect("std socket")
-            .shutdown(std::net::Shutdown::Both)
-            .expect("shutdown");
+        let (mut near, peer) = UnixStream::pair().expect("socketpair");
+        drop(peer);
+        // A child another test is spawning may hold a copy of the peer until
+        // it execs, and writes succeed until that copy closes too. Only then
+        // does the EOF arrive, so wait for it. (No `shutdown` on the peer: on
+        // Darwin that gives the EOF early and still accepts the write.)
+        let read = tokio::time::timeout(WEDGE_TIMEOUT, near.read(&mut [0u8; 1])).await;
+        assert_eq!(read.expect("peer closes").expect("read"), 0);
+        let mut client = Session::from_stream(near);
         assert!(!client.write_hit_closed_peer());
         let resize = FrameKind::ResizeTerminal {
             terminal_id: ResourceId::local(1),

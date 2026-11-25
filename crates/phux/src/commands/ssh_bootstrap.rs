@@ -263,8 +263,7 @@ fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
         code => {
             let status = code.map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
             return Err(Failure::Fallback(format!(
-                "`{} bootstrap` failed on {} ({status}); a phux there older than ssh bootstrap \
-                 cannot open a listener",
+                "`{} bootstrap` failed on {} ({status}; see above), so it opened no listener",
                 args.remote_phux, args.destination
             )));
         }

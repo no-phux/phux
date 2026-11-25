@@ -84,7 +84,9 @@ QUIC, so it survives network changes. The listener and its token live only
 in memory and go away shortly after you detach. `--udp-ports 60000-61000`
 keeps the listener in a range one firewall rule can cover.
 
-If UDP can't get through, phux says why and carries the session through
+The remote server opens that listener only in `paired` mode, and admits only
+a client certificate it enrolled. If it refuses, or UDP can't get through, phux
+says why and carries the session through
 `ssh` itself. That does not roam: on a network drop phux logs in again and
 re-attaches. phux remembers a host whose UDP didn't answer for a day
 (`udp-unanswered` in the state directory) and keeps probing UDP in the

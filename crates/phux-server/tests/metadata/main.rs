@@ -25,4 +25,5 @@ mod metadata_reply;
 mod path_query;
 mod perf_control;
 mod service_http;
+mod unseen;
 mod whoami;

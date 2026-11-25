@@ -227,12 +227,12 @@ pub(super) fn render_listing(
     view: StateView,
     agents: &HashMap<ResourceId, AgentRecord>,
 ) -> ExitCode {
-    let organization = view.organization().cloned();
-    let (snapshot, degradation) = view.into_parts();
     if json {
         // Not stderr: a `--json` consumer's channel is the document.
-        return print_sessions_json(&snapshot, organization.as_ref(), &degradation);
+        return print_sessions_json(&view);
     }
+    let organization = view.organization().cloned();
+    let (snapshot, degradation) = view.into_parts();
     let sources = Sources {
         snapshot: &snapshot,
         organization: organization.as_ref(),

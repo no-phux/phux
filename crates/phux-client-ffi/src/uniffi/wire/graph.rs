@@ -179,6 +179,9 @@ pub struct ResourceRecordDescriptor {
     pub revision: u64,
     /// The live terminal id while it executes here.
     pub live: Option<String>,
+    /// Whether a server stop ended it, so restore relaunches it.
+    #[uniffi(default)]
+    pub ended_by_restart: bool,
 }
 
 impl From<&ResourceRecord> for ResourceRecordDescriptor {
@@ -192,6 +195,7 @@ impl From<&ResourceRecord> for ResourceRecordDescriptor {
             activation: record.activation.as_ref().map(Into::into),
             revision: record.revision.get(),
             live: record.live.as_ref().map(id::encode),
+            ended_by_restart: record.ended_by_restart(),
         }
     }
 }
@@ -434,6 +438,7 @@ mod tests {
                 foreground: None,
                 icon: None,
                 parent: None,
+                unseen: None,
             }],
             agent_sessions: vec![AgentSessionDescriptor {
                 id: ResourceId::local(8),

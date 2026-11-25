@@ -54,6 +54,7 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
         foreground: None,
         icon: None,
         parent: None,
+        unseen: None,
     }
 }
 

@@ -108,7 +108,7 @@ pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Resul
 }
 
 /// Whether any-motion reporting (`?1003h`) is raised on top of capture;
-/// only a hover-tracking context menu consumes it.
+/// a context menu or visible any-motion application consumes it.
 static HOVER_TRACKING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Reconcile any-motion reporting with `want`; never raised without capture.

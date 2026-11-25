@@ -58,7 +58,9 @@ fn malformed_upload_arguments_do_not_connect_or_read() {
 fn upload_retains_multichunk_and_empty_files_without_attaching() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("uploads");
+    // Silent: a shell's prompt would mark the pane unseen between the listings.
     let server = ServerGuard::builder("upload-retain")
+        .seed_command("exec sleep 600")
         .env("PHUX_UPLOAD_DIR", &root)
         .start();
     let source = dir.path().join("local.bin");

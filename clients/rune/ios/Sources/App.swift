@@ -134,8 +134,14 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             } catch { probe.preparationFailure(error.localizedDescription); self?.show(error.localizedDescription) }
         }
     }
+    /// The schemes the bundle declares (build.py `--url-scheme`), so a
+    /// distributor's own scheme pairs exactly like the preview's.
+    private static let pairingSchemes: Set<String> = Set(
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? [])
+            .flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] })
+
     func importPairing(_ url: URL) {
-        guard url.scheme == "phux-rune" else { return }
+        guard let scheme = url.scheme, Self.pairingSchemes.contains(scheme) else { return }
         guard started else { pendingLink = url.absoluteString; return }
         connection(link: url.absoluteString)
     }

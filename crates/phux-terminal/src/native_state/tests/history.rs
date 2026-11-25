@@ -83,6 +83,24 @@ fn oversized_image_unit_is_refused_before_ready_without_losing_the_source() {
         NativeStateError::LimitExceeded
     );
     assert!(manager.try_terminal().is_some());
+    let limits = BootstrapLimits::clamped(
+        phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+        phux_protocol::MAX_HISTORY_PAGE_BYTES,
+    );
+    let (cursor, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+    let image = history_at(&manager, &cursor, 0, max_bytes, max_rows).unwrap();
+    assert_eq!(image.rows, 0);
+    assert!(
+        image.bytes.len() > usize::try_from(phux_protocol::DEFAULT_HISTORY_PAGE_BYTES).unwrap()
+    );
+    assert!(!image.finish);
+    assert!(
+        history_at(&manager, &cursor, 1, max_bytes, max_rows)
+            .unwrap()
+            .finish
+    );
+    drop(image);
+    manager.release_generation(&cursor).unwrap();
     manager.vt_write(b"\x1b_Ga=d,d=A,q=2;\x1b\\live-after-refusal");
     let capture = manager.capture(BootstrapLimits::default()).unwrap();
     manager.abort_generation_capture(capture);

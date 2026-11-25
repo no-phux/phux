@@ -68,6 +68,7 @@ Agents:
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
   notify-mode   Mute or unmute a pane's notifications
+  seen          Mark a pane seen on every client
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
@@ -2119,10 +2120,13 @@ Remote host:
                                   and 2FA prompts work) and exits once the
                                   session is up; the session itself rides QUIC,
                                   so it roams and renders locally. Needs no
-                                  pairing, service, or overlay network on the
-                                  host. When UDP cannot reach it, the local
-                                  client attaches through ssh itself. The host
-                                  is anything ssh accepts, including
+                                  service or overlay network on the host. The
+                                  host opens that listener only under `[policy]
+                                  mode = "paired"`, and admits only an enrolled
+                                  client certificate (`PHUX_WORKLOAD_CERT`).
+                                  Without both, or when UDP cannot reach it, the
+                                  local client attaches through ssh itself. The
+                                  host is anything ssh accepts, including
                                   `ssh://user@host:port` and aliases from
                                   `~/.ssh/config`.
       --remote-phux <PATH>        The `phux` to run on the `--ssh` host, for
@@ -2143,7 +2147,8 @@ Attach role:
       --take                      Attach and take the wheel: seize the input
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
-                                  stays attached. `phux give` hands it back.
+                                  stays attached. The `give-input` key or a
+                                  detach hands it back.
       --lock-size                 Lock this client's view size: while it is
                                   attached, other clients see its panes
                                   letterboxed or cropped instead of resizing
@@ -3485,8 +3490,9 @@ Global flags:
 ```text
 Give back input control taken with `take`
 
-Releases the input lease taken with `phux take`, returning the pane to open
-input. A no-op if you do not hold the lease. TARGET is a selector.
+Releases the input lease this command's connection holds. Another connection's
+lease (a `phux attach --take`) is left alone: release that with its `give-input`
+key or by detaching. A no-op if you do not hold the lease. TARGET is a selector.
 
 Usage: phux give [--json] <TARGET>
 
@@ -6975,6 +6981,35 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux seen`
+
+```text
+Clear a pane's unseen mark.
+
+The server marks a pane when it prints, rings its bell, or its agent finishes
+while no client reports showing it. `phux ls --json` lists the mark as `unseen`.
+Clearing it clears it on every client. A session, group or tag target clears
+every pane it holds now.
+
+Examples:
+phux seen @4
+phux seen work
+
+Usage: phux seen [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The pane, or the session, group or tag whose panes to clear.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux send-keys`
 
 ```text
@@ -7170,9 +7205,8 @@ Keep a server running across logout and reboot
 Generates this host's native per-user service unit — a `launchd` `LaunchAgent`
 on macOS, a systemd user unit on Linux — with the server's environment baked in,
 so a rebooted host comes back with a server instead of waiting for someone to
-log in and start one. A restarted server has no terminals: every pane's process
-died with the host. `install --restore` brings back session names, layout, and
-cwd, not running processes.
+log in and start one. A restarted server keeps its sessions, but every pane's
+process died with the host: `phux restore` relaunches them.
 
 Usage: phux service <SUBCOMMAND>
 
@@ -7914,8 +7948,10 @@ Take exclusive input control of a pane
 Seizes exclusive input authority over the resolved pane: while held, only this
 connection's input reaches the PTY — every other client's keystrokes (and any
 agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
-is driving. Release with `phux give`. TARGET is a selector (see the top-level
-help).
+is driving. TARGET is a selector (see the top-level help).
+
+The lease belongs to this command's connection, so it ends when the command
+exits. To keep the wheel, use `phux attach --take` or the `take-input` key.
 
 Usage: phux take [--ttl <SECS>] [--json] <TARGET>
 
@@ -7923,11 +7959,11 @@ Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
-      --ttl <SECS>     Auto-release after this many seconds — the server, not
-                       this process, enforces it, so it survives this command
-                       exiting. Omit to hold the lease until `phux give` or a
-                       disconnect, today's default. The wire's `ttl_ms` is a
-                       `u32`, so this caps at 4294967 (about 49.7 days).
+      --ttl <SECS>     Have the server release the lease after this many
+                       seconds, if this command's connection has not ended
+                       first. It never extends the lease past the command's
+                       exit. The wire's `ttl_ms` is a `u32`, so this caps at
+                       4294967 (about 49.7 days).
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.

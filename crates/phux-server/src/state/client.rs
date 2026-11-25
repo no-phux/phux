@@ -52,6 +52,8 @@ pub struct AttachedClient {
     /// The last size and cell size this view set on each Terminal with
     /// `RESIZE_TERMINAL`, put back when it claims the size lock.
     pub explicit_sizes: HashMap<ResourceId, ExplicitSize>,
+    /// Panes this view reports showing (`phux.in-view/v1`).
+    pub in_view: std::collections::HashSet<phux_protocol::ids::ResourceId>,
     /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
     /// observe-only too.
     pub viewer: bool,
@@ -212,6 +214,7 @@ impl ServerState {
                     active_seq: 0,
                     size_lock_seq: 0,
                     explicit_sizes: HashMap::new(),
+                    in_view: std::collections::HashSet::new(),
                     viewer: false,
                     publication_gate: None,
                 },

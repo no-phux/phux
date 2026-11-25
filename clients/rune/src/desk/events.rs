@@ -37,6 +37,9 @@ impl Desk {
         if let Some(topology) = observation.topology.take()
             && self.connection.topology.as_ref() != Some(&topology)
         {
+            for pane in &topology.panes {
+                self.activities.marked(&pane.terminal_id, pane.unseen);
+            }
             self.connection.topology = Some(topology);
             changed = true;
         }
@@ -212,6 +215,7 @@ impl Desk {
             | Event::OrganizationChanged
             | Event::BackgroundWork { .. } => true,
             Event::Attached { .. } => {
+                self.connection.in_view.clear();
                 if self.connection.size_locked {
                     self.claim_size_lock(true);
                 }

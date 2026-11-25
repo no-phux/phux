@@ -1,12 +1,10 @@
 # Build the static plugin index from the public GitHub topic `phux-plugin`
-# and the in-repo examples. The generator validates each manifest with the
-# same loader as `phux plugin validate`.
+# and the in-repo examples. The generator (crates/phux-plugin-index)
+# validates each manifest with the same loader as `phux plugin validate`;
+# its tests, clippy, and cargo-deny run in the workspace CI lanes.
 #
-# Pull requests that touch the generator run the offline tests and write an
-# index of the example plugins from fixtures, so the log shows those plugins
-# without querying GitHub. schedule and workflow_dispatch query the public
-# API. GITHUB_TOKEN is sent only on that networked build, and only to raise
-# the rate limit.
+# schedule and workflow_dispatch query the public API. GITHUB_TOKEN is sent
+# only to raise the rate limit.
 #
 # The file is an artifact. Publishing it is a separate decision.
 
@@ -16,15 +14,6 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "scripts/plugin-index/**"
-      - ".github/workflows/plugin-index.yml"
-      - "docs/spec/plugin-index.schema.json"
-      - "docs/plugins.md"
-      - "crates/phux-config/**"
-      - "crates/phux-config-core/**"
-      - "crates/phux-protocol/**"
 
 permissions:
   contents: read
@@ -35,64 +24,24 @@ concurrency:
 
 jobs:
   index:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
-    env:
-      RUSTFLAGS: "-Dwarnings"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: ./.github/actions/setup-rust-lane
         with:
-          toolchain: 1.99.1
-
-      # scripts/plugin-index is its own workspace, so the root `cargo deny check`
-      # never reads this lockfile. Same deny.toml, same 0.20.2 pin as mise.toml.
-      # The shell check runs first so a stale lock names the regenerate command
-      # before --locked refuses to rewrite it.
-      - name: Check the generator lockfile
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          bash scripts/plugin-index/check-toml-version.sh
-          version=0.20.2
-          archive="cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz"
-          # Through the API: releases/download can 504 one asset for hours.
-          gh release download "$version" --repo EmbarkStudios/cargo-deny --pattern "$archive" --dir "$RUNNER_TEMP"
-          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
-          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
-          "${RUNNER_TEMP}/cargo-deny-${version}-x86_64-unknown-linux-musl/cargo-deny" \
-            --manifest-path scripts/plugin-index/Cargo.toml \
-            --config deny.toml \
-            --locked \
-            check
-
-      - name: Test the generator offline
-        run: cargo test --locked --manifest-path scripts/plugin-index/Cargo.toml
-
-      - name: Build the example index offline
-        if: github.event_name == 'pull_request'
-        run: |
-          set -euo pipefail
-          cargo run --locked --manifest-path scripts/plugin-index/Cargo.toml -- \
-            --offline scripts/plugin-index/fixtures/examples-only \
-            --examples examples/plugins \
-            --repo-root . \
-            --generated-at 2026-01-15T00:00:00Z \
-            --out "${RUNNER_TEMP}/plugin-index"
-          echo '--- plugin-index.json ---'
-          cat "${RUNNER_TEMP}/plugin-index/plugin-index.json"
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          cache-lane: check
 
       - name: Build the index from GitHub
-        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cargo run --locked --manifest-path scripts/plugin-index/Cargo.toml -- \
+          nix develop -c cargo run --locked -p phux-plugin-index -- \
             --examples examples/plugins \
             --repo-root . \
             --out "${RUNNER_TEMP}/plugin-index"

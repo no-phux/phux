@@ -214,9 +214,8 @@ pub(crate) struct RelayArgs {
 /// `LaunchAgent` on macOS, a systemd user unit on Linux — with the
 /// server's environment baked in, so a rebooted host comes back with a
 /// server instead of waiting for someone to log in and start one.
-/// A restarted server has no terminals: every pane's process died with
-/// the host. `install --restore` brings back session names, layout, and
-/// cwd, not running processes.
+/// A restarted server keeps its sessions, but every pane's
+/// process died with the host: `phux restore` relaunches them.
 #[derive(Debug, Args)]
 pub(crate) struct ServiceArgs {
     #[usage(subcommand)]

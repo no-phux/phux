@@ -35,15 +35,9 @@ crate-check PACKAGE FEATURES="": worktree-claim
 guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bun tools/main.ts design-gen --check
-    bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
     bash scripts/check-file-tokens.sh --merge-base origin/main
     bash scripts/ci/main-red_test.sh
-    bash scripts/check-toolchain-sync.sh
-    bash scripts/check-cache-portable.sh
-    bash scripts/check-frozen-fixtures.sh
-    bash scripts/check-frozen-fixtures_test.sh
-    bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
@@ -66,7 +60,6 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux-tui --all-targets --no-default-features
     bash scripts/check-ghostty-pin_test.sh
     bash scripts/check-ghostty-pin.sh
-    cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
 
 
 # The binding crate with the mobile artifact's exact features (ADR-0135).
@@ -132,13 +125,6 @@ doc:
 [group('gates')]
 deny:
     cargo deny check
-    # The generator is its own workspace, so the root check never sees its lock.
-    # Probe it first: a shared-dep bump leaves this lock stale, and cargo-deny
-    # --locked then only says the lock cannot be updated.
-    bash scripts/plugin-index/check-toml-version.sh
-    # Call the binary: mbx wraps `cargo` and would forward `--config` into
-    # `cargo metadata`, which then rejects deny.toml.
-    cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level

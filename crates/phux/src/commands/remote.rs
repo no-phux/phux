@@ -243,7 +243,7 @@ pub(crate) fn pin_authority(
     {
         warn!(
             "{name}: could not pin its certificate authority ({err}); \
-             the first connection pins it instead"
+             pair it again to pin it"
         );
     }
 }

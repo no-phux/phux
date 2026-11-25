@@ -38,6 +38,8 @@ is linked **without provisioning or distribution signing**, not installable
 device qualification. Do not install it over another app or use production
 Phux to run a test.
 
+Another app identity: [Distribution](./DISTRIBUTION.md).
+
 ### Direct installation without TestFlight
 
 `build.py --target device` still produces an unsigned bundle. To make an

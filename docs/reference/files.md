@@ -56,7 +56,14 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── remote-key.pem      # its private key (owner-only, 0600)
 ├── remote-tokens       # structured credential store (owner-only, 0600)
 ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)
+├── workload-ca.pem     # workload certificate authority
+├── workload-ca.key     # its private key (owner-only, 0600)
+├── workload-keys       # client keys the server admits
 ├── workload-org-roots/ # each organization's root certificates (owner-only)
+├── org/                # organization store: sessions, panes, and their records
+├── remotes/            # credentials for each `[[remote]]` host
+├── satellites/         # credentials for each `[[satellites]]` host
+├── relay-cert.pem, relay-key.pem, relay-tokens  # `phux relay`
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
 ├── chats/              # private explicit conversation records and native identity files
 ├── ideas/              # phux idea spool, one file per unsent capture
@@ -73,6 +80,10 @@ $XDG_STATE_HOME/<profile-dir>/
 - `remote-cert.pem` / `remote-key.pem` are the TLS pair auto-provisioned for remote consumers: issued by the workload CA (`workload-ca.pem`), the certificate file holding the leaf then the CA, or self-signed when provisioned before that. `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated (`phux workload authority --rotate` replaces it on purpose), so the pinned fingerprint stays stable -- which also means its subjectAltName set is fixed at generation; `phux doctor` reports whether it names the address phux advertises, and (`remote-cert-chain`) whether an auto-provisioned leaf still fails to chain to the workload CA, which blocks phone QR enrollment.
 - `remote-tokens` is the versioned verifier-only credential store the server reads and `phux pair`, `phux pair rotate`, and `phux pair revoke` update under an exclusive lock on its owner-controlled, non-group/world-writable parent directory, re-checked after locking so a replaced directory cannot split concurrent writers (a `.remote-tokens.lock` left by an older binary is ignored). Store commits use a synced temporary file and atomic rename. The store must be a regular, non-symlink file of at most 4 MiB owned by the effective user with no group/world permissions, in a directory only that user can change; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those checks. A store of legacy anonymous token lines is refused: remove it and pair again.
 - `enrollment-tickets` holds the SHA-256 of each single-use ticket `phux pair --enroll` minted (never the ticket), with the scope and lifetime the credential it enrolls gets; the first redemption consumes it. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
+- `workload-ca.pem` / `workload-ca.key` are the authority that issues client certificates and the auto-provisioned server leaf; `workload-keys` is the registry of client keys it admits. `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY` and `PHUX_WORKLOAD_KEYS` move them.
+- `org/` is what the server keeps across a restart. The profile's own socket uses `org/v1.sqlite3`; any other socket uses `org/sockets/<escaped socket path>.v1.sqlite3`. SQLite keeps `-wal` and `-shm` files beside each.
+- `remotes/` holds, per host, the bearer token `<name>.token` and the enrolled client identity `<name>.client.<digest>.pem` and `.key`. `satellites/` holds a hub's `<name>.token` files.
+- `relay-cert.pem`, `relay-key.pem` and `relay-tokens` (the route-token store) belong to `phux relay`. They are not profile-scoped: always `$XDG_STATE_HOME/phux`.
 - `workload-org-roots/` holds `<org>.pem`, the root certificates `phux workload sync-managed` was handed for that organization, mode `0600` in a `0700` directory. A paired listener trusts them beside the workload CA and re-reads them when they change. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
 - `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per idea that does not yet have a 2xx). The file keeps the idempotency key. A network failure leaves it; the next `phux idea` sends those same bytes. A 2xx removes it.
 - `audit/` holds the `phux.audit/v1` log (`audit.jsonl`, rotated at 64 MiB to `audit.jsonl.1`..`.4`), its ed25519 signing key `audit-key` (owner-only, `0600`) and the public half `audit-key.pub`. The server appends one hash-chained, signed record per decision; `phux audit tail` and `phux audit verify` read it with no server. See [Audit log](../security.md#audit-log).

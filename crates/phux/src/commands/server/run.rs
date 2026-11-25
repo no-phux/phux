@@ -321,6 +321,7 @@ pub(crate) fn run_server(
         webtransport,
     )
     .on_listening(move |listeners| {
+        crate::terminal_browser::install(&socket_path);
         let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
         info!(
             "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",

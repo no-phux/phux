@@ -138,6 +138,10 @@ pub struct DelegationBlob {
 pub struct MetadataBlob {
     /// The Group's wire id, or `None` for Global scope.
     pub group: Option<u32>,
+    /// The pane's wire id, for pane metadata (an unseen mark). Additive: an
+    /// older reader stores it at Global scope, where nothing reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
     /// The metadata key.
     pub key: String,
     /// The stored value.

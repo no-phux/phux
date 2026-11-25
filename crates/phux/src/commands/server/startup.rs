@@ -54,8 +54,10 @@ pub(super) fn browser_shim(enabled: bool) {
     if !enabled {
         return;
     }
-    let path = phux_config::instance::state_dir().join("phux-browser");
-    let written = std::fs::write(&path, BROWSER_SHIM)
+    let dir = phux_config::instance::state_dir();
+    let path = dir.join("phux-browser");
+    let written = phux_server::owner_dir::create(&dir)
+        .and_then(|()| std::fs::write(&path, BROWSER_SHIM))
         .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)));
     match written {
         Ok(()) => phux_terminal_api::launch::set_pane_env(vec![("BROWSER".into(), path.into())]),

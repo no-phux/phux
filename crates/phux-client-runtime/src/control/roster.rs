@@ -8,15 +8,17 @@
 //! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md),
 //! and the server-owned `phux.pane-occupant/v1` record's background flag
 //! ([`Event::BackgroundWork`]) and foreground name, which names the pane
-//! (`PaneDescriptor::label`). `phux.parent/v1` sets `PaneDescriptor::parent`.
+//! (`PaneDescriptor::label`). `phux.parent/v1` sets `PaneDescriptor::parent`,
+//! and `phux.unseen/v1` `PaneDescriptor::unseen`.
 //! `AgentAsked` only announces a question; the flag is the level that says
 //! whether one is still pending, so it is what retracts a question after a
 //! gap or a reconnect instead of leaving it to resurrect.
 
 use phux_protocol::caps::Layer;
 use phux_protocol::wire::frame::{
-    PaneNotify, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY, RESOURCE_NOTIFY_KEY,
-    RESOURCE_PANE_OCCUPANT_KEY, RESOURCE_PARENT_KEY, Scope, decode_pane_parent,
+    PaneNotify, PaneUnseen, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, RESOURCE_NOTE_KEY,
+    RESOURCE_NOTIFY_KEY, RESOURCE_PANE_OCCUPANT_KEY, RESOURCE_PARENT_KEY, RESOURCE_UNSEEN_KEY,
+    Scope, decode_pane_parent,
 };
 
 use super::{
@@ -73,16 +75,19 @@ enum RosterKey {
     Notify,
     /// `phux.parent/v1`: the pane it was started from.
     Parent,
+    /// `phux.unseen/v1`: what happened since anyone last looked.
+    Unseen,
 }
 
 impl RosterKey {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Agent,
         Self::Asked,
         Self::Occupant,
         Self::Note,
         Self::Notify,
         Self::Parent,
+        Self::Unseen,
     ];
 
     const fn wire(self) -> &'static str {
@@ -93,6 +98,7 @@ impl RosterKey {
             Self::Note => RESOURCE_NOTE_KEY,
             Self::Notify => RESOURCE_NOTIFY_KEY,
             Self::Parent => RESOURCE_PARENT_KEY,
+            Self::Unseen => RESOURCE_UNSEEN_KEY,
         }
     }
 
@@ -106,7 +112,7 @@ impl RosterKey {
         // when its own server is attached.
         !matches!(
             self,
-            Self::Occupant | Self::Note | Self::Notify | Self::Parent
+            Self::Occupant | Self::Note | Self::Notify | Self::Parent | Self::Unseen
         )
     }
 
@@ -295,6 +301,15 @@ impl ControlPlane {
                     .as_deref()
                     .and_then(decode_pane_parent)
                     .map(ResourceId::local);
+                Event::TopologyChanged
+            }
+            RosterKey::Unseen => {
+                let Some(pane) =
+                    (self.topology.as_mut()).and_then(|topology| topology.pane_mut(&terminal_id))
+                else {
+                    return;
+                };
+                pane.unseen = value.as_deref().and_then(PaneUnseen::decode);
                 Event::TopologyChanged
             }
             RosterKey::Note => Event::Note {

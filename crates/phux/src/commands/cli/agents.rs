@@ -81,18 +81,21 @@ pub(crate) struct LaunchArgs {
 /// Seizes exclusive input authority over the resolved pane: while held,
 /// only this connection's input reaches the PTY — every other client's
 /// keystrokes (and any agent's `send-keys`) are locked out. Use it to
-/// grab control of a pane an agent is driving. Release with `phux give`.
-/// TARGET is a selector (see the top-level help).
+/// grab control of a pane an agent is driving. TARGET is a selector (see
+/// the top-level help).
+///
+/// The lease belongs to this command's connection, so it ends when the
+/// command exits. To keep the wheel, use `phux attach --take` or the
+/// `take-input` key.
 #[derive(Debug, Args)]
 pub(crate) struct TakeArgs {
     /// Target selector (resolves to one pane).
     pub(crate) target: String,
 
-    /// Auto-release after this many seconds — the server, not this
-    /// process, enforces it, so it survives this command exiting. Omit
-    /// to hold the lease until `phux give` or a disconnect, today's
-    /// default. The wire's `ttl_ms` is a `u32`, so this caps at
-    /// 4294967 (about 49.7 days).
+    /// Have the server release the lease after this many seconds, if
+    /// this command's connection has not ended first. It never extends
+    /// the lease past the command's exit. The wire's `ttl_ms` is a
+    /// `u32`, so this caps at 4294967 (about 49.7 days).
     #[usage(
         long,
         value_name = "SECS",
@@ -107,8 +110,10 @@ pub(crate) struct TakeArgs {
 
 /// Give back input control taken with `take`
 ///
-/// Releases the input lease taken with `phux take`, returning the pane to
-/// open input. A no-op if you do not hold the lease. TARGET is a selector.
+/// Releases the input lease this command's connection holds. Another
+/// connection's lease (a `phux attach --take`) is left alone: release that
+/// with its `give-input` key or by detaching. A no-op if you do not hold
+/// the lease. TARGET is a selector.
 #[derive(Debug, Args)]
 pub(crate) struct GiveArgs {
     /// Target selector (resolves to one pane).
@@ -175,6 +180,28 @@ pub(crate) struct NotifyModeArgs {
     /// The mode.
     #[usage(value_enum)]
     pub(crate) mode: NotifyModeArg,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
+}
+
+/// Mark a pane seen.
+#[derive(Debug, Args)]
+#[usage(
+    about = "Mark a pane seen on every client",
+    long_about = "Clear a pane's unseen mark.\n\n\
+            The server marks a pane when it prints, rings its bell, or its \
+            agent finishes while no client reports showing it. `phux ls \
+            --json` lists the mark as `unseen`. Clearing it clears it on \
+            every client. A session, group or tag target clears every pane \
+            it holds now.\n\n\
+            Examples:\n  \
+            phux seen @4\n  \
+            phux seen work"
+)]
+pub(crate) struct SeenArgs {
+    /// The pane, or the session, group or tag whose panes to clear.
+    pub(crate) target: String,
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,

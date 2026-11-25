@@ -66,6 +66,7 @@ mod roles;
 mod session_table;
 mod sessions;
 mod snapshot;
+pub(crate) mod unseen;
 pub(crate) mod upgrade_blob;
 mod viewport;
 

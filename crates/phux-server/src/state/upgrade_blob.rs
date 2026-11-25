@@ -89,8 +89,10 @@ impl ServerState {
             .map(|(group, key, value)| MetadataBlob {
                 group: group.map(phux_protocol::ids::GroupId::get),
                 key: key.to_owned(),
+                pane: None,
                 value: value.to_vec(),
             })
+            .chain(self.unseen_blobs())
             .collect();
         blob
     }

@@ -109,6 +109,16 @@ impl MetadataStore {
         group.chain(global)
     }
 
+    /// Every local pane's value stored at `key`, by wire id, for an upgrade.
+    pub(crate) fn local_entries<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> impl Iterator<Item = (u32, &'a [u8])> {
+        self.terminal
+            .iter()
+            .filter_map(move |(id, values)| Some((id.local_id()?, values.get(key)?.as_slice())))
+    }
+
     /// Every Resource-scope value stored at `key`.
     pub(crate) fn resource_values<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a [u8]> {
         self.terminal
@@ -323,6 +333,7 @@ impl ServerState {
             && key == phux_protocol::wire::frame::RESOURCE_AGENT_KEY
         {
             crate::push::on_agent_record(self, pane, prev.as_deref(), &value);
+            self.mark_unseen_finish(pane, prev.as_deref(), &value);
         }
         let delivered = self.broadcast_metadata_change(scope, key, Some(&value), writer);
         let _ = self.metadata.set(scope, key, value);
