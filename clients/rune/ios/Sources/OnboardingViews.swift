@@ -72,7 +72,9 @@ final class PairingActionCell: UITableViewCell {
         style.title = title
         style.buttonSize = .large
         style.baseBackgroundColor = prominent ? tint : nil
-        style.baseForegroundColor = prominent ? .white : tint
+        // The accent is light in dark mode and dark in light: its label is the
+        // ground's colour, not white.
+        style.baseForegroundColor = prominent ? .systemBackground : tint
         if prominent {
             style.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
                 var outgoing = incoming

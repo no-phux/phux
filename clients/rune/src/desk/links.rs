@@ -42,7 +42,7 @@ pub struct Pointer {
 }
 
 impl Desk {
-    fn link_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Link> {
+    pub(super) fn link_at(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Link> {
         let (frame, col, row) = self.cell_at(terminal, x, y)?;
         links::at(&frame, col, row)
             .or_else(|| self.handled_word(&frame, col, row))

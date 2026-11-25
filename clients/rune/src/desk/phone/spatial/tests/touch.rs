@@ -221,6 +221,23 @@ fn a_hold_selects_by_words_and_lifting_copies_the_selection() {
 }
 
 #[test]
+fn a_hold_on_a_url_copies_it_with_its_scheme() {
+    let (client, mut rt) = fixture(true);
+    output(&client, 1, 1, b"\x1b[2J\x1b[Hsee https://phux.sh/a now\r\n");
+    poll(&mut rt);
+    let [x, y] = rt.state.connection.origins[&id(1)];
+    let m = rt.state.metrics();
+    let (x, y) = (x + 14.5 * m.cell_w, y + 0.5 * m.cell_h);
+    touch(&mut rt, Started, x, y);
+    tick(&mut rt, 1.0);
+    tick(&mut rt, 1.4);
+    touch(&mut rt, Ended, x, y);
+    let copied = rt.copy_request.take().expect("lifting copies");
+    assert_eq!(copied.content().text(), "https://phux.sh/a");
+    no_input(&client);
+}
+
+#[test]
 fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
     let (client, mut rt) = fixture(true);
     output(&client, 1, 1, b"\x1b[?1002h\x1b[?1006h");

@@ -245,6 +245,10 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             let hostname = name.contains(where: \.isLetter) && !name.contains(" ")
             configuration["name"] = hostname ? label : name
         }
+        let app = Bundle.main.infoDictionary ?? [:]
+        if let title = app["CFBundleDisplayName"] as? String, let version = app["CFBundleShortVersionString"] as? String {
+            configuration["app"] = "\(title) \(version)"
+        }
         let surface = RuneView(configuration:configuration)
         surface.qualification = probe
         probe?.surface = surface
@@ -300,6 +304,7 @@ private final class EmptyState: UIView {
         content.text = title
         content.secondaryText = detail
         content.button = .borderedProminent()
+        content.button.baseForegroundColor = .systemBackground // White on the light accent is unreadable.
         content.button.title = primary
         content.buttonProperties.primaryAction = UIAction { _ in action() }
         if let secondary, let other {
