@@ -19,6 +19,7 @@ use emit::{emit_buffer, emit_buffer_clipped};
 mod command;
 pub mod confirm;
 pub mod copy_mode;
+mod dismiss;
 mod emit;
 pub mod line_edit;
 pub mod menu;
@@ -160,6 +161,11 @@ pub trait RenderOverlay {
     /// pointer-pinned context menu does not, and is dropped on SIGWINCH.
     fn survives_resize(&self) -> bool {
         true
+    }
+
+    /// Whether it asks for an answer: another question waits its turn.
+    fn asks(&self) -> bool {
+        false
     }
 
     /// Re-derive cached geometry from the focused pane's new size after a
@@ -316,15 +322,6 @@ impl OverlayState {
         self.stack.iter().any(|o| o.wants_pointer_hover())
     }
 
-    /// Drop every overlay a resize invalidated
-    /// ([`RenderOverlay::survives_resize`]) anywhere in the stack, like native
-    /// menus close on resize. `true` when the stack changed.
-    pub fn dismiss_stale_on_resize(&mut self) -> bool {
-        let before = self.stack.len();
-        self.stack.retain(|overlay| overlay.survives_resize());
-        self.stack.len() != before
-    }
-
     /// Hand every surviving overlay the focused pane's new size; runs after
     /// [`Self::dismiss_stale_on_resize`].
     pub fn on_viewport_resize(&mut self, pane_cols: u16, pane_rows: u16) {
@@ -381,13 +378,6 @@ impl OverlayState {
     /// Pop the top overlay (no-op when empty).
     pub fn dismiss(&mut self) {
         self.stack.pop();
-    }
-
-    /// Drop every expired overlay; `true` when there was one.
-    pub fn dismiss_expired(&mut self) -> bool {
-        let before = self.stack.len();
-        self.stack.retain(|overlay| !overlay.expired());
-        self.stack.len() < before
     }
 
     /// Pop the top overlay when it is a passthrough notice (a job's

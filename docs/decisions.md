@@ -62,9 +62,12 @@ and docs, not a quiet rewrite. Retired records are
   only loopback plus `[forward] allow` targets and never resolves a client's
   name ([ssh](./ssh.md)).
 - ssh-agent forwarding brokers only key listings and signatures, so nothing
-  can add, remove or lock keys. Both sides opt in (`[forward] agent`,
-  `phux forward --agent`), and the client asks before each signature unless
-  run with `--yes`.
+  can add, remove or lock keys. Both sides opt in (`[forward] agent`; the
+  host's `forward-agent`, or `phux forward --agent`). Attached clients always
+  ask before each signature, default to no, and have no "always allow"; only
+  `phux forward --agent --yes` signs unasked. The newest serving connection
+  answers and the one before it takes over. The pane a question names is a
+  hint for the person, never an authorization.
 - A pane opens a link on a client through a typed request, not an escape
   sequence: printed bytes must never raise a prompt, nor every viewer see it.
   It reaches only the client typing in the pane. That client always asks,

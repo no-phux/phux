@@ -393,6 +393,10 @@ impl RenderOverlay for ClipboardReadOverlay {
         self.ui.invalidate();
     }
 
+    fn asks(&self) -> bool {
+        true
+    }
+
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;

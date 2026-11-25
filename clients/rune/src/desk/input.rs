@@ -215,6 +215,7 @@ impl Desk {
         if self.clipboard_read_key(event, tx).is_none()
             && self.clipboard_write_key(event, tx).is_none()
             && self.open_url_key(event, tx).is_none()
+            && self.agent_sign_key(event, tx).is_none()
         {
             self.confirm_key(event);
         }
@@ -393,7 +394,10 @@ impl Desk {
             // Answered through `confirm_pending_tx`, which can reach the
             // clipboard and the browser.
             Some(
-                Pending::ClipboardRead(..) | Pending::ClipboardWrite(..) | Pending::OpenUrl(_),
+                Pending::ClipboardRead(..)
+                | Pending::ClipboardWrite(..)
+                | Pending::OpenUrl(_)
+                | Pending::SshSign(_),
             ) => {}
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {

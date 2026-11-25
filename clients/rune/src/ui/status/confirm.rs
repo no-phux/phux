@@ -73,6 +73,17 @@ pub(super) fn question(
             ),
             keyed("Open", "Open (O)"),
         ),
+        Pending::SshSign(text) => (
+            text.clone(),
+            keyed(
+                "Sign",
+                if cfg!(target_os = "macos") {
+                    "Sign (⌘Return)"
+                } else {
+                    "Sign (Ctrl+Shift+Return)"
+                },
+            ),
+        ),
         Pending::CloseSession(_, name) => (
             format!("End session {name} and everything running in it?"),
             keyed("End session", "End session (Return)"),
@@ -84,17 +95,8 @@ pub(super) fn question(
 /// (`build (@4)`), or the address alone when nothing names it. A prompt
 /// that ends a terminal or hands it the clipboard says which one.
 fn called(desk: &Desk, id: &ResourceId) -> String {
-    let named = (desk.connection.topology.as_ref())
-        .and_then(|topology| topology.pane(id))
-        .and_then(|pane| {
-            phux_client_core::pane_label::pane_label(
-                pane.name.as_deref(),
-                pane.title.as_deref(),
-                pane.foreground.as_deref(),
-                pane.cwd.as_deref(),
-            )
-        });
-    named.map_or_else(|| id.to_string(), |name| format!("{name} ({id})"))
+    desk.pane_called(id)
+        .map_or_else(|| id.to_string(), |name| format!("{name} ({id})"))
 }
 
 /// The link a pane asks to open: its site, then all of it, scrolling in its

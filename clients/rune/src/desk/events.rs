@@ -137,6 +137,8 @@ impl Desk {
                     | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
+            event @ Event::Frame(_) => phux_client_runtime::control::forward::agent_request(event)
+                .is_some_and(|request| self.agent_request(request)),
             Event::ClipboardWrite { terminal_id, text } => {
                 self.clipboard_write(terminal_id, text.0, tx)
             }

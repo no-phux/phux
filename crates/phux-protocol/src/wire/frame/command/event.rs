@@ -356,8 +356,9 @@ pub enum AgentEvent {
     },
     /// One ssh-agent request from a pane on this server, sent only to the
     /// connection that offered its agent (`AGENT_OFFER`), which answers
-    /// with `AGENT_REPLY`. Unjournaled and server-scoped: no stamp, no
-    /// resource.
+    /// with `AGENT_REPLY`. Unjournaled: no stamp. The envelope names the
+    /// pane the request seems to come from, a hint only: `None` when the
+    /// server cannot tell, and from an older one.
     SshAgentRequest {
         /// Names the request in the reply.
         id: u64,

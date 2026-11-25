@@ -504,7 +504,7 @@ impl Desk {
 
 /// The exact chord a decision takes: ⌘ on macOS, Ctrl+Shift elsewhere, where
 /// Ctrl alone belongs to the reply field. Plain Return never qualifies.
-const fn decision_chord(mods: &Mods, macos: bool) -> bool {
+pub(super) const fn decision_chord(mods: &Mods, macos: bool) -> bool {
     mods.cmd && mods.shift != macos && !mods.alt
 }
 

@@ -16,6 +16,12 @@ impl super::super::SessionLoop {
         let Some((terminal, id, url)) = outcome.open_url.take() else {
             return;
         };
+        // One question at a time: a link never covers another.
+        if self.overlays.asking() {
+            tracing::info!(terminal_id = ?terminal, id, "link request declined: another question is up");
+            self.open_urls.borrow_mut().decline(&terminal, id);
+            return;
+        }
         let now = Instant::now();
         let asked = self
             .open_urls

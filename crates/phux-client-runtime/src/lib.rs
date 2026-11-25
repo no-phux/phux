@@ -1,6 +1,7 @@
 //! The client runtime: everything between the sans-IO session kernel and a
 //! language binding, implemented once (ADR-0133).
 //!
+//! - [`agent_forward`]: serve the local ssh-agent to a server's panes.
 //! - [`approvals`]: the server-held approval record and decision
 //!   (ADR-0128), shared by the one-shot verbs and the control plane.
 //! - [`target`]: resolve `[USER@]HOST[:PORT]` against the `[[remote]]`
@@ -38,6 +39,8 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod activation;
+#[cfg(unix)]
+pub mod agent_forward;
 pub mod approvals;
 pub mod connection;
 pub mod control;

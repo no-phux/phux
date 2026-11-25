@@ -158,6 +158,10 @@ impl Desk {
                 self.pending = link;
                 self.accept_open_url(tx);
             }
+            sign @ Some(Pending::SshSign(_)) => {
+                self.pending = sign;
+                self.answer_agent_question(true);
+            }
             other => {
                 self.pending = other;
                 self.confirm_pending();

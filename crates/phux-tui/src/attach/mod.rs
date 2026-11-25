@@ -6,6 +6,7 @@
 
 pub mod action_registry;
 pub mod actions;
+mod agent_forward;
 mod agent_rows;
 mod arrangement_link;
 mod attach_role;

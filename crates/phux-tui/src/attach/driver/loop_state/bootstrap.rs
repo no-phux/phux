@@ -170,6 +170,7 @@ impl super::SessionLoop {
         let sidebar = self.sidebar();
         self.size_workspace_panes(conn, sidebar).await?;
         self.subscribe_bootstrap(conn, subscribe_layout).await?;
+        self.offer_agent(conn).await?;
         // First attach of this process or after a reconnect: offer what a
         // restart ended.
         if let Some(job) = crate::attach::restore_hint::job(self.control_dial.as_deref()) {

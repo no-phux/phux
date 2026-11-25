@@ -105,13 +105,18 @@ impl OpenUrls {
         if link.is_some() {
             self.expires = Some(now + DEADLINE);
         } else {
-            self.answers.push(Answer {
-                terminal: terminal.clone(),
-                id,
-                link: None,
-            });
+            self.decline(terminal, id);
         }
         link
+    }
+
+    /// Decline a request unasked.
+    pub(in crate::attach) fn decline(&mut self, terminal: &ResourceId, id: u64) {
+        self.answers.push(Answer {
+            terminal: terminal.clone(),
+            id,
+            link: None,
+        });
     }
 }
 
@@ -312,6 +317,10 @@ impl RenderOverlay for OpenUrlOverlay {
 
     fn expired(&self) -> bool {
         Instant::now() >= self.expires
+    }
+
+    fn asks(&self) -> bool {
+        true
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {

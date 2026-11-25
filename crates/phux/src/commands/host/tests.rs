@@ -325,3 +325,43 @@ fn pausing_a_remote_writes_a_flag_the_registry_reads_back() {
     let cfg = phux_config::parse_with_defaults(&text, &path).expect("parses");
     assert!(cfg.remote[0].paused, "{text}");
 }
+
+/// Nothing that rewrites an entry drops what the host may use of the
+/// ssh-agent: not a rename or a pause, and not a re-enrollment.
+#[test]
+fn rewriting_a_remote_keeps_its_agent_settings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "[[remote]]\nname = 'mini'\nendpoint = 'ssh://mini'\n\
+         forward-agent = true\nforward-agent-keys = ['SHA256:abc']\n",
+    )
+    .expect("seed");
+    let mut mini = row("mini", HostRole::Remote);
+    mini.endpoint = "ssh://mini".to_owned();
+    edit_host_field_at(&path, &mini, "name", "desk".into()).expect("rename");
+    mini.name = "desk".to_owned();
+    edit_host_field_at(&path, &mini, "paused", true.into()).expect("pause");
+    let again = super::super::remote::NewRemote::new("desk", "ssh://other", None, None, None)
+        .expect("entry");
+    phux_config::toml_registry::upsert_machine(
+        &path,
+        "remote",
+        || Ok(Some(0)),
+        |table| super::super::remote::fill_table(table, &again),
+    )
+    .expect("re-enroll");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let cfg = phux_config::parse_with_defaults(&text, &path).expect("parses");
+    let entry = &cfg.remote[0];
+    assert_eq!(
+        (entry.name.as_str(), entry.endpoint.as_str()),
+        ("desk", "ssh://other")
+    );
+    assert!(entry.forward_agent, "{text}");
+    assert_eq!(
+        entry.forward_agent_keys.as_deref(),
+        Some(&["SHA256:abc".to_owned()][..])
+    );
+}

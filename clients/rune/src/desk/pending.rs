@@ -23,4 +23,7 @@ pub enum Pending {
     OpenUrl(Box<super::open_url::Asked>),
     /// A program's clipboard write (OSC 52) and the text it would set.
     ClipboardWrite(ResourceId, String),
+    /// A pane's request to sign with a forwarded ssh key, in words. The
+    /// question itself is the connection's.
+    SshSign(String),
 }

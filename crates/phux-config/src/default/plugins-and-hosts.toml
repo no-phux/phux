@@ -146,6 +146,10 @@
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
 # ssh = "me@mini"
+# forward-agent = true        # serve your ssh-agent there while attached
+# forward-agent-keys = ["SHA256:..."]   # and only these keys (docs/ssh.md)
+#
+# An older phux refuses a config with the two forward-agent keys.
 #
 # A server reached through a relay registers the relay as its
 # endpoint, the relay's pin as cert-fingerprint, and the relay route as
