@@ -30,6 +30,18 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             })
             .cloned()
     }
+
+    /// Whether a pane the user asked for is still attaching. What they type
+    /// is meant for it, so it goes to no other pane meanwhile.
+    fn opening_a_pane(&self) -> bool {
+        use crate::attach::actions::Adopt;
+        let windows = self.ctx.pending_windows.values().map(|w| &w.adopt);
+        let splits = self.ctx.pending_splits.values().map(|s| &s.adopt);
+        windows
+            .chain(splits)
+            .any(|adopt| matches!(adopt, Some(Adopt::Existing(_))))
+    }
+
     /// Feed a key to predictive echo, peeking the focused grid so arrows can
     /// size the grapheme they cross (ADR-0090).
     pub(super) fn feed_predict(&mut self, ev: &InputEvent) -> bool {
@@ -38,6 +50,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return false;
         };
         if !self.predict.is_enabled()
+            || self.opening_a_pane()
             || crate::attach::floating::floating_pane(self.panes).is_some()
         {
             return false;
@@ -109,6 +122,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };
+        if self.opening_a_pane() {
+            tracing::debug!(terminal = ?pane, "dropping input: another pane is opening");
+            let _ = crate::attach::actions::write_bell(self.out);
+            return Ok(false);
+        }
         // ADR-0124: a retained pane's process exited; there is nothing to
         // type into, and the server would refuse it anyway. A held popup
         // failure closes on any key.

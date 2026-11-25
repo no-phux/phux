@@ -68,6 +68,26 @@ async fn input_to_a_retained_pane_is_dropped_by_the_dispatcher() {
     }
 }
 
+/// What is typed while a chosen satellite pane still attaches was meant for
+/// it: nothing reaches the pane in view, and typing works again after.
+#[tokio::test]
+async fn typing_while_a_chosen_pane_attaches_reaches_no_other_pane() {
+    use crate::attach::actions::{Adopt, PendingWindow};
+    let mut env = two_pane_env(&[(tid(1), b"")], (8, 16));
+    env.fx.pending_windows.insert(
+        9,
+        PendingWindow {
+            name: "edge/build".to_owned(),
+            adopt: Some(Adopt::Existing(ResourceId::satellite("edge", 9))),
+        },
+    );
+    let key = || vec![press(PhysicalKey::A, Some("a"))];
+    let sent = env.dispatch(key()).await;
+    assert!(sent.frames.is_empty(), "{:?}", sent.frames);
+    env.fx.pending_windows.clear();
+    assert_eq!(env.dispatch(key()).await.frames.len(), 1);
+}
+
 /// A second press during a divider drag is consumed (no focus move, no
 /// forward), and the release that follows still ends the drag.
 #[tokio::test]

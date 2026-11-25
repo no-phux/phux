@@ -122,17 +122,24 @@ fn a_satellite_split_applies_when_its_attach_succeeds() {
     }
 }
 
-/// A refused open of an existing satellite pane leaves the layout alone and
-/// does not kill a pane this client did not spawn.
+/// A refused open of an existing satellite pane does not kill a pane this
+/// client did not spawn, and leaves the layout alone unless the satellite is
+/// only unreachable: then the pane opens down.
 #[test]
 fn a_refused_open_of_an_existing_satellite_pane_does_not_kill_it() {
-    let mut split = satellite_split(None);
-    split.adopt = Some(Adopt::Existing(edge_pane()));
-    let (outcome, h) = split_reply(split, unreachable_refusal(9));
-    assert_eq!(h.leaves(), vec![tid(1)]);
-    assert!(outcome.kill_orphans.is_empty());
-    assert!(h.belled());
-    assert!(h.mirror.pending_splits.is_empty());
+    for (frame, down) in [(unreachable_refusal(9), true), (reachable_refusal(), false)] {
+        let mut split = satellite_split(None);
+        split.adopt = Some(Adopt::Existing(edge_pane()));
+        let (outcome, h) = split_reply(split, frame);
+        let mut leaves = vec![tid(1)];
+        leaves.extend(down.then(edge_pane));
+        assert_eq!(h.leaves(), leaves);
+        let slot = h.mirror.panes.get(&edge_pane());
+        assert_eq!(slot.is_some_and(|slot| slot.satellite_down), down);
+        assert!(outcome.kill_orphans.is_empty());
+        assert!(h.belled());
+        assert!(h.mirror.pending_splits.is_empty());
+    }
 }
 
 /// A refused satellite split attach leaves no dead split, bells, names the
