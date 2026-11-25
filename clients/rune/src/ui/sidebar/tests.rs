@@ -348,8 +348,12 @@ fn a_parent_row_starts_folded_and_its_count_unfolds_it() {
     assert!(!focusable(&rt, &child), "children start folded");
     let fold = format!("fold-{}", ResourceId::local(2));
     let (x, y) = rt.find(&fold).expect("the parent row's fold");
+    rt.poll = Some(|d, _, tx| d.return_keyboard(tx));
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
     rt.frame(0.0);
     assert!(focusable(&rt, &child), "unfolded, the children show");
+    rt.frame(0.0);
+    // The row around the fold takes a press on it, and would keep the keys.
+    rt.update(|_, tx| assert_eq!(tx.focused(), None));
 }

@@ -226,6 +226,8 @@ pub struct Desk {
     /// The chrome's size in percent (`settings::INTERFACE_SIZES`): the
     /// view's zoom, which the terminal's text is held against.
     pub interface_size: u16,
+    /// Which control has the keyboard instead of the terminal.
+    focus: input::focus::Focus,
     /// The terminal font family; empty is the default.
     pub font_family: String,
     /// `font_family` is not behind Rune's mono slot yet.
@@ -359,6 +361,7 @@ impl Desk {
             generation: 0,
             font_size,
             interface_size,
+            focus: input::focus::Focus::default(),
             font_due: !font_family.is_empty(),
             font_family,
             font_epoch: rune::text::font_epoch(),
@@ -400,7 +403,8 @@ impl Desk {
         self.follow_font(tx);
         self.machines.tick_glances(clock, tx);
         self.follow_path(tx);
-        let updated = self.pump_updates(tx)
+        let updated = self.return_keyboard(tx)
+            | self.pump_updates(tx)
             | self.finish_document_images()
             | self.finish_document_viewers(tx)
             | self.pump_machines()

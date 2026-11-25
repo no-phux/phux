@@ -4,6 +4,7 @@ use super::*;
 
 fn scene(inline: bool) -> (Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = fixture((1100.0, 720.0), "input");
+    rt.poll = Some(|d, _, tx| d.return_keyboard(tx));
     rt.update(|d, tx| {
         d.phone = None;
         d.native = None;
@@ -94,14 +95,17 @@ fn global_ime_and_return_retire_to_a_nonanswering_region_until_explicit_focus() 
 
 #[test]
 fn closing_the_request_also_keeps_the_retirement_target_out_of_terminal_input() {
-    for inline in [false, true] {
+    for (inline, clicked) in [(false, false), (true, false), (true, true)] {
         let (client, mut rt) = scene(inline);
         let old = owner(&rt.state).clone();
-        assert!(rt.accessibility_action(
-            &old.field_key("text"),
-            rune::accesskit::Action::Focus,
-            None
-        ));
+        let field = old.field_key("text");
+        if clicked {
+            let (x, y) = rt.find(&field).expect("the field");
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+        } else {
+            assert!(rt.accessibility_action(&field, rune::accesskit::Action::Focus, None));
+        }
         settle(&mut rt);
         let _ = client.take_outbound();
         rt.ime(rune::Ime::Commit("closed request text".into()));

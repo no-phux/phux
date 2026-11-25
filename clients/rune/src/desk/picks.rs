@@ -48,7 +48,7 @@ impl Desk {
             if let Some(key) = session {
                 self.sidebar_collapsed.remove(&key);
             }
-            tx.focus_when_shown(format!("pane-{row}"), true);
+            self.focus_chrome(format!("pane-{row}"), tx);
         }
     }
 

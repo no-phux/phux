@@ -74,6 +74,23 @@ fn sidebar_focus_reaches_grouped_row_and_inbox_without_changing_panes() {
     }
 }
 
+#[test]
+fn the_palettes_sidebar_focus_outlives_the_palette() {
+    for closed in [false, true] {
+        let mut rt = split_window((1100, 720), true, "normal");
+        rt.update(|d, _| d.sidebar_open = !closed);
+        rt.frame(3.0);
+        rt.update(|d, _| d.toggle_palette());
+        server::settle(&mut rt);
+        let action = crate::palette::Target::Action(crate::keys::Shortcut::FocusSidebar);
+        rt.update(|d, tx| d.palette_run_target(action, tx));
+        server::settle(&mut rt);
+        assert!(!rt.state.palette_open);
+        let row = crate::ui::element(&rt, &format!("pane-{}", ResourceId::local(2)));
+        assert!(row.focused && row.focus_visible, "closed={closed}: {row:?}");
+    }
+}
+
 fn target(rt: &Runtime<Desk>, id: u32) -> Option<(ResourceId, Option<SessionKey>)> {
     crate::ui::sidebar_focus_target(&rt.state, &ResourceId::local(id))
 }
