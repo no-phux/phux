@@ -1,17 +1,11 @@
-**Phux Rune 0.1.53**
+**Phux Rune 0.1.54**
 
-- Focus Sidebar reaches the row containing a split pane and reveals a collapsed
-  session. Keyboard navigation can then open Inbox without switching panes.
-- Child panes fold under their parent in the desktop sidebar, while the pane
-  being viewed stays visible.
-- Improve focus and emphasis on black and grey Omarchy themes. Bold terminal
-  text can use bright colours and the theme's bold colour.
-- Apply per-computer themes while viewing a host, open sessions and folders
-  from `phux://` links, and run plugin link handlers with the pane's context.
-- Add view-size locking and keep-awake controls, and reduce repeated work
-  as the number of idle terminals grows.
-- Restore native iOS compilation after desktop link-handler integration, and
-  retain bounded simulator-settling checks for native qualification.
+- Browse phone sessions on one continuous surface, with clear session headings,
+  nested pane names, quiet attention counts, and a thin current-pane marker.
+- Keep Connections, long search filters, and the complete New session action
+  readable at large accessibility text sizes, with clear keyboard focus.
+- Read long pane-picker names without fixed-height clipping, and scroll to
+  terminal actions and Done at the largest text sizes.
 
 The Rune engine pin is unchanged. Newer strict-modal revisions remain deferred
 to preserve phone accessory input ownership and the literal pane arrangement.
