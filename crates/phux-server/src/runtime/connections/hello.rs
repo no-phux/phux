@@ -157,7 +157,7 @@ pub(super) async fn negotiate_hello(
         crate::runtime::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin);
     });
     let (selected_profile, bootstrap_limits) =
-        select_hello_profile(state, &client_caps, client_id)?;
+        select_hello_profile(state, &client_caps, client_id, transport)?;
 
     let mut effective_client_caps = client_caps;
     effective_client_caps.output_mode = if matches!(
@@ -356,8 +356,17 @@ fn select_hello_profile(
     state: &SharedState,
     client_caps: &ClientCapabilities,
     client_id: ClientId,
+    transport: TransportType,
 ) -> Result<(Option<BootstrapProfile>, BootstrapLimits), ConnectionClose> {
-    let server_bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
+    let mut server_bootstrap = crate::runtime::apps::terminal::bootstrap_capabilities(state);
+    // Allow direct local clients to opt into larger native Kitty image
+    // records. A hub must keep the existing exact relay-link limit.
+    if transport == TransportType::UnixSocket && !state.with(|s| s.federation().is_hub()) {
+        server_bootstrap.limits = BootstrapLimits::clamped(
+            server_bootstrap.limits.max_chunk_bytes(),
+            phux_protocol::MAX_HISTORY_PAGE_BYTES,
+        );
+    }
     if client_caps.bootstrap.profiles.as_wire() == 0 {
         debug!(
             ?client_id,

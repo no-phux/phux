@@ -15,6 +15,40 @@ fn connection(server_features: ServerFeatureSet) -> NegotiatedConnection {
 }
 
 #[test]
+fn larger_history_pages_are_local_and_leave_hub_limits_unchanged() {
+    let state = SharedState::new();
+    let larger = BootstrapLimits::clamped(
+        phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+        phux_protocol::MAX_HISTORY_PAGE_BYTES,
+    );
+    let requested = ClientCapabilities::default()
+        .with_bootstrap(phux_protocol::caps::BootstrapCapabilities::new().with_limits(larger));
+    let limits = |caps: &ClientCapabilities, transport| {
+        select_hello_profile(&state, caps, ClientId(1), transport)
+            .map_err(|error| error.message)
+            .unwrap()
+            .1
+    };
+    assert_eq!(limits(&requested, TransportType::UnixSocket), larger);
+    assert_eq!(
+        limits(&requested, TransportType::Quic),
+        BootstrapLimits::default()
+    );
+    assert_eq!(
+        limits(&ClientCapabilities::default(), TransportType::UnixSocket),
+        BootstrapLimits::default()
+    );
+    state.with_mut(|s| {
+        s.federation_mut()
+            .set_table(crate::hub::HubTable::default())
+    });
+    assert_eq!(
+        limits(&requested, TransportType::UnixSocket),
+        BootstrapLimits::default()
+    );
+}
+
+#[test]
 fn negotiated_resize_uses_the_terminal_stream() {
     let client_id = ClientId(1);
     let mut bytes = BytesMut::new();

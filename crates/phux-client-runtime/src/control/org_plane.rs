@@ -8,7 +8,7 @@
 //! [`OrgOutcome::NotSent`], and `close_terminals` can use the advertised
 //! legacy `CLOSE_TAB_RESOURCES` path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use phux_client_core::org_ops::{
@@ -194,14 +194,8 @@ impl ControlPlane {
     /// A `GET_ORGANIZATION` page or `ARRANGEMENT_GET` reply.
     pub(super) fn resolve_org_read(&mut self, pending: &Pending, result: CommandResult) {
         match (pending, result) {
-            (
-                Pending::OrgPage(filter),
-                CommandResult::OkWith(CommandValue::OrganizationPage(page)),
-            ) => {
+            (Pending::OrgPage(_), CommandResult::OkWith(CommandValue::OrganizationPage(page))) => {
                 let action = self.organization.apply_page(*page);
-                if action == ReplicaAction::Seeded {
-                    self.refresh_seeded_arrangements(*filter);
-                }
                 self.act_on_replica(action);
             }
             (
@@ -230,11 +224,15 @@ impl ControlPlane {
         }
     }
 
-    fn refresh_seeded_arrangements(&mut self, filter: OrgFilter) {
+    fn refresh_seeded_arrangements(
+        &mut self,
+        filter: OrgFilter,
+        mut keys: HashSet<ArrangementKey>,
+    ) {
         // The seed's journal cut can cover an ArrangementChanged in the same
         // transaction as a ResourceCreated, but pages carry only the key, not
         // the arrangement itself. Re-read cached documents in the seeded scope.
-        let keys: Vec<_> = self
+        let seeded = self
             .organization
             .sessions()
             .iter()
@@ -243,9 +241,9 @@ impl ControlPlane {
                 OrgFilter::Session(key) => session.key == key,
                 _ => false,
             })
-            .filter_map(|session| session.arrangement)
-            .filter(|key| self.organization.arrangement(key).is_some())
-            .collect();
+            .filter_map(|session| session.arrangement);
+        keys.extend(seeded);
+        keys.retain(|key| self.organization.arrangement(key).is_some());
         for key in keys {
             self.queue_arrangement_read(key);
         }
@@ -280,7 +278,13 @@ impl ControlPlane {
                 };
                 self.queue_org_read(command, Pending::OrgPage(filter));
             }
-            ReplicaAction::Seeded => self.org_seeded(),
+            ReplicaAction::Seeded {
+                filter,
+                arrangements,
+            } => {
+                self.refresh_seeded_arrangements(filter, arrangements);
+                self.org_seeded();
+            }
             ReplicaAction::Reseed => {
                 self.queue_org_seed(OrgFilter::All);
             }

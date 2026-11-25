@@ -42,7 +42,10 @@ fn seeded() -> OrganizationReplica {
     let work = SessionRecord::new(skey(1), "work", Revision::new(2)).with_members(1);
     assert_eq!(
         replica.apply_page(page(5, vec![work], vec![running(1, skey(1))])),
-        ReplicaAction::Seeded
+        ReplicaAction::Seeded {
+            filter: OrgFilter::All,
+            arrangements: HashSet::new()
+        }
     );
     replica
 }
@@ -67,7 +70,10 @@ fn a_paged_seed_installs_records_and_the_handle_map() {
     assert!(replica.seeding());
     assert_eq!(
         replica.apply_page(page(99, vec![], vec![running(1, skey(1))])),
-        ReplicaAction::Seeded
+        ReplicaAction::Seeded {
+            filter: OrgFilter::All,
+            arrangements: HashSet::new()
+        }
     );
     assert!(replica.is_live());
     assert_eq!(replica.journal_seq(), 5, "the first page's cut");

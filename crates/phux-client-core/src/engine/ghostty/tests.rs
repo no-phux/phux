@@ -159,6 +159,7 @@ fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {
     );
     let mut pixel_units = 0;
     for unit in &capture.history {
+        effects.clear();
         if unit.rows == 0 && !unit.finish {
             pixel_units += 1;
         }
@@ -173,6 +174,12 @@ fn native_snapshot_restores_kitty_metadata_then_deferred_pixels() {
         if unit.finish {
             assert_eq!(outcome.progress, BootstrapProgress::Finished);
             break;
+        }
+        if unit.rows == 0 {
+            assert_eq!(
+                effects.as_slice(),
+                [EngineEffect::Damage(EngineDamage::Full)]
+            );
         }
         assert_eq!(
             outcome.progress,

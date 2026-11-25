@@ -31,7 +31,8 @@ impl Client {
         self.inner.publication.acquire_view(view)
     }
 
-    /// Poll the independent view's frame generation.
+    /// Poll the view's frame generation: zero while waiting for its first
+    /// frame, or `None` when the view is gone.
     #[cfg(feature = "engine")]
     #[must_use]
     pub fn view_generation(&self, view: crate::ViewId) -> Option<u64> {

@@ -155,7 +155,7 @@ impl EngineAdapter for GhosttyAdapter {
         replica: &mut Self::Replica,
         payload: &[u8],
         declared_rows: u32,
-        _effects: &mut EngineEffectBuffer,
+        effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         let limit = self.limits.max_history_page_bytes() as usize;
         if payload.len() > limit {
@@ -172,6 +172,11 @@ impl EngineAdapter for GhosttyAdapter {
             ReplicaState::Native(native) => push_history(native, payload, declared_rows)?,
         };
         enforce_history_budget(replica)?;
+        // Native image pixels arrive as zero-row units after READY.
+        // A static image must repaint without waiting for new PTY output.
+        if progress.authenticated_rows == 0 && progress.progress == BootstrapProgress::Ready {
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+        }
         Ok(progress)
     }
 
