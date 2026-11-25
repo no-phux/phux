@@ -17,7 +17,7 @@ use tracing::debug;
 use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
 use crate::runtime::apps::producer_stream::{self, StreamAttach, StreamCut, StreamIds};
-use crate::state::{ClientId, SharedState};
+use crate::state::ClientId;
 use phux_agent_session::session::{AgentSessionBootstrap, BootstrapRequest};
 
 fn validate_cut(cut: &AgentSessionBootstrap) -> Result<(), String> {
@@ -87,7 +87,7 @@ async fn attach_cut(
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
 pub(crate) async fn attach_agent_session(
-    state: &SharedState,
+    host: &crate::runtime::apps::StreamHost,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     core: phux_core::ids::ResourceId,
@@ -101,7 +101,7 @@ pub(crate) async fn attach_agent_session(
         return CommandResult::error(ErrorCode::WrongResourceKind, "not an agent session");
     };
     let attach = StreamAttach {
-        state,
+        host,
         client_id,
         terminal_id,
         core,

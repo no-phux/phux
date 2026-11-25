@@ -248,6 +248,9 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
         if let Some(entry) = &committed.entry {
             write_key(&mut e, field::org::ENTRY, entry);
         }
+        if let Some(created) = committed.ensured_created {
+            e.write_u8_field(field::org::ENSURED_CREATED, u8::from(created));
+        }
         if committed.replayed {
             e.write_u8_field(field::org::REPLAYED, 1);
         }
@@ -278,6 +281,7 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
     Ok(Committed {
         operation: f.operation()?,
         revision: req(f.revision)?,
+        ensured_created: f.ensured_created,
         session: f.session,
         resource: f.resource,
         target: f.target,

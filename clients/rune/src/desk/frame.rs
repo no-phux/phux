@@ -222,16 +222,7 @@ impl Desk {
         let Some(client) = &self.connection.client else {
             return;
         };
-        if client.connection_epoch() != painted.epoch {
-            return;
-        }
-        let current = client.acquire_view(painted.view);
-        if !current.is_some_and(|frame| Arc::ptr_eq(&frame, &painted.frame)) {
-            return;
-        }
-        client.with_control(|control| {
-            control.acknowledge_projection_if(&painted.terminal, painted.fence)
-        });
+        let _ = client.acknowledge_presentation(&painted.evidence, true, true);
     }
 
     /// Note the frame a view build is about to paint, when it can clear a
@@ -241,14 +232,8 @@ impl Desk {
             if self.connection.status != Status::Attached || !frame.scrollbar.at_tail() {
                 return None;
             }
-            let fence =
-                client.with_control(|control| control.projection_fence(&frame.terminal_id))?;
             Some(Painted {
-                terminal: frame.terminal_id.clone(),
-                view,
-                fence,
-                frame: Arc::clone(frame),
-                epoch: client.connection_epoch(),
+                evidence: client.presentation_evidence(Some(view), frame)?,
             })
         });
         self.connection.painted.replace(painted);
@@ -318,5 +303,79 @@ mod tests {
         }
         // Up again, it blinks again.
         assert!(!blink_at(61.9, Status::Attached).0);
+    }
+
+    fn uncertain_replica() -> crate::test_support::terminal::Replica {
+        use phux_protocol::caps::{ServerCapabilities, ServerFeature, ServerFeatureSet};
+        use phux_protocol::wire::frame::{Command, ErrorCode};
+        let mut replica = crate::test_support::terminal::Replica::with_capabilities(
+            20,
+            4,
+            1,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+        );
+        let _ = replica
+            .client
+            .apply_line(&replica.terminal, "possibly written");
+        let sent = crate::wire_fixture::outbound(&replica.client);
+        let request = crate::wire_fixture::request(&sent, |command| {
+            matches!(command, Command::ApplyInput { .. })
+        })
+        .expect("original input request");
+        crate::wire_fixture::refuse(
+            &replica.client,
+            request,
+            ErrorCode::InputDeliveryUnknown,
+            "uncertain input",
+        );
+        replica.feed("\r\nnew authority".into());
+        replica
+    }
+
+    #[test]
+    fn building_a_hidden_view_and_drawing_a_replaced_frame_keep_uncertainty() {
+        let mut replica = uncertain_replica();
+        let mut desk = crate::test_support::window();
+        desk.connection.client = Some(Arc::clone(&replica.client));
+        desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+        desk.connection.status = Status::Attached;
+        let view = replica.views[0];
+        let frame = replica.client.acquire_view(view).expect("current frame");
+        desk.painting(view, &frame);
+        assert!(
+            replica.client.delivery_fenced(&replica.terminal),
+            "building without the drawn callback is not presentation"
+        );
+        replica.feed("\r\nreplacement authority".into());
+        desk.drawn();
+        assert!(
+            replica.client.delivery_fenced(&replica.terminal),
+            "a late callback cannot acknowledge the replaced frame"
+        );
+        let current = replica
+            .client
+            .acquire_view(view)
+            .expect("replacement frame");
+        desk.painting(view, &current);
+        desk.drawn();
+        assert!(!replica.client.delivery_fenced(&replica.terminal));
+    }
+
+    #[test]
+    fn a_drawn_callback_from_a_previous_connection_cannot_release_its_fence() {
+        let replica = uncertain_replica();
+        let mut desk = crate::test_support::window();
+        desk.connection.client = Some(Arc::clone(&replica.client));
+        desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
+        desk.connection.status = Status::Attached;
+        let view = replica.views[0];
+        let frame = replica.client.acquire_view(view).expect("frame");
+        desk.painting(view, &frame);
+        replica
+            .client
+            .with_control(phux_client_runtime::control::ControlPlane::connection_opened);
+        desk.drawn();
+        assert!(replica.client.delivery_fenced(&replica.terminal));
     }
 }

@@ -101,6 +101,7 @@ fn scene(case: Case, light: bool) -> (Arc<Client>, Runtime<Desk>) {
     let client = replica.client.clone();
     let mut d = crate::test_support::window();
     d.connection.client = Some(client.clone());
+    d.connection.seed_view_sources(vec![1; 16], &replica.sources);
     d.connection.topology = client.with_control(|c| c.topology().cloned());
     d.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),

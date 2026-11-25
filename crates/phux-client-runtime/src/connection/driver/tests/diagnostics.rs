@@ -192,11 +192,11 @@ fn written(peer: &mut tokio::io::DuplexStream, buffer: &mut BytesMut) -> Vec<Fra
 fn type_line(shared: &Shared, terminal: &ResourceId, line: &str) -> bool {
     let mut control = lock(shared);
     if !control.input_ready(terminal) {
-        control.trace_input(false);
+        trace::phase("input_refused");
         return false;
     }
     let sent = control.send_text(terminal, line);
-    control.trace_input(sent);
+    trace::phase(if sent { "input_injected" } else { "input_refused" });
     sent
 }
 
@@ -213,7 +213,7 @@ async fn attach_then_type(prompt: bool) -> (Vec<serde_json::Value>, u64, Vec<Fra
     let recorded = Recorded::default();
     let _subscriber = tracing::subscriber::set_default(recorded.clone());
     let mut fixture = WriteFixture::new(64 * 1024);
-    fixture.shared = Arc::new(Mutex::new(ControlPlane::new(ControlOptions {
+    fixture.shared = Arc::new(Mutex::new(ControlPlane::new(std::time::Instant::now(), ControlOptions {
         attach: None,
         session_recovery: crate::control::SessionRecovery::CallerValidated,
         ..ControlOptions::default()

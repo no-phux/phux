@@ -99,6 +99,7 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         // with a malformed body fails as malformed.
         COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE
         | COMMAND_TAG_GET_CREATION
+        | crate::wire::frame::COMMAND_TAG_SESSION_ENSURE
         | COMMAND_TAG_DELEGATE_AGENT
         | COMMAND_TAG_REVOKE_DELEGATION
         | COMMAND_TAG_SESSION_KILL

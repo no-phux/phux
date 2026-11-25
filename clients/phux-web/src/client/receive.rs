@@ -294,6 +294,10 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
             ..BatchEffects::default()
         };
     }
+    if let Err(message) = a.flush_input() {
+        a.fail(&message);
+        return BatchEffects { flow: ReceiveFlow::Stop, ..BatchEffects::default() };
+    }
     if a.session.is_attach_ready() {
         a.signal_ready();
     }

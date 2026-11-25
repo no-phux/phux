@@ -66,8 +66,8 @@ impl ServerState {
             }
             self.retire_record(child, ExitOutcome::UNKNOWN);
         }
-        if preserve_record {
-            self.activation_ended(pane, outcome, false);
+        if preserve_record && let Some(activation) = self.activation_token(pane) {
+            self.activation_ended(activation, outcome, false);
         }
         let token = self.forget_resource_bookkeeping(pane);
         if !preserve_record {

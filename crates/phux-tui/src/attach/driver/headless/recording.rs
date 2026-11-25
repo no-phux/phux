@@ -220,7 +220,7 @@ impl RecordingLink<'_> {
         if outcome.resync_required {
             *self.attach_id = restart_attach(
                 self.conn,
-                &self.session.mirror.session_name,
+                self.focused_session,
                 self.completion,
             )
             .await?;

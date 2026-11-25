@@ -33,11 +33,16 @@ pub(super) async fn handle_satellite_command(
     } = ctx;
     let client_id = *client_id;
     note_satellite_use(state, host, client_id, &command);
-    let relay = state.with(|s| s.federation().relay(host));
+    let relay = state.with_mut(|s| {
+        let owner = s.federation_mut().consumer_registration(client_id);
+        s.federation()
+            .relay(host)
+            .map(|relay| relay.for_consumer(owner))
+    });
     if let Some(relay) = &relay
         && let Some(refusal) = refuse_satellite_watch(state, client_id, host, relay, &command).await
     {
-        reply_satellite_command(ctx, request_id, host, &command, refusal).await;
+        reply_satellite_command(ctx, request_id, host, refusal).await;
         return;
     }
     let result = match relay {
@@ -78,7 +83,7 @@ pub(super) async fn handle_satellite_command(
                 result
             }
             Command::DetachResource { terminal_id } => {
-                resolve_hub_detach_terminal(state, &relay, client_id, host, terminal_id).await
+                resolve_hub_detach_terminal(&relay, client_id, terminal_id).await
             }
             Command::AcquireInput {
                 terminal_id, mode, ..
@@ -116,7 +121,7 @@ pub(super) async fn handle_satellite_command(
             _ => relay.command_from(command.clone(), client_id).await,
         },
     };
-    reply_satellite_command(ctx, request_id, host, &command, result).await;
+    reply_satellite_command(ctx, request_id, host, result).await;
 }
 
 /// Refuse a watch of a satellite window or display the caller's grant
@@ -268,25 +273,15 @@ fn hub_vouches_for_kill(
     state.with(|s| s.federation().vouches_unattached(host, id, instance))
 }
 
-/// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
-/// established, then send the relayed reply to the caller.
+/// Send the correlated reply; proxy ownership is committed by the link,
+/// not by a potentially delayed consumer continuation.
 pub(super) async fn reply_satellite_command(
     ctx: &CommandContext,
     request_id: u32,
     host: &phux_protocol::ids::SatelliteHost,
-    command: &Command,
     result: CommandResult,
 ) {
     let client_id = ctx.client_id;
-    if !matches!(result, CommandResult::Error { .. })
-        && let Command::AttachResource { terminal_id, .. } = command
-        && let Some(id) = terminal_id.local_id()
-    {
-        ctx.state.with_mut(|s| {
-            s.federation_mut()
-                .register_satellite_proxy_attach(client_id, host.clone(), id);
-        });
-    }
     debug!(
         ?client_id,
         request_id,
@@ -322,6 +317,10 @@ pub(super) async fn relay_stream_establishing(
         );
     };
     // Only ATTACH_RESOURCE opens a content stream with a snapshot to await.
+    let owner = ctx
+        .state
+        .with_mut(|s| s.federation_mut().consumer_registration(ctx.client_id));
+    let relay = relay.for_consumer(owner);
     let content = matches!(command, Command::AttachResource { .. });
     relay
         .command_subscribing(
@@ -347,28 +346,14 @@ pub(super) async fn relay_stream_establishing(
 /// iff nobody else still observes the terminal. Success waits for the link's
 /// removal receipt; no registry on a disconnected link is an idempotent Ok.
 pub(super) async fn resolve_hub_detach_terminal(
-    state: &SharedState,
     relay: &crate::hub::relay::RelayHandle,
     client_id: ClientId,
-    host: &phux_protocol::ids::SatelliteHost,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     let Some(id) = terminal_id.local_id() else {
         return CommandResult::Ok;
     };
-    let result = relay.unsubscribe_resource(client_id, id).await;
-    if result == CommandResult::Ok {
-        state.with_mut(|s| {
-            s.federation_mut()
-                .unregister_satellite_proxy_attach(client_id, host, id);
-            let scope = phux_protocol::ids::ResourceId::Satellite {
-                host: host.clone(),
-                id,
-            };
-            s.unsubscribe_resource_events(client_id, &scope);
-        });
-    }
-    result
+    relay.unsubscribe_resource(client_id, id).await
 }
 
 /// The command the link forwards for a hub consumer's

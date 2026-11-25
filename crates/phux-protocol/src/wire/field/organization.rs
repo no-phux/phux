@@ -118,6 +118,8 @@ pub mod org {
     /// An `ARRANGEMENT_REPLACE` whose document carries slot tabs as the
     /// sender means them (`bool`, `features_ext.SLOT_TABS`).
     pub const SLOT_TABS: u32 = 51;
+    /// Exact ensure result (`bool`); absent for other operations.
+    pub const ENSURED_CREATED: u32 = 52;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/organization.md`).

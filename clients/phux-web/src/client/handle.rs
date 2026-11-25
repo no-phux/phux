@@ -19,6 +19,7 @@ impl Client {
             canvas,
             cols,
             rows,
+            input_delivery: self.app.borrow().session.input_delivery_state(),
         };
         let mut app = self.app.borrow_mut();
         if app.session.is_failed() {
@@ -125,13 +126,47 @@ impl Client {
                 "Text exceeds the 4096-byte hosted input limit.",
             ));
         }
-        let Some(paste) = crate::input::paste_event(text) else {
-            return Ok(());
-        };
-        if !send_input(&self.app, [InputEvent::Paste(paste)]) {
-            return Err(JsValue::from_str("Terminal input is unavailable."));
+        match self.submit_user_paste(text)? {
+            phux_client_core::input_replay::InputSubmission::QueuedRaw
+            | phux_client_core::input_replay::InputSubmission::AwaitingReceipt { .. } => Ok(()),
+            _ if text.is_empty() => Ok(()),
+            _ => Err(JsValue::from_str("Terminal input is unavailable or refused; read the input notice.")),
         }
-        Ok(())
+    }
+
+    /// Queue a user paste atomically. Only a later correlated receipt proves
+    /// delivery; `QueuedRaw` has no delivery guarantee.
+    ///
+    /// # Errors
+    /// Returns a transport failure, whose attempted delivery may be unknown.
+    pub fn submit_user_paste(&self, text: &str) -> Result<phux_client_core::input_replay::InputSubmission, JsValue> {
+        use phux_client_core::input_replay::InputSubmission;
+        if text.is_empty() { return Ok(InputSubmission::NotQueued); }
+        if text.len() > MAX_OUTBOUND_BYTES - 4096 {
+            let app = self.app.borrow();
+            let submission = app.session.refuse_browser_input("paste exceeds the browser's atomic outbound byte budget");
+            app.publish_input_reports();
+            return Ok(submission);
+        }
+        let paste = {
+            let app = self.app.borrow();
+            match app.session.prepare_user_paste(text) {
+                Ok(paste) => paste,
+                Err(submission) => {
+                    app.publish_input_reports();
+                    return Ok(submission);
+                }
+            }
+        };
+        let submission = super::keyboard::submit_event(&self.app, InputEvent::Paste(paste))
+            .map_err(|message| JsValue::from_str(&message))?;
+        if matches!(submission, InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }) {
+            let app = self.app.borrow();
+            app.acknowledge_input();
+            app.clear_selection();
+            if app.session.scroll_to_bottom() { app.request_paint(); }
+        }
+        Ok(submission)
     }
 
     /// Close the focused pane's view; its terminal keeps running.

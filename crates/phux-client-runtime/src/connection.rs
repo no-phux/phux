@@ -311,6 +311,8 @@ pub fn lock(shared: &Shared) -> MutexGuard<'_, ControlPlane> {
 /// The signals a caller raises at the driver.
 #[derive(Debug)]
 pub struct Signals {
+    /// Native attempt evidence shared with the synchronous client handle.
+    pub(crate) trace: Arc<Mutex<Option<AttemptTrace>>>,
     /// Frames were queued on the control plane.
     pub outbound: Arc<Notify>,
     /// Drop the socket and redial for fresh snapshots.
@@ -368,3 +370,4 @@ pub use ssh::{
 };
 
 pub use driver::run_session;
+pub(crate) use driver::frames;

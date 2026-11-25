@@ -1,7 +1,7 @@
 //! The typed organization commands a consumer submits.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_client_core::layout::ArrangementDoc as HandleDoc;
 use phux_client_core::layout::wire::{WireError, to_protocol};
@@ -193,7 +193,7 @@ impl ControlPlane {
                 to,
                 remaining: chunks,
                 phase: BulkPhase::Submitted(operation),
-                deadline: Instant::now() + Duration::from_millis(ORG_RETRY_HORIZON_MS),
+                deadline: self.observed_time() + Duration::from_millis(ORG_RETRY_HORIZON_MS),
             });
         }
         if self.handshake_ready && !self.organization_supported() {

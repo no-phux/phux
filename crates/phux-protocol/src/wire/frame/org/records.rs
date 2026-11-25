@@ -309,6 +309,8 @@ pub struct Committed {
     pub replayed: bool,
     /// Durable authority of a placed creation.
     pub authority: Option<AuthorityId>,
+    /// `Some(true)` for newly created, `Some(false)` for existing.
+    pub ensured_created: Option<bool>,
 }
 
 /// The longest delegated credential id a decoder accepts.
@@ -369,6 +371,7 @@ impl Committed {
             activation: None,
             replayed: false,
             authority: None,
+            ensured_created: None,
         }
     }
 
@@ -391,6 +394,7 @@ impl Committed {
     builder_setters! {
         /// Mark a replay of a retained operation.
         const fn with_replayed(replayed: bool) => replayed;
+        const fn with_ensured_created(ensured_created: Option<bool>) => ensured_created;
         const fn with_session(session: Option<SessionKey>) => session;
         const fn with_resource(resource: Option<ResourceKey>) => resource;
         fn with_target(target: Option<LiveTarget>) => target;

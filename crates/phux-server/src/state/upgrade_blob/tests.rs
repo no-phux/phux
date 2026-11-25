@@ -1,11 +1,11 @@
 use super::{RebuildError, WireResourceId, validate_upgrade_blob};
-use crate::runtime::apps::agent_session::upgrade::{
+use crate::runtime::upgrade::kinds::agent_session::{
     carried_sessions, carry_cuts, request_agent_session_cut, stream_cut,
 };
 use crate::runtime::apps::terminal::test_support::{
     ScreenReply, ScreenRequest, TerminalResource as _, seeded_terminal,
 };
-use crate::runtime::apps::terminal::upgrade::{
+use crate::runtime::upgrade::kinds::terminal::{
     TerminalResume, carry_handoffs, pane_senders, request_pane_handoff,
 };
 use crate::state::ServerState;
@@ -112,7 +112,7 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         // phux-1x9s.6: every pane's actor passes through the runtime's
         // wiring before it runs, as a fresh spawn's does.
         let mut terminal = TerminalResume::new(|core, pane, scrollback| {
-            crate::runtime::apps::terminal::upgrade::rebuild_pane(
+            crate::runtime::upgrade::kinds::terminal::rebuild_pane(
                 core,
                 pane,
                 scrollback,

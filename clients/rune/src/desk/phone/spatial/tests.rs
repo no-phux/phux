@@ -283,14 +283,6 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
     );
     assert_eq!(rt.state.connection.fitted.len(), 1);
     assert_eq!(rt.state.connection.areas.len(), 1);
-    assert!(
-        rt.state
-            .connection
-            .painted
-            .borrow()
-            .as_ref()
-            .is_none_or(|p| p.terminal == id(1))
-    );
     rt.update(|d, _| d.focus_pane(&id(2)));
     settle(&mut rt);
     assert_eq!(

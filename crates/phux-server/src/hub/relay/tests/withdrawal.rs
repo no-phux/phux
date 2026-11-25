@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod cancellation;
+
 /// Client 1's withdrawal from Terminal 9, polled once so it is queued.
 async fn pending_withdrawal(
     handle: &RelayHandle,
@@ -141,11 +143,19 @@ async fn unsubscribe_survives_a_full_relay_mailbox() {
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     assert!(matches!(
-        mailbox.unsubscribes.try_recv().expect("delivered"),
+        mailbox
+            .unsubscribes
+            .try_recv()
+            .expect("delivered")
+            .unsubscribe,
         Unsubscribe::Client(ClientId(1))
     ));
     assert!(matches!(
-        mailbox.unsubscribes.try_recv().expect("delivered"),
+        mailbox
+            .unsubscribes
+            .try_recv()
+            .expect("delivered")
+            .unsubscribe,
         Unsubscribe::Terminal {
             client: ClientId(2),
             terminal: 7,
@@ -200,7 +210,7 @@ async fn withdrawal_timeout_cancels_unapplied_teardown() {
         }
     ));
     let (mut session, _out_rx) = subscribed_at(0);
-    let frames = session.handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap());
+    let frames = session.handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap().unsubscribe);
     assert!(
         frames.is_empty(),
         "safe refusal must cancel queued teardown"
@@ -215,7 +225,7 @@ async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
     let (mut session, _out_rx) = subscribed_at(0);
     assert_eq!(
         session
-            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap().unsubscribe)
             .len(),
         1
     );
@@ -235,7 +245,7 @@ async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
     let (mut session, _out_rx) = subscribed_at(0);
     assert_eq!(
         session
-            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap().unsubscribe)
             .len(),
         1
     );
@@ -267,7 +277,7 @@ async fn stale_withdrawal_is_refused_while_the_newer_proxy_stays_live() {
     let (mut session, mut out_rx) = subscribed_at(u64::MAX);
     assert!(
         session
-            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+            .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap().unsubscribe)
             .is_empty()
     );
     assert!(matches!(
@@ -459,3 +469,4 @@ async fn subscribe_on_a_full_mailbox_registers_nothing_and_notifies_the_consumer
         }
     ));
 }
+

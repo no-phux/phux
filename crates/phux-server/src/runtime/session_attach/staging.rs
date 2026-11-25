@@ -138,9 +138,7 @@ impl SessionStaging {
         live: LocalBoxFuture<'static, ()>,
     ) {
         let drain = tokio_util::sync::CancellationToken::new();
-        crate::runtime::pump::spawn_tracked(
-            capture.state,
-            capture.client_id,
+        capture.host.spawn(
             pane.terminal_id,
             Some(&mut self.pumps),
             Some(drain.clone()),

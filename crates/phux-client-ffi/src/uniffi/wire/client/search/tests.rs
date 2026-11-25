@@ -397,7 +397,8 @@ fn live_wrong_terminal_and_view_anchors_remain_engine_errors() {
         .expect("connected")
         .engine()
         .expect("engine");
-    let view = engine.create_view(&ResourceId::local(1)).expect("view");
+    let source = engine.view_source(&ResourceId::local(1)).expect("source");
+    let view = engine.create_view(&source).expect("view");
     let found = engine
         .search_view(view, "needle".into(), true)
         .expect("view search");
@@ -422,3 +423,5 @@ fn retained_close_keeps_real_kernel_failures_as_engine_errors() {
     engine.release(&ResourceId::local(1));
     assert_search_unavailable(&remote, 1, u64::MAX);
 }
+
+

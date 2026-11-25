@@ -8,7 +8,7 @@ use phux_protocol::wire::DecodeError;
 
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
-mod stepped;
+pub(crate) mod stepped;
 
 use stepped::{BatchStep, FrameBatch};
 
@@ -75,7 +75,7 @@ impl ControlPlane {
         }))
     }
 
-    fn decode_frame(&self, bytes: &[u8]) -> Result<Option<FrameKind>, ControlError> {
+    pub(crate) fn decode_frame(&self, bytes: &[u8]) -> Result<Option<FrameKind>, ControlError> {
         let decoded = self.decode_limits().map_or_else(
             || FrameKind::decode(bytes),
             |limits| FrameKind::decode_with_limits(bytes, limits),
@@ -93,7 +93,7 @@ impl ControlPlane {
 
     /// Decode a frame that is already a view of the socket buffer. Payload
     /// bytes alias that buffer instead of being copied.
-    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
+    pub(crate) fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
         let decoded = FrameKind::decode_shared(bytes, self.decode_limits());
         let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
             return Ok(None);
@@ -121,6 +121,10 @@ impl ControlPlane {
         let mut step = self.step_frame_batch(&mut batch);
         loop {
             match step {
+                BatchStep::Frame(frame) => {
+                    let result = self.feed(frame);
+                    step = self.complete_frame_feed(&mut batch, result);
+                }
                 BatchStep::Done(result) => return result,
                 BatchStep::Apply(apply) => {
                     let outcomes = apply.engine.apply_batch(apply.events);

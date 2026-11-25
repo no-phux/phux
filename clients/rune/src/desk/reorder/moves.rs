@@ -7,15 +7,15 @@ use phux_client_core::layout::{ArrangementDoc, adopt_unarranged_groups, leaves};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::{Client, control::Status};
 use phux_protocol::ids::{
-    ArrangementKey, OperationId, ResourceId, Revision, SessionId, SessionKey,
+    ArrangementKey, OperationId, ResourceId, Revision, SessionKey,
 };
-use phux_protocol::wire::frame::AttachTarget;
 
 use crate::desk::{Desk, NoticeKind};
 
 pub(super) struct Move {
     follow: Option<(ResourceId, SessionKey)>,
     placement: Placement,
+    choice: u64,
 }
 
 pub(super) struct Placement {
@@ -75,7 +75,7 @@ impl Desk {
                 self.connection
                     .reorder
                     .moves
-                    .insert(operation, Move { follow, placement });
+                    .insert(operation, Move { follow, placement, choice: self.connection.view_choice });
             }
             Err(error) => self.say(NoticeKind::Error, format!("Resource not moved: {error}")),
         }
@@ -146,6 +146,7 @@ impl Desk {
                                 fallback: fallback.clone(),
                                 since: Instant::now(),
                             },
+                            choice: self.connection.view_choice,
                         },
                     );
                 }
@@ -177,7 +178,7 @@ impl Desk {
             .as_ref()
             .is_some_and(|write| write.operation == operation)
         {
-            if outcome.succeeded() {
+            if matches!(outcome, OrgOutcome::Committed(_)) {
                 let arrangement = self
                     .connection
                     .reorder
@@ -194,9 +195,9 @@ impl Desk {
         let Some(pending) = self.connection.reorder.moves.remove(&operation) else {
             return false;
         };
-        if !outcome.succeeded() {
+        if !matches!(outcome, OrgOutcome::Committed(_)) {
             self.say(NoticeKind::Error, format!(
-                "Resource move did not settle: {outcome:?}. Check the server's resources before retrying."
+                "Resource move operation {operation} did not settle: {outcome:?}. Inspect the original operation and server's resources before retrying."
             ));
             return true;
         }
@@ -211,17 +212,14 @@ impl Desk {
         self.connection.reorder.placements.push(placement);
         if let Some((live, to)) = pending.follow
             && self.follows(&live)
-            && let Some(session) = self
-                .connection
-                .topology
-                .as_ref()
-                .and_then(|t| t.session_keyed(&to))
+            && pending.choice == self.connection.view_choice
+            && self.connection.view_intents.get(&live)
+                .is_some_and(|intent| intent.select_session(client, &to))
         {
             // Keep the selected moved resource visible, but do not steal focus
             // if the person navigated elsewhere while the receipt travelled.
-            client.attach_session(AttachTarget::ById(SessionId::new(session.id)));
             self.connection.zoomed = None;
-            self.want(live);
+            self.want_automatic(live);
         }
         true
     }

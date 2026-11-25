@@ -129,7 +129,7 @@ pub(crate) async fn bootstrap_attach_terminal(
     agent_after_seq: Option<u64>,
 ) -> Result<(), AttachResourceFailure> {
     let stream = crate::runtime::apps::StreamBootstrap {
-        state,
+        host: crate::runtime::apps::StreamHost::new(state, client_id),
         client_id,
         wire: terminal_id,
         core,

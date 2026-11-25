@@ -100,7 +100,7 @@ impl super::SessionLoop {
             &self.mirror.agent_meta,
             &mut self.vcs,
             rows,
-            self.peers.inputs(&self.review),
+            self.peers.inputs(&self.review, &self.peer_presentation),
         );
         self.observe_agents_for_notify(&agents);
         changed
@@ -254,7 +254,7 @@ impl super::SessionLoop {
         sidebar: Option<SidebarReservation>,
         repaint: &mut RepaintAccumulator,
     ) {
-        if std::mem::take(&mut self.peers.chrome_dirty) {
+        if std::mem::take(&mut self.peer_presentation.chrome_dirty) {
             self.note_chrome_change(repaint);
         }
         let drained = repaint.drain();
@@ -440,7 +440,7 @@ impl super::SessionLoop {
         }
         crate::attach::hosts::remember(&hosts);
         self.peers.remote_hosts = hosts;
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
         self.session_picker_dirty = true;
         let mut repaint = RepaintAccumulator::default();
         self.drain_repaint(out, sidebar, &mut repaint);
@@ -457,7 +457,7 @@ impl super::SessionLoop {
         done: JobDone,
     ) -> Result<super::Step, crate::attach::AttachError> {
         if done.refresh_inventory {
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
             self.session_picker_dirty = true;
         }
         if let Some(toast) = done.toast {

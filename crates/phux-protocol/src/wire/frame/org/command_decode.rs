@@ -43,6 +43,13 @@ pub(in crate::wire) fn decode_org_command(
             attrs: f.attrs,
             launch: f.launch,
         },
+        crate::wire::frame::COMMAND_TAG_SESSION_ENSURE => Command::SessionEnsure {
+            operation: f.operation()?,
+            lifetime: f.lifetime()?.unwrap_or_default(),
+            name: req(f.name)?,
+            attrs: f.attrs,
+            launch: f.launch,
+        },
         COMMAND_TAG_SESSION_RENAME => Command::SessionRename {
             operation: f.operation()?,
             session: f.session()?,

@@ -53,6 +53,8 @@ mod osc_scan;
 #[cfg(target_os = "linux")]
 mod pane_scope;
 mod park;
+mod process;
+mod publication;
 mod process_facet;
 pub mod program_status;
 #[cfg(any(test, feature = "test-support"))]
@@ -61,7 +63,7 @@ pub mod requests;
 mod resume;
 mod run_loop;
 pub mod spawn;
-pub mod sync;
+mod sync;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -81,7 +83,7 @@ use hangup::HangupPolicy;
 pub use phux_terminal_api::input::{DirectWrite, LaneAhead};
 pub use requests::*;
 pub use spawn::*;
-pub use sync::*;
+use sync::ConsumerSyncState;
 pub use tick::*;
 
 /// Line half of [`DEFAULT_SCROLLBACK`]: a tmux-style mid-range value.
@@ -162,36 +164,13 @@ pub struct TerminalActor {
     /// idle pane skip the per-consumer walk. Self-owned because libghostty's
     /// dirty bits are consumed by any `RenderState::update`.
     terminal_dirty_since_tick: bool,
-    /// When input last reached the PTY writer, for the `echo.server` sample.
-    last_input_at: std::cell::Cell<Option<std::time::Instant>>,
-    /// When this pane last produced output (gates `echo.server` arming).
-    last_output_at: std::cell::Cell<Option<std::time::Instant>>,
     /// Backing-agnostic half: output sequence and broadcast, event fan-out,
     /// lifecycle, control mailbox.
     core: ResourceCore,
-    key_enc: RefCell<PerTerminalKeyEncoder>,
-    mouse_enc: RefCell<PerTerminalMouseEncoder>,
-    focus_enc: RefCell<PerTerminalFocusEncoder>,
-    paste_enc: RefCell<PerTerminalPasteEncoder>,
-    input_rx: mpsc::Receiver<TerminalInput>,
-    /// Bounded lane-to-actor handoff of already encoded PTY bytes.
-    encoded_input_rx: mpsc::Receiver<EncodedInputRequest>,
-    /// Publishes terminal-derived input modes and dimensions to the input lane.
-    input_snapshot_tx: watch::Sender<InputEncoderSnapshot>,
+    process: process::TerminalProcess,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
-    /// Native checkpoint bindings keyed by `(owner, stream_id)`.
-    native_cursor_owners: HashMap<NativeCursorKey, NativeCursorOwner>,
-    /// Native pumps the last reflow tombstoned, owed a resync.
-    reflow_tombstoned: Vec<phux_resource::ResyncTarget>,
-    pending_native_bootstrap: Option<PendingNativeBootstrap>,
-    /// Where native captures take their host bytes.
-    native_alloc: NativeAlloc,
-    native_bootstrap_backlog: VecDeque<NativeBootstrapRequest>,
-    pending_native_history: Option<PendingNativeHistory>,
-    native_history_backlog: VecDeque<PendingNativeHistory>,
-    native_publications:
-        HashMap<crate::native_state::OpaqueHistoryCursor, NativePublicationGeneration>,
+    publication: publication::PublicationOwner,
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,
     screen_rx: mpsc::Receiver<ScreenRequest>,
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
@@ -206,25 +185,9 @@ pub struct TerminalActor {
     consumer_detach_rx: mpsc::Receiver<ConsumerDetachRequest>,
     /// Per-consumer `FRAME_ACK` channel.
     consumer_ack_rx: mpsc::Receiver<ConsumerAckRequest>,
-    /// Per-consumer state-sync cache (ADR-0018), keyed by [`ClientId`];
-    /// inserted on attach, removed on detach.
-    consumer_states: HashMap<ClientId, ConsumerSyncState>,
-    /// Whether the per-consumer tick emits for every consumer (ADR-0018).
-    /// `false` in production: human attach gets raw PTY bytes, and only
-    /// consumers that negotiated `StateSync` are tick-managed. Test-only
-    /// setters flip it.
-    consumer_tick_emits: bool,
-    /// PTY output from the reader thread; `None` for the no-PTY test actor.
-    pty_rx: Option<mpsc::Receiver<PtyEvent>>,
     /// Chunks drained behind the first one of a PTY burst, reused across
     /// bursts so coalescing sizes its one join allocation exactly.
     pty_burst: Vec<Bytes>,
-    /// Input bytes for the PTY writer thread; `None` without a PTY.
-    pty_tx: Option<mpsc::Sender<EncodedInputRequest>>,
-    /// PTY resources; dropped on shutdown to send EOF and stop the threads.
-    pty: Option<PtyOwned>,
-    /// The grace the child gets on teardown.
-    hangup: HangupPolicy,
     /// Sink for agent events sourced from the PTY stream, set by
     /// the runtime's spawn path and drained into the event journal.
     /// Non-blocking: a full sink drops and counts, for a `source_gap`
@@ -283,25 +246,11 @@ pub struct TerminalActor {
     /// Shell-integration effects the engine's callbacks queued during the
     /// current write, drained in stream order after it.
     effects: effects::PendingEffects,
-    /// OSC 133 prompt state behind the `process.prompt` facet.
-    prompt: effects::PromptTracker,
-    /// PTY child start time (Unix ms), captured at build so `process.child`
-    /// still names the right process after reap and pid reuse.
-    child_start_ms: Option<u64>,
-    /// The child pid kept after a retained pane releases its PTY (ADR-0124).
-    released_child_pid: Option<i32>,
-    /// The exit facet, recorded at PTY EOF.
-    exit: Option<phux_core::process::ProcessExit>,
-    /// Supervisory lifecycle (ADR-0033): `Running` or `Frozen`.
-    lifecycle: ResourceLifecycle,
     cols: u16,
     rows: u16,
     /// Cell size in pixels for winsize and XTWINOPS; never zero. Updated by
     /// resizes that carry pixel metrics, kept by those that do not.
     cell_px: (u16, u16),
-    /// An ioctl failure must remain retryable even when the grid already
-    /// has the requested geometry.
-    pty_resize_pending: bool,
     /// Geometry shared with libghostty's `on_size` callback, which answers
     /// XTWINOPS queries inside `vt_write`.
     size_report: Rc<Cell<SizeReportSize>>,
@@ -312,7 +261,7 @@ impl std::fmt::Debug for TerminalActor {
         f.debug_struct("TerminalActor")
             .field("cols", &self.cols)
             .field("rows", &self.rows)
-            .field("has_pty", &self.pty.is_some())
+            .field("has_pty", &self.process.pty.is_some())
             .finish_non_exhaustive()
     }
 }

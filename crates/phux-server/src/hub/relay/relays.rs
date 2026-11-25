@@ -25,12 +25,12 @@ impl HubRelays {
 
     /// The relay handle for `host`, if the hub dials that satellite.
     pub(crate) fn get(&self, host: &SatelliteHost) -> Option<RelayHandle> {
-        self.lock().get(host).cloned()
+        self.lock().get(host).map(RelayHandle::pinned)
     }
 
     /// Every registered handle (detach fan-out).
     pub(crate) fn all(&self) -> Vec<RelayHandle> {
-        self.lock().values().cloned().collect()
+        self.lock().values().map(RelayHandle::pinned).collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<SatelliteHost, RelayHandle>> {

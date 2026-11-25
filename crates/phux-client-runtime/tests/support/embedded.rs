@@ -153,7 +153,7 @@ pub fn reopen(plane: &mut ControlPlane, hello: FrameKind) {
 
 /// A plane with `options`, connected and answered with `hello`.
 pub fn opened(options: ControlOptions, hello: FrameKind) -> ControlPlane {
-    let mut plane = ControlPlane::new(options);
+    let mut plane = ControlPlane::new(std::time::Instant::now(), options);
     reopen(&mut plane, hello);
     plane
 }
@@ -188,7 +188,7 @@ pub fn negotiate(
     hello: FrameKind,
     expected_followups: Option<usize>,
 ) -> (ControlPlane, Vec<FrameKind>) {
-    let mut plane = ControlPlane::new(options);
+    let mut plane = ControlPlane::new(std::time::Instant::now(), options);
     assert_eq!(plane.status(), Status::Idle);
     plane.connection_opened();
     assert_eq!(plane.status(), Status::Connecting);

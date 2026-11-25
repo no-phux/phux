@@ -222,7 +222,7 @@ pub(super) async fn wait_until_connectable(
 /// report HERE and returns `Err(Disconnected)`, so callers must not print a
 /// second remedy. `default_name = Some` enables one lookup-only `ByName` retry
 /// after a refused `Last`.
-pub(super) async fn attach_with_reconnect(
+pub(crate) async fn attach_with_reconnect(
     dial: &Dial,
     first: Option<Box<Connection>>,
     target: AttachTarget,

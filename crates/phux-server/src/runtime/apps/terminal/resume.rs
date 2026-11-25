@@ -190,7 +190,13 @@ mod tests {
         let terminal = state.with_mut(|s| s.idspace.intern_resource(pane));
         state.with_mut(|s| report(s, &terminal, ResumeToken::new("demo", "finished")));
         assert!(stored(&state, pane).resume.is_some());
-        state.with_mut(|s| s.activation_ended(pane, ExitOutcome::exited(0), false));
+        state.with_mut(|s| {
+            s.activation_ended(
+                s.activation_token(pane).unwrap(),
+                ExitOutcome::exited(0),
+                false,
+            )
+        });
         // A ResourceLaunchReported after completion is stale: the exit
         // transition must clear it, not depend on task scheduling.
         state.with_mut(|s| report(s, &terminal, None));

@@ -6,33 +6,98 @@ use phux_protocol::wire::frame::AttachTarget;
 
 use crate::commands::DEFAULT_SESSION_NAME;
 
-/// `defaults.attach-session` as the target of an attach with no name: that
-/// session, created when missing. Under `cwd-inheritance = "fixed"` the
-/// server places it; otherwise it starts here. `None` when unset.
-pub(super) fn configured_target() -> Option<(String, AttachTarget)> {
+/// Creation intent for `defaults.attach-session`, never an attach wire target.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ConfiguredSession {
+    pub(super) name: String,
+    cwd: Option<String>,
+    startup_command: Option<(String, String)>,
+}
+
+impl ConfiguredSession {
+    /// Ensure once, then select only the receipt's exact durable identity.
+    /// Reconnects reuse the resolved attach target and never repeat this intent.
+    pub(super) async fn ensure_target(
+        mut self,
+        dial: &phux_client::attach::Dial,
+        startup: Option<crate::commands::server::EnsureDisposition>,
+    ) -> Result<(phux_client::attach::connection::Connection, AttachTarget), phux_client::attach::AttachError> {
+        use phux_client::{attach::connection::Connection, org};
+        use phux_protocol::wire::frame::{LaunchSpec, SessionLifetime};
+        let command = self.seed_command(startup);
+        let mut conn = Connection::connect_dial(dial).await?;
+        let operation = org::mint_operation();
+        let receipt = org::ensure_session(
+            &mut conn, operation, self.name, SessionLifetime::Ephemeral,
+            Some(Box::new(LaunchSpec::new(command).with_cwd(self.cwd))),
+            Vec::new(),
+        ).await.map_err(|error| match error {
+            org::OrgError::Unsupported | org::OrgError::Refused(_) =>
+                phux_client::attach::AttachError::Refused(error.to_string()),
+            org::OrgError::OutcomeUnknown { operation } =>
+                phux_client::attach::AttachError::OperationOutcomeUnknown { operation },
+            _ => phux_client::attach::AttachError::OperationOutcomeUnknown { operation: Some(operation) },
+        })?;
+        let session = receipt.session.ok_or(phux_client::attach::AttachError::OperationOutcomeUnknown {
+            operation: Some(receipt.operation),
+        })?;
+        let target = org::attach_target_for_receipt(&mut conn, &receipt).await.map_err(|error|
+            phux_client::attach::AttachError::CommittedSelectionUnavailable {
+                operation: receipt.operation, session, message: error.to_string(),
+            })?;
+        Ok((conn, target))
+    }
+
+    /// Only the process that actually started this server projects its
+    /// first-session command. Joined/reused servers keep plain-shell creation.
+    fn seed_command(&mut self, startup: Option<crate::commands::server::EnsureDisposition>) -> Vec<String> {
+        use crate::commands::server::EnsureDisposition::{DaemonStarted, SupervisedStarted};
+        if !matches!(startup, Some(DaemonStarted | SupervisedStarted)) {
+            return Vec::new();
+        }
+        let Some((shell, text)) = self.startup_command.take() else {
+            return Vec::new();
+        };
+        let login = startup == Some(SupervisedStarted)
+            || std::env::var_os(crate::commands::service::SERVICE_MANAGED_ENV).is_some();
+        // Same known-shell login flags as terminal_api::launch::default_shell_command.
+        let flag = if login {
+            match std::path::Path::new(&shell).file_name().and_then(std::ffi::OsStr::to_str) {
+                Some("bash" | "zsh" | "sh") => Some("-l"),
+                Some("fish") => Some("--login"),
+                _ => None,
+            }
+        } else { None };
+        let mut command = Vec::with_capacity(3 + usize::from(flag.is_some()));
+        command.push(shell);
+        if let Some(flag) = flag { command.push(flag.to_owned()); }
+        command.push("-c".to_owned());
+        command.push(text);
+        command
+    }
+}
+
+/// Configured home, created by host ensure only when missing.
+pub(super) fn configured_session() -> Option<ConfiguredSession> {
     let defaults = config_loader::load().ok()?.defaults;
     target_for(&defaults, std::env::current_dir().ok())
 }
 
-/// [`configured_target`] over a parsed `[defaults]` and the client's cwd.
 fn target_for(
     defaults: &phux_config::DefaultsCfg,
     cwd: Option<std::path::PathBuf>,
-) -> Option<(String, AttachTarget)> {
-    let name = defaults.attach_session.clone()?;
-    let name = name.trim();
+) -> Option<ConfiguredSession> {
+    let name = defaults.attach_session.as_deref()?.trim();
     if name.is_empty() {
         return None;
     }
     let cwd = cwd
         .filter(|_| defaults.fixed_start_dir().is_none())
         .map(|dir| dir.to_string_lossy().into_owned());
-    let target = AttachTarget::CreateIfMissing {
-        name: name.to_owned(),
-        command: None,
-        cwd,
-    };
-    Some((name.to_owned(), target))
+    let startup_command = defaults.spawn_on_attach.as_ref().map(|text| (
+        phux_config::shell::resolve_shell(defaults.shell.as_deref()), text.clone(),
+    ));
+    Some(ConfiguredSession { name: name.to_owned(), cwd, startup_command })
 }
 
 /// `name` as the lookup-only retry for a server that cannot resolve
@@ -108,7 +173,7 @@ pub(super) fn default_lookup_target(default_name: &str) -> AttachTarget {
 #[cfg(test)]
 mod tests {
     use phux_config::{CwdInheritance, DefaultsCfg};
-    use phux_protocol::wire::frame::AttachTarget;
+    use super::ConfiguredSession;
 
     use super::target_for;
 
@@ -121,14 +186,11 @@ mod tests {
         assert_eq!(target_for(&defaults, here.clone()), None);
         defaults.attach_session = Some("scratch".to_owned());
         let created = |cwd: Option<&str>| {
-            Some((
-                "scratch".to_owned(),
-                AttachTarget::CreateIfMissing {
-                    name: "scratch".to_owned(),
-                    command: None,
-                    cwd: cwd.map(str::to_owned),
-                },
-            ))
+            Some(ConfiguredSession {
+                name: "scratch".to_owned(),
+                cwd: cwd.map(str::to_owned),
+                startup_command: None,
+            })
         };
         assert_eq!(target_for(&defaults, here.clone()), created(Some("/work")));
         // The server places it under `fixed`.
@@ -136,3 +198,6 @@ mod tests {
         assert_eq!(target_for(&defaults, here), created(None));
     }
 }
+
+#[cfg(test)]
+mod workflow_tests;

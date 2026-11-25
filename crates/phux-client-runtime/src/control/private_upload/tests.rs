@@ -33,7 +33,7 @@ fn seed(control: &mut ControlPlane, record: ResourceRecord) {
 }
 
 fn connected() -> (ControlPlane, PrivateUploadDestination) {
-    let mut control = ControlPlane::new(ControlOptions::default());
+    let mut control = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     control.connection_opened();
     control.take_outbound();
     control.server = Some(ServerInfo {

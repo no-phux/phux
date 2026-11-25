@@ -3,21 +3,9 @@ use phux_protocol::ids::Revision;
 
 #[test]
 fn create_launches_only_with_a_directory_or_for_an_ephemeral_session() {
-    let Command::SessionCreate { launch, .. } =
-        create_command("notes".to_owned(), WireSessionLifetime::Persistent, None).unwrap()
-    else {
-        panic!("not a create");
-    };
-    assert!(launch.is_none());
-    let Command::SessionCreate {
-        launch, lifetime, ..
-    } = create_command("quick".to_owned(), WireSessionLifetime::Ephemeral, None).unwrap()
-    else {
-        panic!("not a create");
-    };
-    assert_eq!(lifetime, SessionLifetime::Ephemeral);
-    assert!(launch.is_some());
-    assert!(create_command(String::new(), WireSessionLifetime::Persistent, None).is_err());
+    assert!(create_launch(WireSessionLifetime::Persistent, None).is_none());
+    assert!(create_launch(WireSessionLifetime::Ephemeral, None).is_some());
+    assert!(create_launch(WireSessionLifetime::Persistent, Some("/tmp".into())).is_some());
 }
 
 /// Create and rename judge a name by core's one rule; a refusal is
@@ -35,7 +23,7 @@ fn create_and_rename_refuse_what_core_refuses() {
     let key = SessionKey::new([2; 16]).unwrap().to_string();
     for bad in ["x:y", too_long.as_str(), "a\tb", "a\0b", "@3"] {
         assert_eq!(
-            word(create_command(
+            word(remote.create_session(
                 bad.to_owned(),
                 WireSessionLifetime::Persistent,
                 None
@@ -52,8 +40,9 @@ fn create_and_rename_refuse_what_core_refuses() {
     }
     let at_limit = "a".repeat(phux_client_core::rename::MAX_SESSION_NAME_BYTES);
     for good in ["notes", at_limit.as_str()] {
-        assert!(
-            create_command(good.to_owned(), WireSessionLifetime::Persistent, None).is_ok(),
+        assert_eq!(
+            word(remote.create_session(good.to_owned(), WireSessionLifetime::Persistent, None)).as_deref(),
+            Some("not_connected"),
             "create {good:?}"
         );
         assert_eq!(
@@ -86,6 +75,7 @@ fn created_session_key_is_correlated_with_its_committed_operation() {
                 message: String::new(),
                 undoable: true,
                 created_session_key: Some(session.to_string()),
+                ensured_created: None,
             })
         );
     }

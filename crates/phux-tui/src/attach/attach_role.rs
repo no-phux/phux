@@ -19,6 +19,12 @@ pub fn set_attach_role(policy: RolePolicy) {
     ATTACH_ROLE.store(policy.to_u8(), Ordering::Relaxed);
 }
 
+/// Validate before committing work without consuming a one-shot takeover.
+pub(super) fn check_attach_role(conn: &Connection) -> Result<(), AttachError> {
+    let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
+    role_field(policy, advertises_roles(conn)).map(|_| ())
+}
+
 /// The `role_policy` for an `ATTACH` on `conn`: `None` by default (byte
 /// identical to pre-role frames). A declared role against a server that would
 /// ignore it is refused rather than silently widened.

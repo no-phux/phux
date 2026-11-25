@@ -32,6 +32,10 @@ impl Owner {
 
     fn query_common(&self, query: Query) -> Option<Query> {
         match query {
+            #[cfg(all(test, feature = "engine"))]
+            Query::ViewCount(reply) => {
+                let _ = reply.send(self.views.len());
+            }
             Query::HasProjection(id, reply) => {
                 let _ = reply.send(self.has_replica(&id));
             }
@@ -153,7 +157,7 @@ impl Owner {
             Query::Prompt(id, reply) => {
                 let _ = reply.send(
                     self.terminal(&id)
-                        .map_or(ReplicaPrompt::Unknown, views::replica_prompt),
+                        .map_or(ReplicaPrompt::Unknown, views::prompts::replica_prompt),
                 );
             }
             query => return Some(query),

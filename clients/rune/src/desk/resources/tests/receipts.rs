@@ -188,7 +188,7 @@ fn spawn_failure_receipts_settle_on_same_and_replaced_servers() {
 }
 
 #[test]
-fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
+fn successful_spawn_receipts_cannot_create_a_first_view_on_a_new_connection_epoch() {
     for mirror in [false, true] {
         for server in [1, 2] {
             let (client, mut rt) = one_document();
@@ -198,20 +198,7 @@ fn successful_spawn_receipts_place_only_on_the_exact_same_server() {
             reattach(&client, server);
             drain(&mut rt, &client);
             assert!(!rt.state.connection.pending_splits.contains_key(&request));
-            if server == 2 {
-                cancelled(&rt, &client);
-                continue;
-            }
-            assert!(
-                rt.state.connection.split_write.is_some(),
-                "new tab gets its arrangement write"
-            );
-            assert_eq!(rt.state.connection.layout_ops.len(), 1);
-            assert_eq!(
-                rt.state.connection.resources.producers.contains_key(&id(2)),
-                mirror
-            );
-            assert!(replaces_arrangement(&client));
+            cancelled(&rt, &client);
         }
     }
 }
@@ -235,12 +222,7 @@ fn old_success_waits_for_fresh_hello_not_the_cached_server_identity() {
         outbound(&client);
         reattach(&client, server);
         step(&mut rt);
-        if server == 1 {
-            assert!(rt.state.connection.split_write.is_some());
-            assert!(!rt.state.connection.pending_splits.contains_key(&request));
-        } else {
-            cancelled(&rt, &client);
-        }
+        cancelled(&rt, &client);
     }
 }
 
@@ -256,18 +238,7 @@ fn plain_terminal_spawn_receipt_cannot_focus_a_reused_handle() {
         reattach(&client, server);
         drain(&mut rt, &client);
         assert!(rt.state.connection.pending_spawns.is_empty());
-        if server == 1 {
-            assert_eq!(
-                rt.state
-                    .connection
-                    .wanted
-                    .as_ref()
-                    .map(|(id, _)| id.clone()),
-                Some(id(2))
-            );
-        } else {
-            cancelled(&rt, &client);
-        }
+        cancelled(&rt, &client);
     }
 }
 

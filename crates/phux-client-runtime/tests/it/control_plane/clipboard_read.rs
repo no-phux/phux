@@ -11,7 +11,7 @@ const READ: &[u8] = b"\x1b]52;c;?\x07";
 /// `negotiated()` + attach against a server that does (or does not)
 /// advertise `CLIPBOARD_READ`.
 fn attached_to(replies: bool) -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions {
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         viewport: (20, 4),
         ..ControlOptions::default()

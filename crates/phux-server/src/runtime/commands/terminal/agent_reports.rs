@@ -1,0 +1,147 @@
+//! Agent state and asked reports into an instrumented Terminal.
+
+use phux_agent_session::asked::{AskedPayload, AskedSource};
+use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+use tokio::sync::oneshot;
+
+use crate::runtime::commands::terminal::signal::local_terminal;
+use crate::runtime::commands::actor_reply;
+use crate::state::{ResolvedOwned, SharedState};
+
+/// Feed integration-hook lifecycle evidence into a pane (ADR-0085): as a
+/// synthesized record on a live `AgentSession` child's stream, else straight
+/// into the detector (ADR-0103 decision 6).
+pub(crate) async fn handle_report_agent_state(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    reported: phux_protocol::wire::frame::ReportedAgentState,
+) -> CommandResult {
+    if state.with(|s| {
+        s.idspace
+            .resource_from_wire(terminal_id)
+            .is_some_and(|core| s.native_owned_terminal(core))
+    }) {
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "SDK-owned lifecycle requires its native controller",
+        );
+    }
+    // One borrow, so a `session_end` cannot land between the two reads.
+    let (resolved, live_session) = state.with(|server| {
+        let resolved = server.resolve_resource(terminal_id).into_owned();
+        let live_session = matches!(resolved, ResolvedOwned::Local(_))
+            && server.resource_has_live_session(terminal_id);
+        (resolved, live_session)
+    });
+    // The report addresses the instrumented Terminal, never the child stream.
+    let (_, handle) = match local_terminal(resolved, terminal_id, "REPORT_AGENT_STATE") {
+        Ok(local) => local,
+        Err(refusal) => return refusal,
+    };
+    let (reply, result) = oneshot::channel();
+    let request = if live_session {
+        phux_agent_session::parent::AgentParentRequest::SynthesizeStateRecord {
+            state: reported,
+            reply,
+        }
+    } else {
+        phux_agent_session::parent::AgentParentRequest::ReportState {
+            state: reported,
+            reply,
+        }
+    };
+    let delivered = match handle.companion::<phux_agent_session::parent::AgentParent>() {
+        Some(agent_parent) => agent_parent.mailbox.send(request).await.is_ok(),
+        None => false,
+    };
+    if !delivered {
+        return CommandResult::error(
+            ErrorCode::InternalError,
+            "pane actor unavailable for REPORT_AGENT_STATE",
+        );
+    }
+    actor_reply(
+        result.await,
+        ErrorCode::InvalidCommand,
+        "REPORT_AGENT_STATE",
+    )
+}
+
+pub(crate) fn handle_report_asked(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    id: String,
+    question: String,
+    suggestions: Vec<String>,
+    elapsed_seconds: Option<u64>,
+) -> CommandResult {
+    let resolved = state.with(|s| s.resolve_resource(terminal_id).into_owned());
+    let terminal = match local_terminal(resolved, terminal_id, "REPORT_ASKED") {
+        Ok((terminal, _)) => terminal,
+        Err(refusal) => return refusal,
+    };
+    if state.with(|s| s.native_owned_terminal(terminal)) {
+        return CommandResult::error(
+            ErrorCode::NotProducer,
+            "SDK-owned questions require its native controller",
+        );
+    }
+    if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
+        return CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message,
+        };
+    }
+    let payload = AskedPayload {
+        id,
+        question,
+        suggestions,
+        elapsed_seconds,
+    };
+    let transition = state.with_mut(|s| {
+        let transition = s.report_agent_asked(terminal, AskedSource::Hook, payload);
+        crate::hub::metadata_mirror::publish_asked_flag(s, terminal_id, s.agent_is_asked(terminal));
+        transition
+    });
+    if let Some(payload) = transition.emit_payload() {
+        crate::runtime::connections::broadcast_event(
+            state,
+            Some(terminal_id),
+            &payload.into_event(),
+        );
+    }
+    CommandResult::Ok
+}
+
+fn validate_asked_payload(id: &str, question: &str, suggestions: &[String]) -> Option<String> {
+    const MAX_ID_BYTES: usize = 128;
+    const MAX_QUESTION_BYTES: usize = 4096;
+    const MAX_SUGGESTIONS: usize = 16;
+    const MAX_SUGGESTION_BYTES: usize = 512;
+
+    if question.trim().is_empty() {
+        return Some("asked question must not be empty".to_owned());
+    }
+    if id.len() > MAX_ID_BYTES {
+        return Some(format!("asked id exceeds {MAX_ID_BYTES} bytes"));
+    }
+    if question.len() > MAX_QUESTION_BYTES {
+        return Some(format!("asked question exceeds {MAX_QUESTION_BYTES} bytes"));
+    }
+    if suggestions.len() > MAX_SUGGESTIONS {
+        return Some(format!(
+            "asked suggestions exceed {MAX_SUGGESTIONS} entries"
+        ));
+    }
+    for suggestion in suggestions {
+        if suggestion.trim().is_empty() {
+            return Some("asked suggestions must not be empty".to_owned());
+        }
+        if suggestion.len() > MAX_SUGGESTION_BYTES {
+            return Some(format!(
+                "asked suggestion exceeds {MAX_SUGGESTION_BYTES} bytes"
+            ));
+        }
+    }
+    None
+}

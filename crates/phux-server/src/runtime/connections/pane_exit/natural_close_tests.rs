@@ -141,6 +141,7 @@ fn start() -> OutputPumpStart {
         published_cut: 0,
         replay: Vec::new(),
         live: None,
+        interest: None,
     }
 }
 

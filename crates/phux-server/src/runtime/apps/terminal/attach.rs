@@ -12,9 +12,9 @@ use phux_core::ResourceId;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
 };
-use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
+use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{
-    ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
+    ErrorCode, FrameKind,
 };
 use std::ops::ControlFlow;
 use tokio::sync::oneshot;
@@ -23,17 +23,11 @@ use tokio_util::sync::CancellationToken;
 
 use tracing::{debug, trace, warn};
 
-use super::commands::seed::{
-    SpawnOwnership, seed_session_with_pty_and_colors, spawn_pane_with_pty_and_colors,
-};
-use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
 #[cfg(test)]
 use crate::runtime::prepare_attach;
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::runtime::send_error;
-use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
-use crate::runtime::stream_id_from;
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use phux_terminal_api::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PwdRequest, ResizeRequest, ResizeSender,
@@ -51,12 +45,9 @@ mod pane_capture_run;
 mod prepare;
 mod publication;
 mod pump_loop;
-mod spawn;
-mod spawn_plan;
-mod spawn_publication;
 mod target;
 
-use bootstrap::publishes_native_checkpoints;
+
 pub(crate) use bootstrap::*;
 use bootstrap::{BootstrapStagingBudget, SnapshotGate};
 #[cfg(test)]
@@ -67,19 +58,12 @@ pub(crate) use output_pump::*;
 use output_pump::{PaneResync, tombstone_reason_for};
 use pane_capture::PaneCaptureContext;
 use prepare::{AttachStaging, CaptureFailure, ConsumerRegistration};
-pub(crate) use prepare::{apply_session_role, fence_consumer, prepare_consumers, release_consumer};
+pub(crate) use prepare::{fence_consumer, prepare_consumers, release_consumer};
 use publication::release_gates;
 #[cfg(test)]
 use pump_loop::next_wait;
 pub(crate) use pump_loop::*;
-use pump_loop::{GapCause, run_output_pump};
-pub(crate) use spawn::*;
-use spawn_plan::{
-    PaneSpawnPlan, build_spawn_command, forwarded_resource, refuse_vanished_pane_handle,
-    resolve_spawn_ownership, spawn_argv_builder, spawn_pane_or_refusal, spawn_terminal_output_pump,
-    subscribe_spawning_client, usable_initial_size, validate_local_spawn,
-};
-use spawn_publication::SpawnPublication;
+use pump_loop::GapCause;
 pub(crate) use target::*;
 
 #[cfg(test)]

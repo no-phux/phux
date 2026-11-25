@@ -11,7 +11,7 @@ use phux_server_testkit::{
 };
 
 fn plane(retained_rows: usize) -> ControlPlane {
-    ControlPlane::new(ControlOptions {
+    ControlPlane::new(std::time::Instant::now(), ControlOptions {
         attach: Some(AttachTarget::ByName("native-progressive".to_owned())),
         viewport: (200, 3),
         scrollback_lines: 10_000,

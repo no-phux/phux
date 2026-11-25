@@ -121,8 +121,8 @@ pub enum ReattachTarget {
         /// Pane identity to focus after re-attach, instead of indices.
         resource: Option<ResourceId>,
     },
-    /// Create — or attach to, if it already exists — a session by name
-    /// (`new-session`). `directory` and `host` come from the focused pane
+    /// Create a new session, refusing an existing name (`new-session`).
+    /// `directory` and `host` come from the focused pane
     /// or an explicit pick, never from the client process's working directory.
     Create {
         /// Session name.
@@ -149,6 +149,8 @@ pub(in crate::attach) struct PendingSessionRename {
     /// Sent as `SESSION_RENAME` (ADR-0161): the reply is `COMMITTED` or
     /// `REFUSED`, not a snapshot.
     pub organization: bool,
+    /// Original operation for exact organization acknowledgement matching.
+    pub operation: Option<phux_protocol::ids::OperationId>,
 }
 
 /// Encode the workspace for `SET_METADATA`, logging encode failures.

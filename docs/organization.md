@@ -62,6 +62,22 @@ one terminal, never a subtree.
   [`phux slot next|prev`](./reference/cli.md#phux-slot). An attached client's
   keys ([keys](./reference/keys.md)) change only what that client shows.
 
+## Ensuring a named session
+
+`SESSION_ENSURE { operation, name, lifetime, attrs, launch }` requires the
+`SESSION_ENSURE` capability and current create authority. The host resolves
+the name and journals the exact result under its organization serialization.
+`COMMITTED.session` is the exact durable key; `ensured_created` distinguishes
+an existing session from one created by this operation.
+
+An existing session is never reseeded or given a different lifetime or attributes. A new
+session and optional first launch intent commit atomically. Exact create
+remains separate: `SESSION_CREATE` still refuses an occupied name.
+Replaying the same operation returns its original resolution, even after
+deletion or name reuse; a different request or actor cannot adopt the receipt.
+Current connection policy still applies before replay. Older peers are
+unsupported, never a reason to fall back to local lookup followed by create.
+
 ## Close intents
 
 | Request | Target | Reply |

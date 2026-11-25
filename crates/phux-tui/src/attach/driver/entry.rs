@@ -27,6 +27,7 @@ pub(super) use super::loop_exit::{
 };
 use super::main_loop::main_loop;
 use super::session_io::{attach_client_caps, attach_client_name, send_attach, wait_for_attached};
+use super::session_switch::reattach_on_same_connection;
 use super::terminal::{RawModeGuard, exit_after_detach, install_panic_hook_once};
 
 enum AttachStart<'a> {
@@ -435,75 +436,3 @@ async fn attach_session<W: crate::attach::RenderSink>(
     }
 }
 
-/// Detach and re-handshake against `target` on the same connection, returning
-/// the new `ATTACHED`; a one-step pick is stashed for the next entry.
-async fn reattach_on_same_connection(
-    conn: &mut Connection,
-    target: ReattachTarget,
-    pick: &mut EntryPick,
-    orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut crate::attach::review::ReviewIndex,
-) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
-    detach_and_drain(conn, orphan_kills, review).await?;
-    let attach_target = match target {
-        ReattachTarget::Existing {
-            name,
-            id,
-            window,
-            pane,
-            resource,
-        } => {
-            *pick = EntryPick {
-                window,
-                pane,
-                resource,
-            };
-            id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
-        }
-        ReattachTarget::Create {
-            name,
-            directory,
-            host: _,
-        } => create_session_target(name, directory),
-    };
-    super::session_io::create_persistent_session(conn, &attach_target).await;
-    let attach_id = send_attach(conn, attach_target).await?;
-    let attached = wait_for_attached(conn, attach_id).await?;
-    tracing::info!("attach loop: re-attach handshake complete");
-    Ok(attached)
-}
-
-/// The `CreateIfMissing` target for an in-TUI session create, in
-/// `directory` (never the client process's cwd).
-pub(super) fn create_session_target(name: String, directory: Option<String>) -> AttachTarget {
-    AttachTarget::CreateIfMissing {
-        name,
-        command: None,
-        cwd: directory.filter(|path| !path.is_empty()),
-    }
-}
-
-/// Send `DETACH` and discard frames until `DETACHED`, so the server releases
-/// per-consumer state before the next `ATTACH`. `orphan_kills` and the
-/// review index still see drained frames: they outlive the session.
-async fn detach_and_drain(
-    conn: &mut Connection,
-    orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut crate::attach::review::ReviewIndex,
-) -> Result<(), AttachError> {
-    conn.send(&FrameKind::Detach).await?;
-    loop {
-        match conn.recv().await? {
-            FrameKind::Detached { .. } => {
-                orphan_kills.finish_switch_drain();
-                conn.unbind_all_terminals();
-                return Ok(());
-            }
-            other => {
-                tracing::trace!(kind = ?other, "draining frame during session switch");
-                review.observe_switch_drain(&other);
-                orphan_kills.observe_switch_drain(other, std::time::Instant::now());
-            }
-        }
-    }
-}

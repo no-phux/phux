@@ -7,8 +7,8 @@ use super::move_resource::handle_move_resource;
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
-use crate::runtime::apps::ResourceFrame;
-use crate::runtime::apps::spawn::SpawnRequest;
+use super::resource_frames::ResourceFrame;
+use crate::runtime::spawn::SpawnRequest;
 use crate::runtime::session_attach::handle_attach;
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -227,7 +227,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 rows = viewport.rows,
                 "VIEWPORT_RESIZE"
             );
-            crate::runtime::apps::terminal::commands::handle_viewport_resize(
+            crate::runtime::commands::terminal::handle_viewport_resize(
                 self.state,
                 self.client_id,
                 &viewport,
@@ -236,7 +236,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         }
         if let FrameKind::ViewportColors { colors } = frame {
             debug!(client_id = ?self.client_id, "VIEWPORT_COLORS");
-            crate::runtime::apps::terminal::commands::handle_viewport_colors(
+            crate::runtime::commands::terminal::handle_viewport_colors(
                 self.state,
                 self.client_id,
                 colors,

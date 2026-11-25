@@ -65,10 +65,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::HostChecklist => 60,
         Command::Forward { .. } => 61,
         Command::Credentials { .. } => 62,
+        Command::SessionEnsure { .. } => 63,
     }
 }
 
-const COMMAND_VARIANTS: usize = 63;
+const COMMAND_VARIANTS: usize = 64;
 
 /// One sample per organization command, each on its row.
 #[allow(
@@ -94,6 +95,16 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (
             Command::SessionCreate {
+                operation: operation(),
+                name: "work".to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: Vec::new(),
+                launch: None,
+            },
+            &C_SESSION_CREATE,
+        ),
+        (
+            Command::SessionEnsure {
                 operation: operation(),
                 name: "work".to_owned(),
                 lifetime: SessionLifetime::Persistent,

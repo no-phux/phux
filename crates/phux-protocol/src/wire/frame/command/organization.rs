@@ -44,6 +44,20 @@ macro_rules! organization_commands {
         /// The first resource's launch, if any.
         launch: Option<Box<LaunchSpec>>,
     },
+    /// Resolve a named session atomically, creating only when absent.
+    /// Requires `features_ext.SESSION_ENSURE`; never falls back to create.
+    SessionEnsure {
+        /// Retry identity, retained with the exact resolution.
+        operation: OperationId,
+        /// Exact live label.
+        name: String,
+        /// Used only when creating.
+        lifetime: SessionLifetime,
+        /// Descriptive attributes, used only when creating.
+        attrs: Vec<(String, String)>,
+        /// First resource, used only when creating.
+        launch: Option<Box<LaunchSpec>>,
+    },
     /// Rename a session; a label change only.
     SessionRename {
         /// Caller-generated operation id.

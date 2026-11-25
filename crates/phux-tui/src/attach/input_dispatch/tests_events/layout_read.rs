@@ -11,8 +11,8 @@ fn hidden_view_env(fence_up: bool) -> Env<'static> {
         phux_config::Action::Bare("close-view".to_owned()),
     );
     let mut env = Env::new(CtxFixture::default());
-    env.resolver = Some(phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver"));
-    env.keybindings = Some(cfg.keybindings);
+    env.fx.resolver = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver");
+    env.fx.keybindings = cfg.keybindings;
     env.fx.layout_read_complete = fence_up;
     env.fx.focused_session = Some(phux_protocol::ids::SessionId::new(1));
     env.fx.session_members.extend([tid(1), tid(2), tid(4)]);

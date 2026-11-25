@@ -8,7 +8,7 @@ use super::{
 impl RelaySession {
     /// Resolve a link-side id to its consumer. An error reply rolls back the
     /// command's subscription rider.
-    pub(super) fn resolve_pending(&mut self, request_id: u32, result: CommandResult) {
+    pub(super) fn resolve_pending(&mut self, request_id: u32, mut result: CommandResult) {
         match self.pending.remove(&request_id) {
             Some(pending) => {
                 if let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(
@@ -28,10 +28,51 @@ impl RelaySession {
                         }
                     }
                 }
-                if matches!(result, CommandResult::Error { .. })
-                    && let Some((terminal, client, effect)) = pending.subscription
-                {
-                    self.roll_back_subscription(terminal, client, effect);
+                if let Some(registration) = pending.subscription {
+                    let current =
+                        self.subscribers
+                            .get(&registration.terminal)
+                            .is_some_and(|subs| {
+                                subs.iter().any(|sub| {
+                                    sub.client == registration.client && sub.seq == registration.seq
+                                })
+                            });
+                    if !matches!(result, CommandResult::Error { .. })
+                        && (!current
+                            || pending
+                                .owner
+                                .as_ref()
+                                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled))
+                    {
+                        result = CommandResult::error(
+                            super::ErrorCode::InvalidCommand,
+                            "proxy registration was withdrawn before its reply",
+                        );
+                    }
+                    if matches!(result, CommandResult::Error { .. }) {
+                        if current {
+                            self.roll_back_subscription(
+                                registration.terminal,
+                                registration.client,
+                                registration.effect,
+                            );
+                        }
+                    } else if registration.content
+                        && !pending.reply.is_closed()
+                        && let Some(journal) = &self.journal
+                    {
+                        journal.with_mut(|s| {
+                            if s.federation()
+                                .satellite_link_is_current(&self.host, self.epoch)
+                            {
+                                s.federation_mut().register_satellite_proxy_attach(
+                                    registration.client,
+                                    self.host.clone(),
+                                    registration.terminal,
+                                );
+                            }
+                        });
+                    }
                 }
                 // A dropped receiver (detached relay) is fine.
                 let _ = pending.reply.send(result);

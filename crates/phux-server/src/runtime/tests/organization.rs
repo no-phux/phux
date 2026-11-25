@@ -141,7 +141,13 @@ fn a_refused_end_report_backs_off_instead_of_livelocking() {
             let dir = tempfile::tempdir().unwrap();
             let (state, _, id, _db) = kept_terminal_refusing_reports(&dir);
             crate::state::ServerState::reset_executor_persist_attempts();
-            state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
+            state.with_mut(|server| {
+                server.activation_ended(
+                    server.activation_token(id).unwrap(),
+                    ExitOutcome::UNKNOWN,
+                    true,
+                )
+            });
             let token = CancellationToken::new();
             super::super::services::spawn_activation_report_retry(&state, &token);
             tokio::task::yield_now().await;
@@ -170,7 +176,13 @@ fn a_commit_wakes_a_backing_off_report_retry() {
         Box::pin(async {
             let dir = tempfile::tempdir().unwrap();
             let (state, session, id, db) = kept_terminal_refusing_reports(&dir);
-            state.with_mut(|server| server.activation_ended(id, ExitOutcome::UNKNOWN, true));
+            state.with_mut(|server| {
+                server.activation_ended(
+                    server.activation_token(id).unwrap(),
+                    ExitOutcome::UNKNOWN,
+                    true,
+                )
+            });
             assert_eq!(activation_state(&state, id), ExecState::Starting);
             let token = CancellationToken::new();
             super::super::services::spawn_activation_report_retry(&state, &token);
@@ -212,6 +224,55 @@ fn a_commit_wakes_a_backing_off_report_retry() {
             token.cancel();
             tokio::task::yield_now().await;
             assert_eq!(state_now, ExecState::Failed);
+        })
+    });
+}
+
+#[test]
+fn pending_retirement_holds_self_exit_until_the_retry_owner_settles_it() {
+    paused(|| {
+        Box::pin(async {
+            let state = SharedState::new();
+            let pane = state.with_mut(|s| {
+                let (_, pane) = s
+                    .create_terminal(
+                        TerminalTarget::NewSession {
+                            name: "retirement",
+                            lifetime: SessionLifetime::Persistent,
+                        },
+                        TerminalLaunch::default(),
+                        ExitPolicy::Retain,
+                        &Actor::owner(),
+                    )
+                    .unwrap();
+                s.activation_ended(
+                    s.activation_token(pane).unwrap(),
+                    ExitOutcome::exited(0),
+                    false,
+                );
+                s.lifecycle_mut().arm_self_exit();
+                pane
+            });
+            let store = crate::org_store::MemOrgStore::default();
+            let failure = store.fail_commits();
+            failure.store(true, std::sync::atomic::Ordering::Relaxed);
+            state.with_mut(|s| {
+                s.set_org_store(Box::new(store));
+                s.reap_resource(pane);
+                assert!(s.has_pending_activation_reports());
+                assert!(!s.self_exit_due());
+            });
+            let root = CancellationToken::new();
+            super::super::services::spawn_activation_report_retry(&state, &root);
+            tokio::task::yield_now().await;
+            assert!(!root.is_cancelled());
+            failure.store(false, std::sync::atomic::Ordering::Relaxed);
+            tokio::time::advance(Duration::from_secs(3)).await;
+            tokio::task::yield_now().await;
+            assert!(root.is_cancelled());
+            assert!(state.with(
+                |s| !s.has_pending_activation_reports() && s.registry().record(pane).is_none()
+            ));
         })
     });
 }

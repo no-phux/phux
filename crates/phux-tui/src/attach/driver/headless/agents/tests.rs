@@ -13,16 +13,27 @@ use phux_server_testkit::{
 };
 
 async fn seed_agent(socket: &Path) -> (tokio::net::UnixStream, ResourceId) {
+    let mut creator = Connection::connect(socket).await.unwrap();
+    let receipt = phux_client::org::create_session(
+        &mut creator,
+        phux_client::org::mint_operation(),
+        "headless-agent".into(),
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
+        Some(Box::new(phux_protocol::wire::frame::LaunchSpec::new(vec![
+            "/bin/cat".into(),
+        ]))),
+    )
+    .await
+    .unwrap();
+    let target = phux_client::org::attach_target_for_receipt(&mut creator, &receipt)
+        .await
+        .unwrap();
     let mut producer = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut producer,
         &FrameKind::Attach {
             attach_id: 1,
-            target: AttachTarget::CreateIfMissing {
-                name: "headless-agent".into(),
-                command: Some(vec!["/bin/cat".into()]),
-                cwd: None,
-            },
+            target,
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,

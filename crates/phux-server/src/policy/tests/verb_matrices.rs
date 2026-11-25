@@ -209,6 +209,13 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             attrs: Vec::new(),
             launch: None,
         }),
+        command(Command::SessionEnsure {
+            operation: op,
+            name: "new".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        }),
         command(Command::SessionRename {
             operation: op,
             session: k.session,

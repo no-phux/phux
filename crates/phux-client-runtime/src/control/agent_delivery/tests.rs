@@ -53,7 +53,7 @@ fn rebind(plane: &mut ControlPlane) {
 #[test]
 fn full_agent_cut_supersedes_undrained_records_but_resume_keeps_them() {
     use AgentRecordMode::{Append, Replace};
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.status = Status::Attached;
     rebind(&mut plane);
     plane.commit_agent_publication(publication(1, Append, &[3]));

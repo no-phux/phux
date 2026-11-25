@@ -1,15 +1,13 @@
 use std::collections::BTreeMap;
 
 use phux_protocol::api::LaunchDiagnostic;
-use phux_protocol::ids::{IdempotencyKey, OperationId, ResourceId, ResourceKey};
+use phux_protocol::ids::{IdempotencyKey, OperationId, ResourceKey};
 use phux_protocol::wire::frame::{
-    Command, ExecState, LaunchSpec, OrgFilter, Refusal, SessionLifetime,
+    Command, Committed, ExecState, LaunchSpec, Refusal, SessionLifetime,
 };
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::layout::ArrangementDoc;
-use crate::layout_ops::{LayoutOps, LayoutOpsError};
 
 /// Why a session create failed.
 #[derive(Debug, thiserror::Error)]
@@ -17,10 +15,6 @@ pub enum CreateSessionError {
     /// Transport or decode failure.
     #[error(transparent)]
     Attach(#[from] AttachError),
-    /// The session was created but its initial headless layout could not be
-    /// read, encoded, written, or confirmed.
-    #[error("failed to initialize created session layout: {0}")]
-    Layout(#[from] LayoutOpsError),
     /// An organization request failed outright (the server refused it, or
     /// the connection dropped with the outcome unknown).
     #[error(transparent)]
@@ -32,10 +26,11 @@ pub enum CreateSessionError {
 pub enum CreateOutcome {
     /// The seed pane's Terminal id.
     Created(u64),
-    /// The confirming read-back was refused.
+    /// The mutation was answered with a legacy server error.
     ReadRefused(String),
-    /// No create result ever named this session.
-    NotRegistered,
+    /// Intent committed, but no complete live/inspection evidence is available.
+    /// Reconcile this receipt; never replace it with a fresh creation.
+    Committed { receipt: Box<Committed> },
     /// The server refused the `SESSION_CREATE`.
     Refused(Refusal),
     /// The session was created, but its seed command did not start. The
@@ -45,6 +40,8 @@ pub enum CreateOutcome {
         terminal: u64,
         /// Why, when the server recorded it.
         diagnostic: Option<LaunchDiagnostic>,
+        /// The exact admitted operation and durable resource identities.
+        receipt: Box<Committed>,
     },
 }
 
@@ -77,7 +74,7 @@ pub struct CreateSessionRequest<'a> {
 /// launch is the seed pane, its agent-session provenance riding the launch's
 /// restore record (atomic by construction).
 ///
-/// Duplicate-name rejection is the caller's job. Interleaved degradation
+/// Name collision is refused atomically by the host. Interleaved degradation
 /// notices are appended to `notices`.
 ///
 /// # Errors
@@ -120,15 +117,21 @@ pub async fn create_session(
                 .as_ref()
                 .and_then(|target| target.resource.local_id())
             else {
-                return Ok(CreateOutcome::NotRegistered);
+                return Ok(CreateOutcome::Committed { receipt: committed });
             };
-            let seed =
-                seed_created_layout(conn, committed.session, committed.resource, terminal).await?;
+            let Some(seed_key) = committed.resource else {
+                return Ok(CreateOutcome::Committed { receipt: committed });
+            };
+            let seed = match inspect_created_seed(conn, &committed, seed_key).await {
+                Ok(seed) => seed,
+                Err(_) => return Ok(CreateOutcome::Committed { receipt: committed }),
+            };
             Ok(match seed {
-                Seed::Placed => CreateOutcome::Created(u64::from(terminal)),
+                Seed::NoFailureObserved => CreateOutcome::Created(u64::from(terminal)),
                 Seed::Failed(diagnostic) => CreateOutcome::LaunchFailed {
                     terminal: u64::from(terminal),
                     diagnostic,
+                    receipt: committed,
                 },
             })
         }
@@ -144,46 +147,27 @@ pub async fn create_session(
 
 /// What became of the seed pane of a session created headless.
 enum Seed {
-    /// Its arrangement is in place, or it ended and took its session along.
-    Placed,
+    /// The lifecycle read exposed no recorded launch failure.
+    NoFailureObserved,
     /// Its command did not start, with the server's reason.
     Failed(Option<LaunchDiagnostic>),
 }
 
-/// Give a session created headless the one-group arrangement of its seed
-/// pane, unless it already has one. The server runs the launch before it
-/// answers the create, so a seed whose command could not start already
-/// reads as failed here.
-async fn seed_created_layout(
+/// Inspect the exact seed after admission. Arrangement construction belongs to
+/// the host's committed create, never a second client-side mutation.
+async fn inspect_created_seed(
     conn: &mut Connection,
-    session: Option<phux_protocol::ids::SessionKey>,
-    seed: Option<ResourceKey>,
-    terminal: u32,
-) -> Result<Seed, CreateSessionError> {
-    let Some(session) = session else {
-        return Ok(Seed::Placed);
-    };
-    let inventory = crate::org::fetch(conn, OrgFilter::Session(session), 3)
-        .await
-        .map_err(CreateSessionError::Org)?;
-    if let Some(activation) = seed
-        .and_then(|key| inventory.resource(&key))
+    receipt: &Committed,
+    seed: ResourceKey,
+) -> Result<Seed, crate::org::OrgError> {
+    let (_, inventory) = crate::org::session_inventory_for_receipt(conn, receipt).await?;
+    if let Some(activation) = inventory.resource(&seed)
         .and_then(|record| record.activation.as_ref())
         && activation.state == ExecState::Failed
     {
         return Ok(Seed::Failed(activation.diagnostic));
     }
-    let Some(live) = inventory.session(&session).and_then(|record| record.live) else {
-        return Ok(Seed::Placed);
-    };
-    match LayoutOps::new(conn, live, 10)
-        .read_or_seed(ArrangementDoc::single(ResourceId::local(terminal)))
-        .await
-    {
-        // The seed pane ended and took its session with it: nothing to seed.
-        Ok(_) | Err(LayoutOpsError::MissingLayout) => Ok(Seed::Placed),
-        Err(err) => Err(err.into()),
-    }
+    Ok(Seed::NoFailureObserved)
 }
 
 /// Why a seed command did not start, in words: `command not found` for the

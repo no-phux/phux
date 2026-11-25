@@ -9,16 +9,31 @@ use phux_server_testkit::{
 
 const SESSION: &str = "tui-agent-bootstrap";
 
-async fn spawn_agent(producer: &mut tokio::net::UnixStream, session: &str) -> ResourceId {
+async fn spawn_agent(
+    socket: &std::path::Path,
+    producer: &mut tokio::net::UnixStream,
+    session: &str,
+) -> ResourceId {
+    let mut creator = Connection::connect(socket).await.unwrap();
+    let receipt = phux_client::org::create_session(
+        &mut creator,
+        phux_client::org::mint_operation(),
+        session.to_owned(),
+        phux_protocol::wire::frame::SessionLifetime::Persistent,
+        Some(Box::new(phux_protocol::wire::frame::LaunchSpec::new(vec![
+            "/bin/cat".into(),
+        ]))),
+    )
+    .await
+    .unwrap();
+    let target = phux_client::org::attach_target_for_receipt(&mut creator, &receipt)
+        .await
+        .unwrap();
     send_frame(
         producer,
         &FrameKind::Attach {
             attach_id: 1,
-            target: AttachTarget::CreateIfMissing {
-                name: session.to_owned(),
-                command: Some(vec!["/bin/cat".to_owned()]),
-                cwd: None,
-            },
+            target,
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
@@ -238,10 +253,10 @@ async fn native_tui_subscribes_snapshot_agents_and_resumes_without_duplicate_his
         let socket = dir.path().join("server.sock");
         let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket.clone(), None);
         let mut producer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let id = spawn_agent(&mut producer, SESSION).await;
+        let id = spawn_agent(&socket, &mut producer, SESSION).await;
         append(&mut producer, &id, "tool_start").await;
         let mut foreign_producer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
-        let foreign = spawn_agent(&mut foreign_producer, "foreign").await;
+        let foreign = spawn_agent(&socket, &mut foreign_producer, "foreign").await;
         let (mut state, mut client, mut out) = Box::pin(open_loop(&socket)).await;
         pump_until(&mut state, &mut client, &mut out, |state| {
             committed(state, &id, 1)

@@ -243,7 +243,7 @@ rule_table! {
     C_GET_ORGANIZATION = verbs("`GET_ORGANIZATION`", [Inventory], OrganizationView);
     C_API_DESCRIBE = verbs("`DESCRIBE_API`", [Inventory], Global);
     C_GET_CREATION = verbs("`GET_CREATION`", [Inventory], KeyedSession);
-    C_SESSION_CREATE = verbs("`SESSION_CREATE`", [Create], Global);
+    C_SESSION_CREATE = verbs("`SESSION_CREATE`, `SESSION_ENSURE`", [Create], Global);
     C_SESSION_ORGANIZE = verbs(
         "`SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE`",
         [Organize],

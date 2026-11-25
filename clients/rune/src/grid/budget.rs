@@ -242,6 +242,7 @@ fn window_phase() {
     let mut replica = Replica::new(cols, rows, 1);
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(Arc::clone(&replica.client));
+    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));

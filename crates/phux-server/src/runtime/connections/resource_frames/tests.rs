@@ -293,7 +293,7 @@ fn forwarded_frames(
 ) -> Vec<FrameKind> {
     let mut forwarded = Vec::new();
     while let Ok(request) = mailbox.requests.try_recv() {
-        match request {
+        match request.request {
             RelayRequest::Forward { frame } => forwarded.push(frame),
             RelayRequest::Command {
                 command: phux_protocol::wire::frame::Command::ReleaseInput { .. },
@@ -415,4 +415,32 @@ async fn clipboard_reply_case(leased: bool, authorized: bool, selection: u8, del
     let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap_or_default();
     assert_eq!(log.contains("\"clipboard.read\""), delivered, "{log}");
     assert!(!log.contains("hunter2"), "the text never reaches the log");
+}
+
+#[test]
+fn kind_frame_facts_preserve_refusal_codes_without_lending_host_state() {
+    use crate::runtime::apps::app_for;
+    use phux_core::ResourceKind;
+    use phux_protocol::wire::frame::ErrorCode;
+    let samples = frames(ResourceId::local(1));
+    let ack = &samples[2];
+    let history = &samples[3];
+    assert!(app_for(ResourceKind::Terminal).frame_error(ack).is_none());
+    assert!(app_for(ResourceKind::Terminal).frame_error(history).is_none());
+    assert_eq!(
+        app_for(ResourceKind::AgentSession).frame_error(ack).unwrap().0,
+        ErrorCode::MalformedMessage,
+    );
+    assert_eq!(
+        app_for(ResourceKind::AgentSession).frame_error(history).unwrap().0,
+        ErrorCode::WrongResourceKind,
+    );
+    for kind in [
+        ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface,
+        ResourceKind::Document,
+    ] {
+        assert_eq!(app_for(kind).frame_error(ack).unwrap().0, ErrorCode::WrongResourceKind);
+        assert_eq!(app_for(kind).frame_error(history).unwrap().0, ErrorCode::WrongResourceKind);
+    }
 }

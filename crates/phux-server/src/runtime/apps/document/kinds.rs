@@ -5,7 +5,6 @@ use bytes::Bytes;
 use phux_protocol::caps::BootstrapStreamProfile;
 
 use super::DocumentApi;
-use crate::state::ServerState;
 
 /// What a tree or surface observes (`--app Safari`, a page title), as its
 /// record name, so every client's tab reads it. A target a name may not
@@ -33,22 +32,10 @@ impl DocumentApi for TreeDocument {
         }
     }
 
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        target: &str,
-        _name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
-                    target: target.to_owned(),
-                }),
-                target_name(target),
-            ),
-            actor,
+    fn creation(target: &str, _name: Option<&str>) -> phux_core::NewResource {
+        phux_core::NewResource::child(
+            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch { target: target.to_owned() }),
+            target_name(target),
         )
     }
 }
@@ -70,22 +57,10 @@ impl DocumentApi for SurfaceDocument {
         }
     }
 
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        target: &str,
-        _name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
-                    target: target.to_owned(),
-                }),
-                target_name(target),
-            ),
-            actor,
+    fn creation(target: &str, _name: Option<&str>) -> phux_core::NewResource {
+        phux_core::NewResource::child(
+            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch { target: target.to_owned() }),
+            target_name(target),
         )
     }
 }
@@ -113,22 +88,10 @@ impl DocumentApi for TypedDocument {
         }
     }
 
-    fn create(
-        state: &mut ServerState,
-        parent: phux_core::ids::ResourceId,
-        content_type: &str,
-        name: Option<&str>,
-        actor: &phux_core::actor::Actor,
-    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
-        state.create_child(
-            parent,
-            phux_core::NewResource::child(
-                phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch {
-                    content_type: content_type.to_owned(),
-                }),
-                name.map(str::to_owned),
-            ),
-            actor,
+    fn creation(content_type: &str, name: Option<&str>) -> phux_core::NewResource {
+        phux_core::NewResource::child(
+            phux_core::LaunchSpec::Document(phux_core::resource::DocumentLaunch { content_type: content_type.to_owned() }),
+            name.map(str::to_owned),
         )
     }
 }

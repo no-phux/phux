@@ -242,3 +242,59 @@ fn existing_launch_receipt_replays_even_when_the_kind_no_longer_supports_launch(
         }));
     });
 }
+
+#[test]
+fn admitted_relaunch_retains_the_exact_recipe_without_retranslation() {
+    run(async {
+        let state = SharedState::new();
+        let (resource, expected) = state.with_mut(|s| {
+            s.set_connection_grant(CLIENT, crate::policy::ConnectionGrant::owner());
+            let session = s.seed_empty_session("approved").unwrap();
+            let created = s.commit(phux_core::Op::ResourceCreate {
+                session: s.registry().session_key(session),
+                resource: phux_core::NewResource {
+                    kind: phux_core::ResourceKind::Terminal,
+                    name: None,
+                    launch: Some(phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch::default())),
+                    on_exit: phux_core::ExitPolicy::Retain,
+                    parent: None,
+                    launch_mode: phux_core::LaunchMode::Deferred,
+                },
+                placement: None,
+            }, &phux_core::Actor::owner()).unwrap();
+            let phux_core::Reply::Ok { created, .. } = created.applied.reply else {
+                panic!("resource creation");
+            };
+            let key = created.resource.unwrap();
+            (key, s.org().resource(&key).unwrap().revision)
+        });
+        let exact = phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
+            argv: vec!["approved-exact-program".to_owned(), "--exact".to_owned()],
+            ..phux_core::TerminalLaunch::default()
+        });
+        let command = phux_core::Command {
+            operation: ow::core_operation(&op(90)),
+            op: phux_core::Op::ResourceRelaunch {
+                resource, expected, launch: Some(exact),
+            },
+        };
+        let root = CancellationToken::new();
+        root.cancel(); // Inspect admission without attempting an external program.
+        let answer = crate::state::org_operation::relaunch_admitted(
+            &state, CLIENT, command.clone(), &root,
+        );
+        assert!(matches!(answer, CommandResult::Accepted { .. }));
+        let revision = state.with(|s| {
+            assert_eq!(s.org().receipt(&command.operation).unwrap().op, command.op);
+            s.org().resource(&resource).unwrap().revision
+        });
+        let replay = crate::state::org_operation::relaunch_admitted(
+            &state, CLIENT, command.clone(), &root,
+        );
+        assert_eq!(replay, answer);
+        state.with(|s| {
+            assert_eq!(s.org().resource(&resource).unwrap().revision, revision);
+            assert_eq!(s.org().receipt(&command.operation).unwrap().op, command.op);
+        });
+    });
+}

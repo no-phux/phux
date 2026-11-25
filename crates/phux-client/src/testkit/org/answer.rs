@@ -265,6 +265,7 @@ pub(super) enum RecordKey {
 const fn command_name(command: &Command) -> &'static str {
     match command {
         Command::SessionCreate { .. } => "session_create",
+        Command::SessionEnsure { .. } => "session_ensure",
         Command::SessionRename { .. } => "session_rename",
         Command::SessionSetProject { .. } => "session_set_project",
         Command::SessionSetLifetime { .. } => "session_set_lifetime",

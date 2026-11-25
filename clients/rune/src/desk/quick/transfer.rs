@@ -3,8 +3,7 @@
 
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
-use phux_protocol::ids::{OperationId, ResourceId, SessionId, SessionKey};
-use phux_protocol::wire::frame::AttachTarget;
+use phux_protocol::ids::{OperationId, ResourceId, SessionKey};
 
 use super::super::{Desk, NoticeKind};
 
@@ -15,11 +14,15 @@ pub(in crate::desk) struct Transfer {
     terminal: ResourceId,
     session: SessionKey,
     finish: Completion,
+    intent: Option<super::super::view_intent::ViewIntent>,
+    choice: u64,
 }
 
 impl Desk {
     /// Keep the panel usable while main asks the server to move its terminal.
     pub fn move_to_tab(&mut self) {
+        let origin = self.connection.callback_fence();
+        let server = self.connection.view_server.clone();
         let (Some(panel), Some(shown)) = (&mut self.quick, &self.connection.shown) else {
             return;
         };
@@ -27,19 +30,50 @@ impl Desk {
             return;
         }
         panel.moving = true;
+        self.connection.view_choice += 1;
+        let choice = self.connection.view_choice;
         let terminal = shown.resource.clone();
+        let view = shown.view;
         let me = panel.me.clone();
         panel.main.update(move |desk, _| {
+            if !origin.as_ref().is_some_and(|origin| origin.permits_view(view)) {
+                me.update(move |desk, _| {
+                    if origin.as_ref().is_some_and(|origin| origin.same_namespace(&desk.connection))
+                        && desk.connection.view_choice == choice
+                    {
+                        desk.quick_move_finished(Err("The original quick terminal view is no longer available.".to_owned()));
+                    }
+                });
+                return;
+            }
             desk.adopt_quick(
                 terminal,
+                server,
                 Box::new(move |result| {
-                    me.update(move |desk, _| desk.quick_move_finished(result));
+                    me.update(move |desk, _| {
+                        if origin.as_ref().is_some_and(|origin| origin.is_current(&desk.connection))
+                            && desk.connection.view_choice == choice
+                        {
+                            desk.quick_move_finished(result);
+                        }
+                    });
                 }),
             );
         });
     }
 
-    fn adopt_quick(&mut self, terminal: ResourceId, finish: Completion) {
+    fn adopt_quick(&mut self, terminal: ResourceId, server: Option<Vec<u8>>, finish: Completion) {
+        if self.connection.wanted.is_some() {
+            finish(Err("The main window's pending selection is kept; retry after it opens.".to_owned()));
+            return;
+        }
+        let intent = self.connection.client.as_ref().map(|client| {
+            super::super::view_intent::ViewIntent::new(client, &terminal, server, self.connection.view_epoch)
+        });
+        if intent.as_ref().is_some_and(|intent| intent.refused()) {
+            finish(Err("The quick terminal's original server view is no longer available.".to_owned()));
+            return;
+        }
         match self.submit_quick_move(&terminal) {
             Ok((operation, session)) => {
                 self.connection.quick_move = Some(Transfer {
@@ -47,6 +81,8 @@ impl Desk {
                     terminal,
                     session,
                     finish,
+                    intent,
+                    choice: self.connection.view_choice,
                 });
             }
             Err(error) => finish(Err(error)),
@@ -106,12 +142,12 @@ impl Desk {
         if !self.owns_quick_move(operation) {
             return false;
         }
-        let pending = self.connection.quick_move.take().expect("matched move");
-        let result = if outcome.succeeded() {
-            self.place_quick_tab(client, &pending)
+        let mut pending = self.connection.quick_move.take().expect("matched move");
+        let result = if matches!(outcome, OrgOutcome::Committed(_)) {
+            self.place_quick_tab(client, &mut pending)
         } else {
             Err(format!(
-                "Quick terminal move did not settle: {outcome:?}. Check the server's panes before retrying."
+                "Quick terminal move operation {operation} did not settle: {outcome:?}. Inspect the original operation and server's panes before retrying."
             ))
         };
         (pending.finish)(result);
@@ -120,12 +156,16 @@ impl Desk {
 
     /// Use the original destination even if the person selected another
     /// session while waiting. Stable identity survives a session rename.
-    fn place_quick_tab(&mut self, client: &Client, pending: &Transfer) -> Result<(), String> {
-        let session = self.connection.topology.as_ref()
-            .and_then(|topology| topology.session_keyed(&pending.session))
-            .ok_or("The quick terminal moved, but its destination is no longer listed. Check the server's panes.")?;
-        client.attach_session(AttachTarget::ById(SessionId::new(session.id)));
-        self.place_split(client, &pending.terminal, None, Some(pending.session));
+    fn place_quick_tab(&mut self, client: &Client, pending: &mut Transfer) -> Result<(), String> {
+        if pending.choice != self.connection.view_choice {
+            return Err("The terminal moved, but the window's newer selection is kept.".to_owned());
+        }
+        let intent = pending.intent.take().ok_or("The quick terminal has no original view scope.")?;
+        if !intent.select_session(client, &pending.session) {
+            return Err("The terminal moved, but its exact destination or original view scope is unavailable.".to_owned());
+        }
+        self.connection.view_intents.insert(pending.terminal.clone(), intent);
+        self.place_split(client, &pending.terminal, None, Some(pending.session), true);
         Ok(())
     }
 

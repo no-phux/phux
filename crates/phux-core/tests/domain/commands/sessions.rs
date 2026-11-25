@@ -319,3 +319,58 @@ pub(super) fn session_kill_removes_every_member_terminates_the_running_and_delet
         Err(Refusal::InvalidArgument { .. })
     ));
 }
+
+#[test]
+fn ensure_retains_exact_resolution_and_does_not_reseed_existing_session() {
+    let mut h = Harness::new();
+    let operation = h.next_op();
+    let ensure = Op::SessionEnsure {
+        name: "ensured".to_owned(),
+        lifetime: SessionLifetime::Persistent,
+        attrs: Attrs { project: Some("original-project".to_owned()), ..Attrs::default() },
+        resource: None,
+    };
+    let first = h.run_op(operation, ensure.clone()).expect("first ensure");
+    let Reply::Ensured { session, created: true, .. } = first.reply else {
+        panic!("first ensure creates");
+    };
+    let existing = h.run(Op::SessionEnsure {
+        name: "ensured".to_owned(),
+        lifetime: SessionLifetime::Ephemeral,
+        attrs: Attrs { project: Some("ignored-project".to_owned()), ..Attrs::default() },
+        resource: Some(shell()),
+    }).expect("existing ensure");
+    assert!(matches!(existing.reply, Reply::Ensured { session: found, created: false, .. } if found == session));
+    assert!(existing.effects.is_empty());
+    assert!(existing.transition.deltas.is_empty());
+    assert_eq!(h.session(session).lifetime, SessionLifetime::Persistent);
+    assert!(h.session(session).members.is_empty());
+    assert_eq!(h.session(session).attrs.project.as_deref(), Some("original-project"));
+    assert_eq!(h.run_op(operation, Op::SessionEnsure {
+        name: "ensured".to_owned(),
+        lifetime: SessionLifetime::Persistent,
+        attrs: Attrs { project: Some("different-project".to_owned()), ..Attrs::default() },
+        resource: None,
+    }), Err(Refusal::DuplicateOperation));
+    assert_eq!(h.run(create("ensured", SessionLifetime::Persistent, None)), Err(Refusal::NameTaken));
+    h.run(Op::SessionDelete { session }).expect("delete");
+    let replacement = h.run(create("ensured", SessionLifetime::Persistent, None)).expect("reuse");
+    assert_ne!(created(&replacement).0, Some(session));
+    let mut other_actor = Actor::owner();
+    other_actor.principal = phux_core::PrincipalId::Credential("another".to_owned());
+    assert_eq!(
+        h.run_cmd(&other_actor, &Command { operation, op: ensure.clone() }),
+        Err(Refusal::DuplicateOperation),
+    );
+    let replay = h.run_op(operation, ensure.clone()).expect("exact replay");
+    assert_eq!(replay.reply, first.reply);
+    assert!(replay.replayed);
+    assert!(replay.effects.is_empty());
+    assert!(replay.transition.deltas.is_empty());
+    assert_eq!(h.run_op(operation, Op::SessionEnsure {
+        name: "different".to_owned(),
+        lifetime: SessionLifetime::Persistent,
+        attrs: Attrs::default(),
+        resource: None,
+    }), Err(Refusal::DuplicateOperation));
+}

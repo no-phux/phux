@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::commands::seed::{SpawnOwnership, seed_session, spawn_pane_with_pty_and_colors};
+use crate::runtime::commands::terminal::seed::{SpawnOwnership, seed_session, spawn_pane_with_pty_and_colors};
 use crate::runtime::commands::{SeedOrigin, SpawnAttribution};
 use crate::runtime::standing::{MirrorSource, Slot, StandingEntries, TICK};
 use crate::state::SharedState;
@@ -127,7 +127,7 @@ async fn outdated(
             continue;
         }
         for terminal in terminals(state, name) {
-            let process = super::commands::query_process_facet(&terminal).await;
+            let process = crate::runtime::commands::terminal::query_process_facet(&terminal).await;
             let Some(child) = process.and_then(|p| p.exit.is_none().then_some(p.child?)) else {
                 continue;
             };

@@ -6,6 +6,16 @@ use super::{
 };
 
 impl RelaySession {
+    pub(crate) fn handle_queued_unsubscribe(
+        &mut self,
+        queued: super::QueuedUnsubscribe,
+    ) -> Vec<Vec<u8>> {
+        if queued.epoch != self.epoch || !self.link_is_current() {
+            return Vec::new();
+        }
+        self.handle_unsubscribe(queued.unsubscribe)
+    }
+
     /// Withdraw proxy subscriptions. Returns the upstream
     /// `DETACH_RESOURCE` frames for terminals that lost their last proxy (or
     /// had none after an automatic spawn). The upstream reply retires the old
@@ -37,10 +47,26 @@ impl RelaySession {
         seq: u64,
     ) -> (CommandResult, Vec<Vec<u8>>) {
         match self.withdraw_terminal(client, terminal, seq) {
-            Ok(orphaned) => (
-                CommandResult::Ok,
-                self.encode_withdrawals(orphaned.into_iter().collect()),
-            ),
+            Ok(orphaned) => {
+                if let Some(journal) = &self.journal {
+                    journal.with_mut(|s| {
+                        if s.federation()
+                            .satellite_link_is_current(&self.host, self.epoch)
+                        {
+                            s.federation_mut()
+                                .unregister_satellite_proxy_attach(client, &self.host, terminal);
+                            s.unsubscribe_resource_events(
+                                client,
+                                &ResourceId::satellite(self.host.clone(), terminal),
+                            );
+                        }
+                    });
+                }
+                (
+                    CommandResult::Ok,
+                    self.encode_withdrawals(orphaned.into_iter().collect()),
+                )
+            }
             Err(result) => (result, Vec::new()),
         }
     }

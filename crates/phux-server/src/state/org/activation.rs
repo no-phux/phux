@@ -25,35 +25,25 @@ impl ServerState {
         {
             return;
         }
-        self.activation_ended(resource, outcome, false);
-        if self.org.terminating.remove(&resource) {
-            return;
-        }
-        let Some(record) = self.sessions.registry.record(resource) else {
+        let Some(token) = self.activation_token(resource) else {
+            if let Some(record) = self.registry().record(resource) {
+                self.retire_dormant(record.key);
+            }
             return;
         };
-        let key = record.key;
-        if let Err(refusal) = self.commit_system(Op::ResourceRemove { resource: key }) {
-            tracing::warn!(?resource, %refusal, "record removal refused");
+        if self.org.terminating.remove(&resource) {
+            self.activation_ended(token, outcome, false);
+        } else {
+            self.retire_activation(token, outcome);
         }
-    }
-
-    pub(super) fn current_activation(
-        &self,
-        resource: ResourceId,
-        accept: impl Fn(ExecState) -> bool,
-    ) -> Option<(phux_core::ResourceKey, phux_core::ActivationId)> {
-        let record = self.sessions.registry.record(resource)?;
-        let activation = record.activation.as_ref()?;
-        accept(activation.state).then_some((record.key, activation.id))
     }
 
     /// Startup reconciliation (ADR-0162 §5): every activation a previous
     /// run left current or lost, and no engine in this process vouches for,
     /// becomes `Lost` when its process still runs on this boot with the
-    /// recorded start time, `Failed` when launch intent committed and no
-    /// process was recorded, and `Completed`/`Unobserved` when a recorded
-    /// process is gone. Nothing is relaunched. Idempotent.
+    /// recorded start time, and `Completed`/`Unobserved` when a recorded
+    /// process is gone. A launch with no durable process identity is unresolved:
+    /// a crash may have lost the start report. Nothing is relaunched. Idempotent.
     pub fn reconcile(&mut self) -> Reconciled {
         self.reconcile_with(crate::reconcile::boot_id(), crate::reconcile::observe)
     }
@@ -70,49 +60,48 @@ impl ServerState {
             .resources()
             .filter_map(|r| {
                 let a = r.activation.as_ref()?;
-                Some((r.key, a.id, a.state, a.host_proc))
+                Some((r.key, a.id, a.instance, r.kind, a.state, a.host_proc))
             })
             .collect();
         let mut out = Reconciled::default();
-        for (key, activation, state, proc) in candidates {
+        for (key, activation, instance, kind, state, proc) in candidates {
             let vouched = self
                 .sessions
                 .registry
                 .resource_id(&key)
                 .is_some_and(|id| self.resources().handle(id).is_some());
-            let op = match decide(state, vouched, proc, boot, &observe) {
+            // A recorded running in-process projection cannot outlive its
+            // server. Terminal processes can, even if identity capture failed.
+            let verdict = if !vouched
+                && kind != phux_core::ResourceKind::Terminal
+                && proc.is_none()
+                && matches!(state, ExecState::Running | ExecState::Stopping)
+            {
+                Verdict::Unobserved
+            } else {
+                decide(state, vouched, proc, boot, &observe)
+            };
+            match verdict {
                 Verdict::Keep => continue,
                 Verdict::Lost => {
-                    out.lost += 1;
-                    Op::ActivationLost {
-                        resource: key,
-                        activation,
+                    if proc.is_some() {
+                        out.lost += 1;
+                    } else {
+                        out.unresolved += 1;
                     }
                 }
                 Verdict::Unobserved => {
                     out.unobserved += 1;
-                    Op::ActivationEnded {
-                        resource: key,
-                        activation,
-                        state: ExecState::Completed,
-                        outcome: Outcome::Unobserved,
-                        diagnostic: None,
-                    }
                 }
-                Verdict::NeverLaunched => {
-                    out.never_launched += 1;
-                    Op::ActivationEnded {
-                        resource: key,
-                        activation,
-                        state: ExecState::Failed,
-                        outcome: Outcome::Unobserved,
-                        diagnostic: None,
-                    }
-                }
-            };
-            if let Err(refusal) = self.commit_system(op) {
-                tracing::warn!(resource = %key, %refusal, "reconcile verdict not recorded");
             }
+            self.reconcile_activation(
+                ActivationToken {
+                    resource: key,
+                    activation,
+                    instance,
+                },
+                verdict,
+            );
         }
         out
     }

@@ -7,6 +7,9 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
     let journal = crate::state::SharedState::new();
     let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
+    let fence = crate::hub::operation_fence::OperationFence::default();
+    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+    session.set_journal(Some(journal.clone()));
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
             consumer,
@@ -16,9 +19,6 @@ fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id
             registry_tx,
         );
     });
-    let fence = crate::hub::operation_fence::OperationFence::default();
-    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
-    session.set_journal(Some(journal));
     let (proxy_tx, _proxy_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, consumer, proxy_tx);
     let (wire, _rx) = send_keyed(&mut session, keyed_kill(7), consumer);
@@ -71,6 +71,9 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
     let journal = crate::state::SharedState::new();
     let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(32);
+    let fence = crate::hub::operation_fence::OperationFence::default();
+    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+    session.set_journal(Some(journal.clone()));
     for terminal in [5, 9] {
         journal.with_mut(|s| {
             s.subscribe_satellite_events(
@@ -82,9 +85,6 @@ fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
             );
         });
     }
-    let fence = crate::hub::operation_fence::OperationFence::default();
-    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
-    session.set_journal(Some(journal.clone()));
     let (proxy_tx, _proxy_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, consumer, proxy_tx.clone());
     subscribe(&mut session, 5, consumer, proxy_tx);
@@ -245,7 +245,7 @@ async fn handle_and_session_preserve_spawn_owner_geometry_and_pty_options() {
     let satellite = async {
         let request = mailbox.requests.recv().await.expect("spawn enqueued");
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
-        let mut frame = decode(&session.handle_request(request));
+        let mut frame = decode(&session.handle_request(request.request));
         let FrameKind::SpawnResource { request_id, .. } = &mut frame else {
             panic!("spawn frame");
         };
@@ -300,6 +300,9 @@ fn native_results_name_the_satellite_session_and_unknown_events_stay_there() {
     let journal = crate::state::SharedState::new();
     let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
+    let fence = crate::hub::operation_fence::OperationFence::default();
+    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+    session.set_journal(Some(journal.clone()));
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
             consumer,
@@ -309,9 +312,6 @@ fn native_results_name_the_satellite_session_and_unknown_events_stay_there() {
             registry_tx,
         );
     });
-    let fence = crate::hub::operation_fence::OperationFence::default();
-    let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
-    session.set_journal(Some(journal));
     let (proxy_tx, _proxy_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, consumer, proxy_tx);
     let mut relay = |event: AgentEvent| {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::SharedState;
 
 #[test]
 fn bootstrap_chunks_obey_even_a_one_byte_budget() {
@@ -112,7 +113,7 @@ async fn stalled_consumer(log_bytes: u32) -> Stalled {
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(STALLED_MAILBOX);
     let connection = CancellationToken::new();
     let result = attach_agent_session(
-        &state,
+        &crate::runtime::apps::StreamHost::new(&state, client),
         client,
         &phux_protocol::ids::ResourceId::local(9),
         core,

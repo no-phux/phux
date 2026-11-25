@@ -260,7 +260,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                 ],
                 retained_bytes: b"opaque-checkpoint".len(),
                 base_seq: 0,
-                publication_cursor: [9; 32],
+                capture: phux_terminal_api::actor::NativeCapture::new(initial.owner, initial.terminal_id.clone(), stream_id, bootstrap_id, [9; 32]),
             }))
             .expect("initial native reply");
         let publication = tokio::time::timeout(MAILBOX_DEADLINE, rx.native_publication.recv())
@@ -271,6 +271,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
         publication
             .reply
             .send(Ok(NativePublicationReply {
+                interest: phux_terminal_api::actor::NativeCaptureInterest::default(),
                 replay: Vec::new(),
                 live: output_tx.subscribe(),
             }))

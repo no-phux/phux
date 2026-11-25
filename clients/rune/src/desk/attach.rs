@@ -332,7 +332,7 @@ mod tests {
             desk.connection.client = Some(client.clone());
             desk.connection.shown = Some(crate::desk::Shown {
                 resource: ResourceId::local(1),
-                view: client.create_view(&ResourceId::local(1)).ok(),
+                view: client.create_view(&client.view_source(&ResourceId::local(1), Some(&[1; 16]), 1).unwrap()).ok(),
             });
         });
         rt.frame(0.1);

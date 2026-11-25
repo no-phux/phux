@@ -10,56 +10,7 @@ use super::*;
 impl TerminalActor {
     pub(in crate::actor) fn handle_native_publication(&mut self, req: NativePublicationRequest) {
         self.expire_native_cursors();
-        let key = NativeCursorKey::new(req.owner, req.stream_id);
-        let valid = self.native_cursor_owners.get(&key).is_some_and(|binding| {
-            binding.cursor == req.cursor
-                && binding.terminal_id == req.terminal_id
-                && binding.stream_id == req.stream_id
-                && binding.bootstrap_id == req.bootstrap_id
-        });
-        if !valid {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
-            return;
-        }
-        if self
-            .native_cursor_owners
-            .get(&key)
-            .is_some_and(|binding| binding.superseded)
-        {
-            self.unbind_native_cursor(key);
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::Resize));
-            return;
-        }
-        let Some(publication) = self.native_publications.get_mut(&req.cursor) else {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
-            return;
-        };
-        if !publication.waiting.remove(&key) {
-            let _ = req
-                .reply
-                .send(Err(crate::native_state::NativeStateError::InvalidHandle));
-            return;
-        }
-        let replay = publication.replay.iter().cloned().collect();
-        let live = self.core.output_tx.subscribe();
-        let remove = publication.waiting.is_empty();
-        if remove {
-            self.native_publications.remove(&req.cursor);
-        }
-        if self
-            .native_cursor_owners
-            .get(&key)
-            .is_some_and(|binding| binding.history_released)
-        {
-            self.native_cursor_owners.remove(&key);
-        }
-        let _ = req.reply.send(Ok(NativePublicationReply { replay, live }));
+        self.publication.handle_native_publication(req, &self.terminal, &self.core.output_tx);
     }
 
     /// Queue one HISTORY request for bounded cooperative capture.
@@ -68,12 +19,12 @@ impl TerminalActor {
             request: req,
             started_at: tokio::time::Instant::now(),
         };
-        if self.pending_native_history.is_none() {
-            self.pending_native_history = Some(pending);
+        if self.publication.pending_native_history.is_none() {
+            self.publication.pending_native_history = Some(pending);
             return;
         }
-        if self.native_history_backlog.len() < MAX_NATIVE_HISTORY_CLIENTS.saturating_sub(1) {
-            self.native_history_backlog.push_back(pending);
+        if self.publication.native_history_backlog.len() < MAX_NATIVE_HISTORY_CLIENTS.saturating_sub(1) {
+            self.publication.native_history_backlog.push_back(pending);
             return;
         }
         let req = pending.request;
@@ -101,7 +52,7 @@ impl TerminalActor {
 
     /// Advance at most one engine history step for the oldest queued request.
     pub(in crate::actor) fn step_native_history(&mut self) {
-        let Some(pending) = self.pending_native_history.take() else {
+        let Some(pending) = self.publication.pending_native_history.take() else {
             return;
         };
         if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
@@ -118,7 +69,7 @@ impl TerminalActor {
             Ok(Some(frame)) => {
                 let request = pending.request;
                 let key = NativeCursorKey::new(request.owner, request.stream_id);
-                let keep = self.native_cursor_owners.contains_key(&key);
+                let keep = self.publication.native_cursor_owners.contains_key(&key);
                 if request
                     .reply
                     .send(NativeHistoryReply {
@@ -132,7 +83,7 @@ impl TerminalActor {
                 }
                 self.start_next_native_history();
             }
-            Ok(None) => self.pending_native_history = Some(pending),
+            Ok(None) => self.publication.pending_native_history = Some(pending),
             Err(error) => {
                 let request = pending.request;
                 answer_history(request.reply, request.permit, Err(error));
@@ -144,8 +95,8 @@ impl TerminalActor {
     pub(in crate::actor) fn start_next_native_history(&mut self) {
         // Completion can release an owner, which already promotes the next
         // request through cancellation cleanup. Never overwrite that owner.
-        if self.pending_native_history.is_none() {
-            self.pending_native_history = self.native_history_backlog.pop_front();
+        if self.publication.pending_native_history.is_none() {
+            self.publication.pending_native_history = self.publication.native_history_backlog.pop_front();
         }
     }
 
@@ -229,7 +180,7 @@ impl TerminalActor {
         id: &HistoryFrameId,
         cursor: crate::native_state::OpaqueHistoryCursor,
     ) -> Option<(u64, usize)> {
-        let binding = self.native_cursor_owners.get(&key)?;
+        let binding = self.publication.native_cursor_owners.get(&key)?;
         if binding.history_released
             || binding.superseded
             || binding.cursor != cursor
@@ -280,7 +231,7 @@ impl TerminalActor {
         };
         if record.finish {
             self.finish_native_history(key);
-        } else if let Some(binding) = self.native_cursor_owners.get_mut(&key) {
+        } else if let Some(binding) = self.publication.native_cursor_owners.get_mut(&key) {
             binding.record_index += 1;
             binding.next_page_seq = next_page_seq;
             binding.touched = tokio::time::Instant::now();
@@ -320,7 +271,7 @@ impl TerminalActor {
                 id.tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Limit)
             }
         };
-        (frame, self.native_cursor_owners.contains_key(&key))
+        (frame, self.publication.native_cursor_owners.contains_key(&key))
     }
 }
 

@@ -18,7 +18,7 @@ impl TerminalActor {
         // dirtiness; `emitted`/`total_out_bytes` are recorded at the end.
         let tick_span = tracing::debug_span!(
             "tick_emit",
-            consumer_count = self.consumer_states.len(),
+            consumer_count = self.publication.consumers.len(),
             dirty = self.terminal_dirty_since_tick,
             emitted = tracing::field::Empty,
             total_out_bytes = tracing::field::Empty,
@@ -38,7 +38,13 @@ impl TerminalActor {
         tick_span.record("total_out_bytes", walk.total_out_bytes);
         crate::perf::TICK_EMIT.record_elapsed(walk.started);
         for client_id in walk.closed {
-            self.consumer_states.remove(&client_id);
+            if let Some(generation) = self.publication
+                .consumers
+                .get(&client_id)
+                .map(|state| (state.sync.stream_id, state.sync.bootstrap_id))
+            {
+                self.unregister_consumer_generation(client_id, generation.0, generation.1);
+            }
         }
     }
 
@@ -46,8 +52,8 @@ impl TerminalActor {
     /// every consumer onto the tick. Only `StateSync` consumers are
     /// tick-managed; raw consumers get the broadcast pump.
     pub(super) fn tick_emit_audience(&self) -> Option<bool> {
-        let force_all_consumers = self.consumer_tick_emits;
-        if !force_all_consumers && !self.consumer_states.values().any(|s| s.wants_state_sync) {
+        let force_all_consumers = self.publication.force_tick;
+        if !force_all_consumers && !self.publication.consumers.values().any(|s| s.wants_state_sync) {
             // No tick-managed consumer: nothing to emit (dirty flag untouched).
             return None;
         }
@@ -60,8 +66,8 @@ impl TerminalActor {
         let mutated = self.terminal_dirty_since_tick;
         self.terminal_dirty_since_tick = false;
         if !mutated
-            && !self
-                .consumer_states
+            && !self.publication
+                .consumers
                 .values()
                 .any(|s| s.sync.must_walk_when_clean())
         {
@@ -102,7 +108,7 @@ impl TerminalActor {
         let mut closed: Vec<ClientId> = Vec::new();
         let mut emitted: u64 = 0;
         let mut total_out_bytes: usize = 0;
-        for (client_id, state) in &mut self.consumer_states {
+        for (client_id, state) in &mut self.publication.consumers {
             match Self::emit_consumer_tick(
                 *client_id,
                 state,
@@ -138,6 +144,9 @@ impl TerminalActor {
         mutated: bool,
         force_all_consumers: bool,
     ) -> TickOutcome {
+        if state.cancellation.is_cancelled() {
+            return TickOutcome::Closed;
+        }
         // Raw consumers are served by the broadcast pump.
         if !force_all_consumers && !state.wants_state_sync {
             return TickOutcome::Skipped;

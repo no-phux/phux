@@ -53,7 +53,11 @@ pub fn apply(
     fresh: &mut dyn FreshKeys,
 ) -> Result<Applied, Refusal> {
     if let Some(receipt) = org.receipt(&cmd.operation) {
-        return if receipt.op == idempotent_op(&cmd.op) {
+        return if receipt.op == idempotent_op(&cmd.op)
+            && (!matches!(cmd.op, Op::SessionEnsure { .. })
+                || (receipt.actor.principal == actor.principal
+                    && receipt.actor.on_behalf_of == actor.on_behalf_of))
+        {
             Ok(Applied {
                 operation: cmd.operation,
                 transition: Transition::default(),
@@ -97,7 +101,7 @@ pub fn apply(
 fn idempotent_op(op: &Op) -> Op {
     let mut op = op.clone();
     match &mut op {
-        Op::SessionCreate { resource, .. } => {
+        Op::SessionCreate { resource, .. } | Op::SessionEnsure { resource, .. } => {
             if let Some(launch) = resource.as_mut().and_then(|spec| spec.launch.as_mut()) {
                 redact_launch(launch);
             }
@@ -194,6 +198,9 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             attrs,
             resource,
         } => session_create(tx, fresh, name, *lifetime, attrs, resource.as_ref()),
+        Op::SessionEnsure { name, lifetime, attrs, resource } => {
+            sessions::session_ensure(tx, fresh, name, *lifetime, attrs, resource.as_ref())
+        }
         Op::SessionRename { session, name } => session_rename(tx, *session, name),
         Op::SessionSetProject { session, project } => {
             session_set_project(tx, *session, project.as_deref())

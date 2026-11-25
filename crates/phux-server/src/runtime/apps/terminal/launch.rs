@@ -109,7 +109,7 @@ pub(crate) fn seed_named_session(
     let (with_pty, scrollback) =
         state.with(|s| (s.config().attach_create_seeds_pty, s.config().scrollback));
     let seed_cmd = with_pty.then(|| named_session_command(state, name, command, cwd, env));
-    super::commands::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
+    crate::runtime::commands::terminal::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
         .map_err(|err| err.to_string())
 }
 
@@ -125,9 +125,9 @@ pub(crate) fn seed_initial_session(
 ) -> Result<(), String> {
     let seeded = if with_pty {
         let command = seed_pane_command(state, configured);
-        super::commands::seed::seed_session_with_pty(state, name, command, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_pty(state, name, command, scrollback, root_token)
     } else {
-        super::commands::seed::seed_session_with_actor(state, name, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_actor(state, name, scrollback, root_token)
     };
     seeded.map(|_| ()).map_err(|err| err.to_string())
 }
@@ -168,51 +168,3 @@ pub(crate) fn spec_command(
     cmd
 }
 
-/// Execute a Terminal launch only. The host already committed the resource
-/// activation; the existing launch path reports process creation failures.
-pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), String> {
-    let super::super::ResourceLaunch {
-        state,
-        resource,
-        spec,
-        root_token,
-    } = launch;
-    let phux_core::LaunchSpec::Terminal(spec) = spec else {
-        return Err("the Terminal app received another kind's launch spec".to_owned());
-    };
-    let (scrollback, cmd) = state.with_mut(|s| {
-        // A later activation of the same record is a relaunch.
-        let relaunch = s
-            .registry()
-            .record(resource)
-            .and_then(|record| record.activation.as_ref())
-            .is_some_and(|activation| activation.id != phux_core::ActivationId::FIRST);
-        let cmd = s
-            .config()
-            .attach_create_seeds_pty
-            .then(|| spec_command(s, spec, relaunch));
-        let wire = s.idspace.intern_resource(resource);
-        super::commands::set_agent_session(s, wire.clone(), spec.restore.clone());
-        super::notify_mode::install(s, &wire, spec);
-        (s.config().scrollback, cmd)
-    });
-    let cmd = cmd.map(|mut cmd| {
-        state.with_mut(|s| {
-            let _ = super::commands::register_pty_command(s, resource, &mut cmd);
-        });
-        cmd
-    });
-    super::commands::launch_pane_actor_with_failure_policy(
-        state,
-        resource,
-        cmd,
-        super::commands::DEFAULT_SPAWN_DIMS,
-        scrollback,
-        root_token,
-        None,
-        crate::runtime::commands::SpawnAttribution::default(),
-        true,
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
-}

@@ -36,11 +36,19 @@ impl ControlPlane {
             self.subscriptions
                 .insert(id, ResourceKind::Terminal, Origin::OwnSpawn);
         }
-        self.push_event(Event::TerminalSpawned {
-            request_id,
-            terminal_id: spawned.clone(),
-            error,
-        });
+        let outcome = match (&spawned, result) {
+            (Some(terminal_id), _) => super::super::TerminalCreationOutcome::LiveTarget { terminal_id: terminal_id.clone() },
+            (None, SpawnResult::Err(SpawnError::Unknown(_))) => super::super::TerminalCreationOutcome::Unknown {
+                message: error.unwrap_or_else(|| UNCERTAIN_SPAWN.into()),
+            },
+            (None, SpawnResult::Err(_)) => super::super::TerminalCreationOutcome::Refused {
+                message: error.unwrap_or_else(|| "spawn refused".into()),
+            },
+            (None, _) => super::super::TerminalCreationOutcome::Unknown {
+                message: "unrecognized spawn result".into(),
+            },
+        };
+        self.publish_spawn_outcome(request_id, outcome);
         // Nothing else announces this client's own spawn: refresh so the
         // topology lists it.
         if spawned.is_some() && self.handshake_ready && self.options.automatic_lifecycle {
@@ -107,15 +115,13 @@ impl ControlPlane {
                 if uncertain {
                     self.refresh_after_uncertain_spawn();
                 }
-                self.push_event(Event::TerminalSpawned {
-                    request_id,
-                    terminal_id: None,
-                    error: if uncertain {
-                        Some(UNCERTAIN_SPAWN.to_owned())
-                    } else {
-                        error
-                    },
-                });
+                let message = error.unwrap_or_else(|| "spawn outcome unavailable".into());
+                let outcome = if uncertain {
+                    super::super::TerminalCreationOutcome::Unknown { message: UNCERTAIN_SPAWN.into() }
+                } else {
+                    super::super::TerminalCreationOutcome::Refused { message }
+                };
+                self.publish_spawn_outcome(request_id, outcome);
                 self.retire_unadmitted_agent_subscriptions();
             }
             Pending::Spawn { .. } => {
@@ -264,7 +270,6 @@ impl ControlPlane {
         &mut self,
         snapshot: &SessionSnapshot,
     ) -> Result<(), ControlError> {
-        crate::connection::trace::phase("topology_received");
         let closed = self.listings.relist(View::Inventory, snapshot);
         self.close_proven(closed)?;
         let mut topology = self.project_topology(snapshot);
@@ -296,7 +301,6 @@ impl ControlPlane {
         }
         self.error = None;
         self.topology = Some(topology);
-        crate::connection::trace::phase("topology_applied");
         self.push_event(Event::TopologySnapshot {
             attach_id: None,
             snapshot: snapshot.clone(),

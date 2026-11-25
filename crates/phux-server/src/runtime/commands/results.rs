@@ -42,8 +42,8 @@ pub(in crate::runtime) fn actor_reply(
     }
 }
 
-/// Why an `ATTACH_RESOURCE` stage failed; `AttachResourceSession::failed`
-/// rolls the partial generation back exactly once.
+/// Why an `ATTACH_RESOURCE` stage failed; pending registration and pump guards
+/// roll back partial publication of the exact generation.
 #[derive(Debug)]
 pub(crate) struct AttachResourceFailure {
     /// Wire error code the caller receives.

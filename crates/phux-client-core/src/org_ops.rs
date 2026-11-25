@@ -32,6 +32,9 @@ use phux_protocol::wire::frame::{
 };
 use sha2::{Digest, Sha256};
 
+mod receipt;
+pub use receipt::OrgReplyExpectation;
+
 /// Default horizon for resending an attempted operation.
 ///
 /// Well inside the server's receipt retention (24 hours or 10,000 receipts,
@@ -74,7 +77,8 @@ pub enum OrgOutcome {
 }
 
 impl OrgOutcome {
-    /// Classify an organization command's reply.
+    /// Decode a reply's shape without request-specific identity validation.
+    /// Mutation submitters use [`OrgReplyExpectation`] captured before handoff.
     #[must_use]
     pub fn from_result(result: &CommandResult) -> Self {
         match result {
@@ -358,12 +362,7 @@ impl OrgJournal {
             .iter()
             .position(|op| op.in_flight == Some(request_id))?;
         let op = self.ops.remove(position)?;
-        let outcome = match &op.command {
-            Command::ResourceTerminate { .. } => {
-                OrgOutcome::from_terminate_reply(op.operation, result)
-            }
-            _ => OrgOutcome::from_result(result),
-        };
+        let outcome = OrgReplyExpectation::for_command(&op.command).classify(result);
         Some(OrgReport {
             operation: op.operation,
             outcome,

@@ -68,9 +68,10 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
     let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
-    actor.native_cursor_owners.insert(
+    actor.publication.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            cancellation: tokio_util::sync::CancellationToken::new(),
             history_released: false,
             superseded: false,
             cursor,
@@ -122,9 +123,10 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
     let bundle = TerminalActor::new(20, 5).expect("new actor");
     let mut actor = bundle.actor;
     let stream_id = phux_protocol::ids::StreamId::new(3).expect("stream id");
-    actor.native_cursor_owners.insert(
+    actor.publication.native_cursor_owners.insert(
         NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
+            cancellation: tokio_util::sync::CancellationToken::new(),
             history_released: false,
             superseded: false,
             cursor: [1; crate::native_state::TOKEN_LEN],
@@ -178,6 +180,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     let wire_cursor = Bytes::copy_from_slice(&cursor);
     let binding = || NativeCursorOwner {
+            cancellation: tokio_util::sync::CancellationToken::new(),
         history_released: false,
         superseded: false,
         cursor,
@@ -218,11 +221,11 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     };
 
     // The binding is gone entirely: the mid-attach resize drained it.
-    actor
+    actor.publication
         .native_cursor_owners
         .insert(NativeCursorKey::new(7, stream_id), binding());
     actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
-    assert!(actor.native_cursor_owners.is_empty());
+    assert!(actor.publication.native_cursor_owners.is_empty());
     let frame = request(&mut actor, bootstrap_id).await;
     assert!(
         matches!(
@@ -237,7 +240,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     );
 
     // The binding names the generation the resize replaced.
-    actor
+    actor.publication
         .native_cursor_owners
         .insert(NativeCursorKey::new(7, stream_id), binding());
     let superseded = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id");
@@ -253,7 +256,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
         "a superseded generation tombstones the cursor: {frame:?}"
     );
     assert!(
-        actor
+        actor.publication
             .native_cursor_owners
             .contains_key(&NativeCursorKey::new(7, stream_id)),
         "answering a stale request must not release the live binding"
@@ -283,7 +286,7 @@ async fn ready_native_publication_survives_eof_before_activation() {
         7,
         stream_id,
         bootstrap_id,
-        capture.publication_cursor,
+        capture.capture.cursor,
     )
     .expect("EOF must preserve the completed publication fence");
 

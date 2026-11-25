@@ -2,6 +2,7 @@ use super::*;
 use crate::ViewId;
 use phux_client_core::grid::CELL_SELECTED;
 
+mod admission;
 mod document;
 mod lifecycle;
 mod presentation;

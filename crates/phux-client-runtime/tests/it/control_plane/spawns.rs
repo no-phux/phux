@@ -168,7 +168,7 @@ fn keyed_spawn_replays_after_lost_reply_with_the_same_key_and_correlation() {
 
 #[test]
 fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
-    let mut plane = ControlPlane::new(ControlOptions {
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions {
         attach: Some(AttachTarget::ByName("main".to_owned())),
         viewport: (0, 0),
         ..ControlOptions::default()

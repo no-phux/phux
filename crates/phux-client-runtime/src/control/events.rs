@@ -17,11 +17,14 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
+
 use crate::approvals::{Decision, DecisionOutcome};
 
 mod observation;
+mod outcomes;
 
 pub use observation::Observation;
+pub use outcomes::{DeliveryOutcome, TerminalCreationOutcome};
 
 /// Where the session is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,17 +53,6 @@ impl Status {
     }
 }
 
-/// How one acknowledged input operation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// The server acknowledged the write.
-    Delivered,
-    /// Nothing was written; retyping is safe.
-    Refused,
-    /// Some, all, or none of the bytes may have landed; read the pane
-    /// before retyping.
-    Unknown,
-}
 
 /// The catalog's facts about an `AgentSession` resource (ADR-0103).
 ///
@@ -141,6 +133,11 @@ pub enum Event {
         terminal_id: Option<ResourceId>,
         /// Why the spawn failed.
         error: Option<String>,
+    },
+    /// Typed settlement of a terminal creation under its original correlation.
+    TerminalCreation {
+        request_id: u32,
+        outcome: TerminalCreationOutcome,
     },
     /// The server answered a per-terminal attach.
     TerminalAttached {

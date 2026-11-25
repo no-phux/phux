@@ -233,7 +233,7 @@ mod tests {
                 )
                 .expect("create");
             fail.store(true, Ordering::Relaxed);
-            s.activation_ended(id, ExitOutcome::UNKNOWN, true);
+            s.activation_ended(s.activation_token(id).unwrap(), ExitOutcome::UNKNOWN, true);
             assert!(
                 s.has_pending_activation_reports(),
                 "the refused end stays pending"

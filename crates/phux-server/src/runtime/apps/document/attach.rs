@@ -24,7 +24,7 @@ use crate::runtime::session_attach::{
     SessionCapture,
     staging::{CaptureFailure, SessionStaging},
 };
-use crate::state::{ClientId, SharedState};
+use crate::state::ClientId;
 
 /// Capture without allocating an independent attach generation or publishing.
 /// This uses the same cut, framing and lag-recovery pump as `ATTACH_RESOURCE`.
@@ -59,18 +59,14 @@ pub(super) async fn stage_session<A: DocumentApi>(
     let frames =
         staging.collect_frames(producer_stream::bootstrap_frames(&cut, ids, capture.limits))?;
     staging.append(frames, bytes)?;
-    let (cancel, done, last_seq, prior) = capture.state.with_mut(|s| {
-        s.resources_mut()
-            .replace_pump(capture.client_id, pane.terminal_id, capture.bootstrap_id)
-    });
+    let (cancel, done, last_seq, prior) = capture.host.replace(pane.terminal_id, capture.bootstrap_id);
     if let Some((_, done, _)) = prior {
         done.cancelled().await;
     }
     last_seq.store(cut.base_seq, Ordering::Release);
     let pump_done = done.drop_guard();
     let pump = PumpCore {
-        state: capture.state.clone(),
-        client_id: capture.client_id,
+        host: capture.host.clone(),
         core: pane.terminal_id,
         out_tx: capture.out_tx.clone(),
         terminal_id: pane.wire_terminal_id.clone(),
@@ -99,7 +95,7 @@ pub(super) async fn stage_session<A: DocumentApi>(
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
 pub(crate) async fn attach_document<A: DocumentApi>(
-    state: &SharedState,
+    host: &crate::runtime::apps::StreamHost,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     core: phux_core::ids::ResourceId,
@@ -112,7 +108,7 @@ pub(crate) async fn attach_document<A: DocumentApi>(
         return CommandResult::error(ErrorCode::WrongResourceKind, format!("not a {}", A::LABEL));
     };
     let attach = StreamAttach {
-        state,
+        host,
         client_id,
         terminal_id,
         core,

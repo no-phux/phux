@@ -21,44 +21,6 @@ pub(crate) async fn prepare_consumers(
     apply_client_default_colors(panes, caps.default_colors).await;
 }
 
-/// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal it
-/// returned in one critical section, then announce what changed.
-pub(crate) async fn apply_session_role(
-    state: &SharedState,
-    client_id: ClientId,
-    panes: &[crate::state::AttachSnapshotPane],
-    role: phux_protocol::wire::frame::RolePolicy,
-    was_subscribed: bool,
-) {
-    let changes: Vec<_> = state.with_mut(|s| {
-        panes
-            .iter()
-            .filter(|pane| pane.handle.kind == crate::resource::ResourceKind::Terminal)
-            .map(|pane| {
-                let effects = s.apply_attach_role(
-                    client_id,
-                    &pane.wire_terminal_id,
-                    Some(pane.terminal_id),
-                    role,
-                    was_subscribed,
-                );
-                (pane, effects, s.leases().holder(pane.terminal_id))
-            })
-            .collect()
-    });
-    for (pane, effects, holder) in changes {
-        if !effects.is_empty() {
-            crate::runtime::commands::announce_role_effects_on(
-                &pane.handle,
-                client_id,
-                effects,
-                holder,
-            )
-            .await;
-        }
-    }
-}
-
 /// Stop a state-sync consumer's prior actor-side emitters before the new
 /// ATTACHED, so an old delta cannot land between it and the new bootstrap.
 async fn detach_prior_state_sync_consumers(
@@ -81,6 +43,7 @@ async fn detach_prior_state_sync_consumers(
             .consumer_detach
             .send(ConsumerDetachRequest {
                 client_id: wire_client_id,
+                generation: None,
                 reply,
             })
             .await
@@ -143,6 +106,7 @@ pub(crate) fn release_consumer(handle: &ResourceHandle, client_id: ClientId) {
         .consumer_detach
         .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
+            generation: None,
             reply: reply_tx,
         }) {
         Ok(()) => {}
@@ -172,6 +136,7 @@ pub(crate) async fn fence_consumer(handle: &ResourceHandle, client_id: ClientId)
         .consumer_detach
         .send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
+            generation: None,
             reply: reply_tx,
         })
         .await;
@@ -185,9 +150,8 @@ pub(super) struct AttachStaging {
     pub(super) budget: BootstrapStagingBudget,
     /// Bootstrap and closure frames staged for atomic publication.
     pub(super) frames: Vec<FrameKind>,
-    /// Per-pane publication gates.
-    pub(super) gates: Vec<SnapshotGate>,
-    pub(super) pumps: JoinSet<()>,
+    /// Pending cuts, pump gates and exact actor interest have one owner.
+    pub(super) publication: super::publication::TerminalPublication,
 }
 
 impl Default for AttachStaging {
@@ -198,8 +162,7 @@ impl Default for AttachStaging {
                 MAX_STAGED_BOOTSTRAP_FRAMES,
             ),
             frames: Vec::new(),
-            gates: Vec::new(),
-            pumps: JoinSet::new(),
+            publication: super::publication::TerminalPublication::default(),
         }
     }
 }
@@ -218,4 +181,5 @@ pub(super) struct ConsumerRegistration {
     pub(super) state_sync_bootstrap: Option<phux_terminal_api::actor::StateSyncBootstrap>,
     /// The actor was gone: its mailbox was closed or it dropped the reply.
     pub(super) actor_gone: bool,
+    pub(super) guard: Option<phux_terminal_api::actor::ConsumerRegistrationGuard>,
 }

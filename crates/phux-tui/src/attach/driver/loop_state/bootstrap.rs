@@ -134,7 +134,9 @@ impl super::SessionLoop {
             after_seq: None,
         })
         .await?;
-        self.subscribe_global_session_keys(conn).await?;
+        self.peers
+            .subscribe_global_session_keys(conn, self.organization_supported)
+            .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
             self.layout_read_complete = false;
             self.layout_get_request_id = None;
@@ -279,7 +281,7 @@ impl super::SessionLoop {
         self.overlays.push(Box::new(ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
             crate::attach::onboarding::hint_lines(
-                self.settings.keybindings.as_ref(),
+                Some(&self.settings.keybindings),
                 self.sidebar_enabled,
             ),
             &self.settings.theme,
@@ -297,15 +299,12 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<FrameStep, AttachError> {
-        if self.mirror.session_name.is_empty() {
-            return Err(AttachError::Protocol(
-                "engine requested rebootstrap before ATTACHED named the session".to_owned(),
-            ));
-        }
+        let session_id = self.peers.focused_session.ok_or_else(|| AttachError::Protocol(
+            "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
+        ))?;
         conn.unbind_all_terminals();
         self.pending_stream_binds.clear();
-        let attach_id =
-            send_attach(conn, AttachTarget::ByName(self.mirror.session_name.clone())).await?;
+        let attach_id = send_attach(conn, AttachTarget::ById(session_id)).await?;
         tracing::warn!(
             attach_id,
             session = %self.mirror.session_name,

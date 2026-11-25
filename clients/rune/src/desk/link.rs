@@ -27,8 +27,6 @@ mod standing;
 
 pub use standing::{Banner, Standing};
 
-/// The longest wait between automatic attempts on an ended connection.
-const RETRY_CEILING: Duration = Duration::from_secs(30);
 /// How long a connection may be down before anyone is told: a resync or a
 /// server's own upgrade is over by then.
 const BANNER_AFTER: Duration = Duration::from_secs(1);
@@ -80,11 +78,11 @@ pub struct Link {
     pub home: Option<(String, Option<SessionKey>)>,
     /// The connection on which the organization records can't be read.
     pub org_unavailable: Option<u64>,
-    /// `new_session` lent the runtime its automatic attach, which carries a
-    /// create across the redial.
-    pub creating: bool,
-    /// The session `create_session` made, to make persistent once listed.
-    pub keep: Option<String>,
+    /// Exact journaled creation awaiting its retained outcome.
+    pub creating: Option<phux_protocol::ids::OperationId>,
+    /// A committed create awaiting the inventory's live id for this exact key.
+    pub created: Option<SessionKey>,
+    pub uncertain_session: Option<phux_protocol::ids::OperationId>,
     /// Why this window isn't on the machine it remembered, for after its
     /// first terminal opens.
     pub moved: Option<String>,
@@ -118,8 +116,9 @@ impl Default for Link {
             incompatible: None,
             home: None,
             org_unavailable: None,
-            creating: false,
-            keep: None,
+            creating: None,
+            created: None,
+            uncertain_session: None,
             moved: None,
             server: 0,
             handoff_until: None,
@@ -162,16 +161,13 @@ impl Link {
         self.heard = false;
         self.home = None;
         self.org_unavailable = None;
-        self.creating = false;
-        self.keep = None;
+        self.creating = None;
+        self.created = None;
+        self.uncertain_session = None;
         self.nudged = None;
     }
 }
 
-/// The wait before automatic attempt `tries`: 2 s doubling to the ceiling.
-fn backoff(tries: u32) -> Duration {
-    Duration::from_secs(2u64.saturating_mul(1u64 << tries.min(8))).min(RETRY_CEILING)
-}
 
 /// The server's words from a protocol refusal, when `error` is one.
 fn incompatible(error: &str) -> Option<String> {

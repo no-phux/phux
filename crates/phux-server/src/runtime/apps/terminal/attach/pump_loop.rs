@@ -53,7 +53,7 @@ pub(super) async fn next_wait(
 /// Drive one client's output subscription for a pane: park on the publication
 /// gate, then run [`run_started_output_pump`]. Returns the fault that ended
 /// it, `None` if orderly.
-pub(super) async fn run_output_pump(
+pub(crate) async fn run_output_pump(
     ctx: &OutputPumpContext,
     gate_rx: oneshot::Receiver<OutputPumpStart>,
     output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
@@ -70,6 +70,10 @@ pub(crate) async fn run_started_output_pump(
     start: OutputPumpStart,
     mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> Option<PumpFault> {
+    if let Some(mut interest) = start.interest {
+        // The real running pump now owns this published lifetime.
+        interest.published();
+    }
     let mut generation = PumpGeneration::opened_at(start.published_cut, ctx.initial_bootstrap_id);
     if let Some(live) = start.live {
         output_rx = live;
@@ -222,26 +226,25 @@ pub(crate) fn release_after_pump_fault(
 /// Release `client_id`'s consumers of Terminal `handles` after a failed
 /// session `ATTACH`, each within a bounded wait so a wedged actor cannot hold
 /// the rollback.
-pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[ResourceHandle]) {
+pub(crate) async fn release_aborted_consumers(
+    client_id: ClientId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    handles: &[ResourceHandle],
+) {
     let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in handles {
         let Ok(terminal) = handle.terminal() else {
             continue;
         };
-        let _ = tokio::time::timeout(
-            producer_deadline,
-            terminal
-                .native_release
-                .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
-        )
-        .await;
         let (reply, done) = oneshot::channel();
         if matches!(
             tokio::time::timeout(
                 producer_deadline,
                 terminal.consumer_detach.send(ConsumerDetachRequest {
                     client_id: wire_client_id,
+                    generation: Some((stream_id, bootstrap_id)),
                     reply,
                 }),
             )

@@ -29,7 +29,7 @@ struct ClosedResource {
 
 /// What a committed close still owes its observers once the lock drops.
 #[must_use = "a committed close must be announced"]
-pub(super) struct CommittedClose {
+pub(crate) struct CommittedClose {
     /// Children before their parents, the order the tree came apart in.
     closes: Vec<ClosedResource>,
     /// Clients of a session the commit deleted.
@@ -43,7 +43,7 @@ impl CommittedClose {
     }
 
     /// Detach these clients too, after the closes.
-    pub(super) fn extend_killed_clients(
+    pub(crate) fn extend_killed_clients(
         &mut self,
         clients: impl IntoIterator<Item = (ClientId, mpsc::Sender<Outbound>)>,
     ) {
@@ -68,7 +68,7 @@ pub(super) fn commit_user_close(
 }
 
 /// Commit an admitted close. Session teardown can override tab locks.
-pub(super) fn commit_close(
+pub(crate) fn commit_close(
     s: &mut ServerState,
     plan: ClosePlan,
     attribution: CloseAttribution,
@@ -130,7 +130,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
 /// each `RESOURCE_CLOSED`, children first, then `DETACHED { SESSION_KILLED }`
 /// to the clients of a deleted session, after the closes so a
 /// client sees its last pane go before the session that held it.
-pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
+pub(crate) fn announce(state: &SharedState, committed: CommittedClose) {
     let CommittedClose {
         closes,
         killed_clients,

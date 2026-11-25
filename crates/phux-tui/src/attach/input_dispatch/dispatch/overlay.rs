@@ -24,9 +24,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             InputEvent::Key(key_event) => self.handle_overlay_key(key_event).await?,
             InputEvent::Mouse(mouse) => self.handle_overlay_mouse(mouse).await?,
             InputEvent::Paste(paste) => {
-                if let Some(resolver) = self.ctx.resolver.as_deref_mut() {
-                    resolver.reset();
-                }
+                self.ctx.resolver.reset();
                 if let Ok(text) = std::str::from_utf8(&paste.data) {
                     self.ctx.overlays.handle_paste(text);
                 }
@@ -44,9 +42,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         &mut self,
         key_event: &phux_protocol::input::key::KeyEvent,
     ) -> Result<bool, AttachError> {
-        if let Some(resolver) = self.ctx.resolver.as_deref_mut() {
-            resolver.reset();
-        }
+        self.ctx.resolver.reset();
         let was_active = self.ctx.overlays.is_active();
         let was_copy = self.ctx.overlays.copy_selection().is_some();
         // An overlay may commit an action (e.g. the

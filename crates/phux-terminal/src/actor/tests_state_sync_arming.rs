@@ -87,7 +87,7 @@ fn gated_initial_consumer_keeps_timer_armed_until_live() {
         .expect("consumer");
     let (gate, live_gate) = watch::channel(false);
     actor
-        .consumer_states
+        .publication.consumers
         .get_mut(&ClientId(1))
         .expect("state")
         .live_gate = live_gate;

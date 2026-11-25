@@ -125,6 +125,29 @@ impl HostedClient {
         self.client.send_text(text)
     }
 
+    /// Submit an atomic user paste and return its canonical local outcome.
+    /// `awaiting-receipt` is not delivery; the canvas's input status and
+    /// correlated delivery id are updated when a receipt settles it.
+    ///
+    /// # Errors
+    /// Returns transport failure, never a fabricated delivery receipt.
+    pub fn submit_paste(&self, text: &str) -> Result<JsValue, JsValue> {
+        use phux_client_core::input_replay::InputSubmission;
+        let submission = self.client.submit_user_paste(text)?;
+        let result = js_sys::Object::new();
+        let (kind, delivery_id) = match submission {
+            InputSubmission::NotQueued => ("not-queued", None),
+            InputSubmission::QueuedRaw => ("queued-raw", None),
+            InputSubmission::Refused { delivery_id } => ("refused", Some(delivery_id)),
+            InputSubmission::AwaitingReceipt { delivery_id } => ("awaiting-receipt", Some(delivery_id)),
+        };
+        js_sys::Reflect::set(&result, &"kind".into(), &kind.into())?;
+        if let Some(delivery_id) = delivery_id {
+            js_sys::Reflect::set(&result, &"deliveryId".into(), &delivery_id.to_string().into())?;
+        }
+        Ok(result.into())
+    }
+
     /// Close the focused pane's view. Presentation only: the terminal keeps
     /// running in its session, and the remaining panes take its space.
     ///

@@ -73,6 +73,7 @@ pub(super) struct Fields {
     pub(super) group: Option<[u8; 16]>,
     pub(super) locked: Option<bool>,
     pub(super) replayed: bool,
+    pub(super) ensured_created: Option<bool>,
     pub(super) slot_tabs: bool,
     pub(super) authority: Option<super::AuthorityId>,
 }
@@ -105,6 +106,7 @@ impl Fields {
             field::org::GROUP => out.group = Some(key_bytes(value)?),
             field::org::LOCKED => out.locked = Some(Decoder::new(value).read_bool("locked")?),
             field::org::REPLAYED => out.replayed = Decoder::new(value).read_bool("replayed")?,
+            field::org::ENSURED_CREATED => out.ensured_created = Some(Decoder::new(value).read_bool("ensured_created")?),
             field::org::SLOT_TABS => out.slot_tabs = Decoder::new(value).read_bool("slot_tabs")?,
             field::org::PROJECT => out.project = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?),
             field::org::LIFETIME => out.lifetime = Some(u8_value(value)?),

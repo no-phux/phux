@@ -30,9 +30,6 @@ pub enum Verdict {
     Lost,
     /// The process is gone: mark it `Completed` with outcome `Unobserved`.
     Unobserved,
-    /// Launch intent committed and no process was ever recorded. Mark it
-    /// `Failed`: committed, never launched. Not a completed unobserved exit.
-    NeverLaunched,
 }
 
 /// Decide one activation's fate.
@@ -54,10 +51,13 @@ pub fn decide(
         return Verdict::Keep;
     }
     let Some(recorded) = recorded else {
-        return if state == ExecState::Starting {
-            Verdict::NeverLaunched
+        // Starting is not proof that the OS launch was never attempted: the
+        // process may exist while its start evidence was lost in the crash.
+        // Without a durable identity there is nothing safe to probe.
+        return if state == ExecState::Lost {
+            Verdict::Keep
         } else {
-            Verdict::Unobserved
+            Verdict::Lost
         };
     };
     match recorded_process(recorded, boot, observe) {
@@ -175,8 +175,9 @@ mod tests {
             ("lost identity still uncertain", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(true, None), Verdict::Keep),
             ("lost again: a second restart changes nothing", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(true, Some(1)), Verdict::Keep),
             ("lost, then ended", ExecState::Lost, false, Some(recorded(1)), Some(BOOT), seen(false, None), Verdict::Unobserved),
-            ("commit that never launched", ExecState::Starting, false, None, Some(BOOT), None, Verdict::NeverLaunched),
-            ("running with no identity", ExecState::Running, false, None, Some(BOOT), None, Verdict::Unobserved),
+            ("launch without durable start evidence", ExecState::Starting, false, None, Some(BOOT), None, Verdict::Lost),
+            ("running without durable process identity", ExecState::Running, false, None, Some(BOOT), None, Verdict::Lost),
+            ("already unresolved with no identity", ExecState::Lost, false, None, Some(BOOT), None, Verdict::Keep),
         ];
         for (label, state, vouched, identity, boot, observed, want) in cases {
             assert_eq!(

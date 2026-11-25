@@ -41,6 +41,20 @@ set up [remote access](./remote.md).
 `phux lock NAME:G` stops every client from closing a tab until
 `phux unlock`.
 
+`phux new NAME` is exact creation: an existing name is refused, including
+with `--ephemeral`. `phux attach NAME` only selects an existing session; it
+never creates one. With `defaults.attach-session`, a no-name attach asks the
+host to ensure that session atomically, then selects the receipt's exact
+identity. Ensuring an existing session does not start another pane. Older
+servers that cannot ensure refuse without creating; an uncertain receipt
+requires inspecting `phux ls`, not automatically creating again.
+
+`phux worktree open` uses the same atomic ensure: it preserves an existing
+session and its panes, or creates the worktree's persistent session with its
+project identity. `--attach` selects the receipt's exact session; a missing
+live pane in headless output is a committed intent to reconcile, not permission
+to create again.
+
 ## Resources
 
 Everything the server hosts is a **resource** with a **kind**: a terminal,

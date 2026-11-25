@@ -7,13 +7,11 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use phux_client_core::layout::SplitDir;
 use phux_client_runtime::ViewId;
-use phux_client_runtime::control::ProjectionFence;
-use phux_client_runtime::publication::GridFrame;
+use phux_client_runtime::runtime::PresentationEvidence;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -75,6 +73,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+mod view_intent;
 pub(crate) mod window_frame;
 mod worker;
 mod worktree;
@@ -97,11 +96,7 @@ const PREFS_ID: &str = "sh.phux.rune";
 /// The exact frame a view build painted, and the unknown-delivery fence it
 /// may clear once Rune reports it drawn.
 pub struct Painted {
-    pub terminal: ResourceId,
-    pub view: ViewId,
-    pub fence: ProjectionFence,
-    pub frame: Arc<GridFrame>,
-    pub epoch: u64,
+    pub evidence: PresentationEvidence,
 }
 
 /// A size this window asked for: a terminal's cells and the cell's device

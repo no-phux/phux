@@ -121,10 +121,9 @@ fn an_empty_session_gets_a_terminal_created_by_its_key() {
         spawned(&events, request),
         Some((Some(ResourceId::local(42)), None))
     );
-    assert!(
-        org_outcomes(&events).is_empty(),
-        "reported as the spawn only"
-    );
+    assert!(matches!(org_outcomes(&events).as_slice(),
+        [(actual, OrgOutcome::Committed(_))] if actual == operation),
+        "the canonical operation receipt remains visible alongside the spawn projection");
     assert!(
         commands(&mut plane).iter().any(|(_, c)| matches!(
             c,
@@ -157,4 +156,22 @@ fn a_server_without_create_placement_still_refuses_and_sends_nothing() {
     let (terminal, error) = spawned(&plane.take_events(), request).expect("settled");
     assert!(terminal.is_none());
     assert!(error.unwrap().contains("selected session"));
+}
+
+#[test]
+fn typed_spawn_into_empty_session_retains_both_operation_and_request() {
+    use phux_client_runtime::control::WorkflowSubmission;
+    let mut plane = with_empty_session(true);
+    let WorkflowSubmission::Journaled { request_id: Some(request), operation } =
+        plane.submit_spawn(SpawnRequest { session_id: Some(2), ..SpawnRequest::default() })
+    else { panic!("empty-session creation must report its journal correlation"); };
+    let sent = commands(&mut plane);
+    let [(attempt, Command::ResourceCreate { operation: actual, .. })] = sent.as_slice()
+    else { panic!("one exact create: {sent:?}"); };
+    assert_eq!(*actual, operation);
+    answer(&mut plane, *attempt, CommandResult::Refused(Refusal::NotFound));
+    let events = plane.take_events();
+    assert!(spawned(&events, request).is_some());
+    assert!(matches!(org_outcomes(&events).as_slice(),
+        [(actual, OrgOutcome::Refused(Refusal::NotFound))] if *actual == operation));
 }

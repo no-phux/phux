@@ -13,6 +13,12 @@ impl Connection {
         if self.failed {
             return Outcome::default();
         }
+        if self.resolve_input_frame(&frame) {
+            return Outcome::default();
+        }
+        if let FrameKind::ResourceClosed { terminal_id, .. } = &frame {
+            self.retire_input(terminal_id, "the terminal was closed");
+        }
         if let Some(outcome) = self.approvals.on_frame(&frame) {
             return outcome;
         }
@@ -25,12 +31,15 @@ impl Connection {
             FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id),
             _ => stream.as_ref().and_then(KernelInput::resource_id),
         };
-        if resource.is_some_and(|id| self.retiring_panes.contains(id))
+        if resource.is_some_and(|id| self.failed_pane_views.contains(id))
             && !matches!(frame, FrameKind::ResourceClosed { .. })
         {
             return Outcome::default();
         }
-        if let FrameKind::HelloOk { server_caps, .. } = &frame {
+        if let FrameKind::HelloOk { server_caps, server_id, .. } = &frame {
+            self.input_server_id = Some(server_id.clone());
+            self.acknowledged_input = server_caps.features.contains(ServerFeature::AcknowledgedInput);
+            self.begin_input_connection();
             self.path_query_supported = server_caps
                 .features_ext
                 .contains(ServerFeatureExt::PathQuery);

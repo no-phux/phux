@@ -6,7 +6,13 @@ use phux_core::Op;
 fn missing_exit_evidence_never_becomes_zero_in_inventory() {
     let state = SharedState::new();
     let (session, id) = state.with_mut(|s| s.seed_session("failed"));
-    state.with_mut(|s| s.activation_ended(id, phux_core::ExitOutcome::UNKNOWN, true));
+    state.with_mut(|s| {
+        s.activation_ended(
+            s.activation_token(id).unwrap(),
+            phux_core::ExitOutcome::UNKNOWN,
+            true,
+        )
+    });
     let key = state.with(|s| ow::resource_key(s.registry().record(id).unwrap().key).unwrap());
     let session =
         state.with(|s| ow::session_key(s.registry().session_key(session).unwrap()).unwrap());
@@ -74,7 +80,11 @@ fn durable_inspection_follows_current_membership_and_filters_each_read() {
         .unwrap();
     assert_eq!(row.session, ow::session_key(destination).unwrap());
     state.with_mut(|s| {
-        s.activation_ended(id, phux_core::ExitOutcome::UNKNOWN, true);
+        s.activation_ended(
+            s.activation_token(id).unwrap(),
+            phux_core::ExitOutcome::UNKNOWN,
+            true,
+        );
         let record = s.org().resource(&ow::core_resource_key(&key)).unwrap();
         s.commit(
             Op::ResourceRelaunch {
@@ -95,7 +105,11 @@ fn durable_inspection_follows_current_membership_and_filters_each_read() {
         2
     );
     state.with_mut(|s| {
-        s.activation_ended(id, phux_core::ExitOutcome::UNKNOWN, true);
+        s.activation_ended(
+            s.activation_token(id).unwrap(),
+            phux_core::ExitOutcome::UNKNOWN,
+            true,
+        );
         s.commit(
             Op::ResourceRemove {
                 resource: ow::core_resource_key(&key),

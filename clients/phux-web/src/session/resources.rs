@@ -283,7 +283,7 @@ impl Connection {
         {
             return self.close_discovered_resource(&terminal_id, exit_status);
         }
-        self.retiring_panes.retain(|id| id != &terminal_id);
+        self.failed_pane_views.retain(|id| id != &terminal_id);
         self.pane_sizes.remove(&terminal_id);
         let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
         let was_agent = self.is_agent_session(&terminal_id);

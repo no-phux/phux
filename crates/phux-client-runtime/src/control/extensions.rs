@@ -122,7 +122,7 @@ impl ControlPlane {
                 next_offset: 0,
                 attempted: false,
                 in_flight: None,
-                created_at: Instant::now(),
+                created_at: self.observed_time(),
             },
         );
         self.extensions.upload_order.push_back(transfer_id);
@@ -159,7 +159,7 @@ impl ControlPlane {
             .extensions
             .uploads
             .iter()
-            .filter(|(_, upload)| upload.created_at.elapsed() >= INPUT_RETRY_HORIZON)
+            .filter(|(_, upload)| self.observed_time().saturating_duration_since(upload.created_at) >= INPUT_RETRY_HORIZON)
             .map(|(transfer_id, _)| *transfer_id)
             .collect::<Vec<_>>();
         for transfer_id in &expired {

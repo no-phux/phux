@@ -8,7 +8,6 @@
 
 use phux_client_runtime::Client;
 use phux_client_runtime::control::Topology;
-use phux_protocol::wire::frame::AttachTarget;
 
 use super::{Desk, NoticeKind};
 
@@ -16,6 +15,7 @@ use super::{Desk, NoticeKind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bare {
     pub session: String,
+    pub(super) key: Option<phux_protocol::ids::SessionKey>,
     origin: String,
 }
 
@@ -24,6 +24,7 @@ impl Bare {
     pub(crate) fn test(session: &str, origin: &str) -> Self {
         Self {
             session: session.to_owned(),
+            key: None,
             origin: origin.to_owned(),
         }
     }
@@ -88,7 +89,9 @@ impl Desk {
         let phux = phux.and_then(|path| path.to_str());
         let argv = command(phux, &origin);
         self.create_session_running(session.clone(), Some(argv));
-        self.bare = Some(Bare { session, origin });
+        if self.link.creating.is_some() {
+            self.bare = Some(Bare { session, origin, key: None });
+        }
     }
 
     /// End the bare session; `settle_bare` takes the window home once it's
@@ -99,12 +102,7 @@ impl Desk {
         if self.connection.pending_session.as_ref() == Some(&bare.session) {
             return;
         }
-        let key = self
-            .connection
-            .topology
-            .as_ref()
-            .and_then(|t| t.session_named(&bare.session))
-            .and_then(|session| session.key);
+        let key = bare.key;
         let (Some(client), Some(key)) = (&self.connection.client, key) else {
             self.bare = None;
             return;
@@ -126,15 +124,14 @@ impl Desk {
         };
         let selected = client.selected_session();
         let selected = topology.sessions.iter().find(|s| Some(s.id) == selected);
-        if selected.is_some_and(|s| s.name == bare.session) {
+        if selected.is_some_and(|s| bare.key.is_none() || s.key == bare.key) {
             return false;
         }
         let origin = (selected.is_none() && topology.session_named(&bare.origin).is_some())
             .then(|| bare.origin.clone());
         self.bare = None;
         let Some(origin) = origin else { return false };
-        client.attach_session(AttachTarget::ByName(origin));
-        true
+        self.connection.select_named_session(client, &origin)
     }
 }
 

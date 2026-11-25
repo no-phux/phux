@@ -269,15 +269,13 @@ async fn read_arrangement(
 /// completion barrier under the new attach id.
 async fn restart_attach(
     conn: &mut Connection,
-    session_name: &str,
+    session_id: Option<SessionId>,
     completion: &mut HeadlessCompletion,
 ) -> Result<u32, AttachError> {
-    if session_name.is_empty() {
-        return Err(AttachError::Protocol(
-            "engine requested rebootstrap before ATTACHED named the session".to_owned(),
-        ));
-    }
-    let attach_id = send_attach(conn, AttachTarget::ByName(session_name.to_owned())).await?;
+    let session_id = session_id.ok_or_else(|| AttachError::Protocol(
+        "engine requested rebootstrap before ATTACHED identified the session".to_owned(),
+    ))?;
+    let attach_id = send_attach(conn, AttachTarget::ById(session_id)).await?;
     completion.restart_attach();
     Ok(attach_id)
 }
@@ -320,7 +318,7 @@ async fn drain_until_settled(
         completion.observe_frame(&frame, *attach_id);
         let outcome = session.ingest(frame, focused_session)?;
         if outcome.resync_required {
-            *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
+            *attach_id = restart_attach(conn, focused_session, completion).await?;
             continue;
         }
         session
@@ -413,3 +411,6 @@ pub async fn run_headless_rendered(
 
 #[cfg(test)]
 mod sidebar_tests;
+
+#[cfg(test)]
+mod selection_tests;

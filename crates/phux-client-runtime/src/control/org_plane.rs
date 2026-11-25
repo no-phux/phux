@@ -48,6 +48,8 @@ pub(super) struct OrgLane {
     /// Terminals created by session key for a spawn request whose session
     /// had no live member to address: operation to spawn request id.
     pub(super) spawns: Vec<(OperationId, u32)>,
+    /// Lookup-only recovery across incarnation change, fenced to authority/key.
+    pub(super) pending_attach: Option<(phux_protocol::ids::AuthorityId, phux_protocol::ids::SessionKey)>,
     moves: Vec<BulkMove>,
     deferred: usize,
     seed_has_cursor: bool,
@@ -164,6 +166,11 @@ impl ControlPlane {
         self.handle_org_reports(reports);
         if !supported {
             self.cancel_bulk_moves("the server does not advertise ORGANIZATION");
+            if self.org.pending_attach.take().is_some() {
+                self.attach_target = None;
+                self.error = Some("cannot recover an exact session key on a peer without ORGANIZATION".into());
+                self.set_status(super::Status::Failed);
+            }
         }
         if supported && self.options.automatic_lifecycle {
             self.queue_org_seed(OrgFilter::All);
@@ -183,6 +190,7 @@ impl ControlPlane {
         let reports = self.org.journal.drain(why);
         self.handle_org_reports(reports);
         self.cancel_bulk_moves(why);
+        self.org.pending_attach = None;
     }
 
     /// A `GET_ORGANIZATION` page or `ARRANGEMENT_GET` reply.
@@ -277,6 +285,7 @@ impl ControlPlane {
             self.handle_org_reports(reports);
             self.flush_org_journal();
         }
+        self.resume_keyed_attach();
         self.organization_changed();
     }
 
@@ -392,7 +401,7 @@ impl ControlPlane {
         let now_ms = self.now_ms();
         let reports = self.org.journal.expire(now_ms);
         self.handle_org_reports(reports);
-        let now = Instant::now();
+        let now = self.observed_time();
         self.expire_bulk_reads(now);
         self.events.len() != before
     }
@@ -432,9 +441,7 @@ impl ControlPlane {
                 }
                 continue;
             }
-            if self.resolve_session_spawn(&report) {
-                continue;
-            }
+            self.resolve_session_spawn(&report);
             let cancelled = self.resolve_bulk_move(&report);
             self.push_event(Event::OrganizationOperation {
                 operation: report.operation,

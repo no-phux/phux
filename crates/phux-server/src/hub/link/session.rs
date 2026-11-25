@@ -163,8 +163,8 @@ pub(super) async fn refuse_link(
 /// between connections, and hands to [`run_relay_session`] during one.
 pub(super) struct LinkInbox<'a> {
     pub(super) host: &'a SatelliteHost,
-    pub(super) relay_rx: tokio::sync::mpsc::Receiver<crate::hub::relay::RelayRequest>,
-    pub(super) unsub_rx: tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::Unsubscribe>,
+    pub(super) relay_rx: tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    pub(super) unsub_rx: tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
     pub(super) cancel: &'a CancellationToken,
 }
 
@@ -188,10 +188,10 @@ impl LinkInbox<'_> {
             tokio::select! {
                 () = self.cancel.cancelled() => return None,
                 request = self.relay_rx.recv() => {
-                    crate::hub::relay::fail_fast(request?, self.host, why);
+                    crate::hub::relay::fail_fast(request?.request, self.host, why);
                 }
                 unsubscribe = self.unsub_rx.recv() => {
-                    let _dropped: crate::hub::relay::Unsubscribe = unsubscribe?;
+                    let _dropped = unsubscribe?;
                 }
                 output = &mut until => return Some(output),
             }
@@ -210,27 +210,22 @@ impl LinkInbox<'_> {
 pub(super) async fn run_relay_session<C: LinkConn>(
     host: &SatelliteHost,
     conn: C,
-    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::RelayRequest>,
-    unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::Unsubscribe>,
+    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
     operations: &crate::hub::operation_fence::OperationFence,
     resource_kinds: crate::hub::relay::ResourceKindCatalog,
 ) -> Option<String> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
         Err(error) => return Some(error),
     };
     session.set_resource_kinds(resource_kinds);
     session.set_journal(journal.cloned());
-    // ADR-0127: publish what this satellite advertised for dispatch.
-    if let Some(journal) = journal {
-        let features = session.satellite_features();
-        journal.with_mut(|s| {
-            s.federation_mut()
-                .set_satellite_features(host.clone(), features);
-        });
-    }
     session.set_operation_fence(operations.clone());
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
@@ -259,7 +254,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frames = prepare_relay_request(&mut session, request);
+                let frames = session.handle_queued_request(request);
                 if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
@@ -270,7 +265,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
                 let Some(unsubscribe) = unsubscribe else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frames = session.handle_unsubscribe(unsubscribe);
+                let frames = session.handle_queued_unsubscribe(unsubscribe);
                 if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
@@ -419,15 +414,4 @@ pub(super) fn maintain_relay_session(
     session.check_detach_deadlines()?;
     session.prune_abandoned();
     Ok(())
-}
-
-pub(super) fn prepare_relay_request(
-    session: &mut crate::hub::relay::RelaySession,
-    request: crate::hub::relay::RelayRequest,
-) -> Vec<Vec<u8>> {
-    let mut frames = session.prepare_request(&request);
-    if let Some(frame) = session.handle_request_checked(request) {
-        frames.push(frame);
-    }
-    frames
 }

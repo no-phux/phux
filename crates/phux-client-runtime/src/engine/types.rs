@@ -324,6 +324,9 @@ pub enum EngineError {
     /// The requested terminal has no available replica to project.
     #[error("no projection for this terminal")]
     ProjectionUnavailable,
+    /// An asynchronous view intent belongs to a retired owner or generation.
+    #[error("the original view source was retired")]
+    StaleViewSource,
     /// The owner thread could not be spawned.
     #[error("could not start the engine owner thread: {0}")]
     Spawn(std::io::Error),

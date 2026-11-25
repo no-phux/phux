@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::{ChecklistError, ControlOptions};
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
-use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
+use phux_protocol::wire::frame::{LaunchSpec, RolePolicy, SessionLifetime};
 use rune::Tx;
 use serde_json::Value;
 
@@ -171,20 +171,35 @@ fn start(target: Target, base: &str, command: Vec<String>) -> Result<String, Str
         .map(|s| s.name)
         .collect();
     let name = fresh_name(base, &taken);
-    client.attach_session(AttachTarget::CreateIfMissing {
-        name: name.clone(),
-        command: Some(command),
-        cwd: None,
-    });
-    // Listed, rather than attached: a connection can read as attached
-    // before this create has landed.
-    let listed = |client: &Client| {
-        let topology = client.topology();
-        topology.is_some_and(|t| t.sessions.iter().any(|s| s.name == name))
+    if !client.with_control(|control| control.organization_supported()) {
+        client.close();
+        return Err("This peer cannot reconcile exact session creation; update phux on it.".into());
+    }
+    wait(&client, |client| client.organization().is_live())?;
+    let phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } =
+        client.create_session(name.clone(), SessionLifetime::Ephemeral, Some(Box::new(LaunchSpec::new(command))))
+    else {
+        client.close();
+        return Err("Session creation was not queued.".into());
     };
-    let started = wait(&client, listed);
+    let result = Mutex::new(None);
+    let settled = wait(&client, |client| {
+        for event in client.take_events() {
+            if let phux_client_runtime::control::Event::OrganizationOperation { operation: id, outcome } = event
+                && id == operation
+            {
+                *result.lock().unwrap() = Some(match outcome {
+                    phux_client_core::org_ops::OrgOutcome::Committed(receipt) if receipt.session.is_some() => Ok(()),
+                    other => Err(format!("Session creation did not settle: {other:?}")),
+                });
+            }
+        }
+        result.lock().unwrap().is_some()
+    });
     client.close();
-    started.map(|()| name)
+    settled?;
+    result.into_inner().unwrap().unwrap_or_else(|| Err("Session creation outcome is unknown.".into()))?;
+    Ok(name)
 }
 
 impl Desk {

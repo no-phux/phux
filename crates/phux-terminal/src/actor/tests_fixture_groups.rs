@@ -81,7 +81,7 @@ pub(super) struct FixturePane(pub(super) i32);
 
 impl FixturePane {
     pub(super) fn for_actor(actor: &super::super::TerminalActor) -> Self {
-        let pty = actor.pty.as_ref().expect("test actor has PTY");
+        let pty = actor.process.pty.as_ref().expect("test actor has PTY");
         let pid = pty.child.process_id().expect("pane child pid");
         Self(i32::try_from(pid).expect("pid fits i32"))
     }

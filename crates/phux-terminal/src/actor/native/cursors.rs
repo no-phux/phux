@@ -22,23 +22,23 @@ impl TerminalActor {
         &mut self,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) -> Vec<phux_resource::ResyncTarget> {
-        if let Some(pending) = self.pending_native_history.take() {
+        if let Some(pending) = self.publication.pending_native_history.take() {
             answer_released_history(pending.request);
         }
-        for pending in self.native_history_backlog.drain(..) {
+        for pending in self.publication.native_history_backlog.drain(..) {
             answer_released_history(pending.request);
         }
-        self.native_bootstrap_backlog.clear();
-        if let Some(pending) = self.pending_native_bootstrap.take() {
+        self.publication.native_bootstrap_backlog.clear();
+        if let Some(pending) = self.publication.pending_native_bootstrap.take() {
             self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
         }
-        let waiting: HashSet<_> = self
+        let waiting: HashSet<_> = self.publication
             .native_publications
             .values()
             .flat_map(|publication| publication.waiting.iter().copied())
             .collect();
-        let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
-        self.native_publications.clear();
+        let bindings: Vec<_> = self.publication.native_cursor_owners.drain().collect();
+        self.publication.native_publications.clear();
         let last_valid_seq = self.core.seq();
         let mut tombstoned = Vec::with_capacity(bindings.len());
         for (key, binding) in bindings {
@@ -80,38 +80,34 @@ impl TerminalActor {
                 },
             );
         }
-        self.release_native_history_generation(&binding);
+        super::super::publication::PublicationOwner::release_history(&self.terminal, &binding);
         if reason == phux_protocol::wire::frame::TombstoneReason::Resize
             && (waiting || binding.superseded)
         {
             binding.history_released = true;
             binding.superseded = true;
-            self.native_cursor_owners.insert(key, binding);
+            self.publication.native_cursor_owners.insert(key, binding);
+        } else {
+            binding.cancellation.cancel();
         }
         target
     }
 
     /// FINISH ends progressive history, not the independent publication right.
     pub(in crate::actor) fn finish_native_history(&mut self, key: NativeCursorKey) {
-        let Some(mut binding) = self.native_cursor_owners.remove(&key) else {
+        let Some(mut binding) = self.publication.native_cursor_owners.remove(&key) else {
             return;
         };
-        self.release_native_history_generation(&binding);
+        super::super::publication::PublicationOwner::release_history(&self.terminal, &binding);
         binding.history_released = true;
-        let waiting = self
+        let waiting = self.publication
             .native_publications
             .get(&binding.cursor)
             .is_some_and(|publication| publication.waiting.contains(&key));
         if waiting || binding.superseded {
-            self.native_cursor_owners.insert(key, binding);
-        }
-    }
-
-    fn release_native_history_generation(&self, binding: &NativeCursorOwner) {
-        if !binding.history_released
-            && let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut()
-        {
-            let _ = manager.release_generation(&binding.cursor);
+            self.publication.native_cursor_owners.insert(key, binding);
+        } else {
+            binding.cancellation.cancel();
         }
     }
 
@@ -154,13 +150,9 @@ impl TerminalActor {
             phux_protocol::wire::frame::HistoryTombstoneReason::Released,
         );
         self.drop_native_bootstrap_waiters(owner, None);
-        let keys: Vec<_> = self
-            .native_cursor_owners
-            .keys()
-            .filter(|key| key.owner == owner)
-            .copied()
-            .collect();
-        for key in keys {
+        // At most eight bindings; remove directly instead of allocating a
+        // teardown vector for every cancelled connection.
+        while let Some(key) = self.publication.native_cursor_owners.keys().copied().find(|key| key.owner == owner) {
             let _ = self.unbind_native_cursor(key);
         }
     }
@@ -177,33 +169,54 @@ impl TerminalActor {
         let _ = self.unbind_native_cursor(key);
     }
 
+    /// Registration rollback is scoped to the replica, not merely its client
+    /// or stream: a queued old withdrawal must leave a recapture intact.
+    pub(in crate::actor) fn release_native_consumer_generation(
+        &mut self,
+        owner: u64,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+    ) {
+        let keep = |waiter: &NativeBootstrapRequest| {
+            waiter.owner != owner
+                || waiter.stream_id != stream_id
+                || waiter.bootstrap_id != bootstrap_id
+        };
+        if let Some(pending) = self.publication.pending_native_bootstrap.as_mut() {
+            pending.waiters.retain(keep);
+        }
+        self.publication.native_bootstrap_backlog.retain(keep);
+        let key = NativeCursorKey::new(owner, stream_id);
+        if self.publication
+            .native_cursor_owners
+            .get(&key)
+            .is_some_and(|binding| binding.bootstrap_id == bootstrap_id)
+        {
+            self.cancel_native_history_requests(
+                owner,
+                Some(stream_id),
+                phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+            );
+            let _ = self.unbind_native_cursor(key);
+        }
+    }
+
     pub(in crate::actor) fn drop_native_bootstrap_waiters(
         &mut self,
         owner: u64,
         stream_id: Option<phux_protocol::ids::StreamId>,
     ) {
-        if let Some(pending) = self.pending_native_bootstrap.as_mut() {
+        if let Some(pending) = self.publication.pending_native_bootstrap.as_mut() {
             pending
                 .waiters
                 .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
         }
-        self.native_bootstrap_backlog
+        self.publication.native_bootstrap_backlog
             .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
     }
 
-    pub(in crate::actor) fn unbind_native_cursor(
-        &mut self,
-        key: NativeCursorKey,
-    ) -> Option<NativeCursorOwner> {
-        let binding = self.native_cursor_owners.remove(&key)?;
-        if let Some(publication) = self.native_publications.get_mut(&binding.cursor) {
-            publication.waiting.remove(&key);
-            if publication.waiting.is_empty() {
-                self.native_publications.remove(&binding.cursor);
-            }
-        }
-        self.release_native_history_generation(&binding);
-        Some(binding)
+    pub(in crate::actor) fn unbind_native_cursor(&mut self, key: NativeCursorKey) -> Option<NativeCursorOwner> {
+        self.publication.unbind_native_cursor(key, &self.terminal)
     }
 
     pub(in crate::actor) fn cancel_native_history_requests(
@@ -212,42 +225,42 @@ impl TerminalActor {
         stream_id: Option<phux_protocol::ids::StreamId>,
         reason: phux_protocol::wire::frame::HistoryTombstoneReason,
     ) {
-        if self
+        if self.publication
             .pending_native_history
             .as_ref()
             .is_some_and(|pending| matches_native_history(&pending.request, owner, stream_id))
-            && let Some(pending) = self.pending_native_history.take()
+            && let Some(pending) = self.publication.pending_native_history.take()
         {
             answer_tombstoned_history(pending.request, reason);
         }
-        let mut retained = VecDeque::with_capacity(self.native_history_backlog.len());
-        while let Some(pending) = self.native_history_backlog.pop_front() {
+        // Rotate the existing bounded queue in place; cancellation does not
+        // allocate another backlog just to retain its unaffected requests.
+        for _ in 0..self.publication.native_history_backlog.len() {
+            let Some(pending) = self.publication.native_history_backlog.pop_front() else {
+                break;
+            };
             if matches_native_history(&pending.request, owner, stream_id) {
                 answer_tombstoned_history(pending.request, reason);
             } else {
-                retained.push_back(pending);
+                self.publication.native_history_backlog.push_back(pending);
             }
         }
-        self.native_history_backlog = retained;
-        if self.pending_native_history.is_none() {
+        if self.publication.pending_native_history.is_none() {
             self.start_next_native_history();
         }
     }
 
     pub(in crate::actor) fn expire_native_cursors(&mut self) {
         let cutoff = tokio::time::Instant::now() - NATIVE_HISTORY_TTL;
-        let keys: Vec<_> = self
-            .native_cursor_owners
-            .iter()
-            .filter_map(|(key, binding)| (binding.touched <= cutoff).then_some(*key))
-            .collect();
-        for key in keys {
+        while let Some(key) = self.publication.native_cursor_owners.iter()
+            .find_map(|(key, binding)| (binding.touched <= cutoff).then_some(*key))
+        {
             self.cancel_native_history_requests(
                 key.owner,
                 Some(key.stream_id),
                 phux_protocol::wire::frame::HistoryTombstoneReason::Expired,
             );
-            let Some(binding) = self.native_cursor_owners.get(&key) else {
+            let Some(binding) = self.publication.native_cursor_owners.get(&key) else {
                 continue;
             };
             self.publish_native_control(

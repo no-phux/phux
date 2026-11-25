@@ -37,8 +37,8 @@ impl TerminalActor {
                     // Only the reversible brake changes the lifecycle;
                     // terminal signals surface via EOF.
                     match signal {
-                        TerminalSignal::Freeze => self.lifecycle = ResourceLifecycle::Frozen,
-                        TerminalSignal::Resume => self.lifecycle = ResourceLifecycle::Running,
+                        TerminalSignal::Freeze => self.process.lifecycle = ResourceLifecycle::Frozen,
+                        TerminalSignal::Resume => self.process.lifecycle = ResourceLifecycle::Running,
                         TerminalSignal::Interrupt
                         | TerminalSignal::Terminate
                         | TerminalSignal::Kill => {}
@@ -124,7 +124,7 @@ impl TerminalActor {
         use nix::sys::signal::{Signal as NixSignal, killpg};
         use nix::unistd::Pid;
 
-        let pid = self
+        let pid = self.process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id())
@@ -207,9 +207,9 @@ impl TerminalActor {
     /// The process exited and the pane is retained (ADR-0124): report
     /// `Exited`, stop the detector, release the PTY. Grid and consumers stay.
     pub(in crate::actor) fn retire_after_exit(&mut self) {
-        self.lifecycle = ResourceLifecycle::Exited;
+        self.process.lifecycle = ResourceLifecycle::Exited;
         self.agent_detect = None;
-        self.release_pty_after_exit();
+        self.process.release_pty_after_exit();
     }
 
     /// Emit an [`AgentEvent::TerminalControl`] (ADR-0033) with the current
@@ -222,7 +222,7 @@ impl TerminalActor {
         exit_status: Option<i32>,
     ) {
         self.emit_event(AgentEvent::TerminalControl {
-            lifecycle: self.lifecycle,
+            lifecycle: self.process.lifecycle,
             exit_status,
             input_holder,
             action,

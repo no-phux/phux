@@ -11,6 +11,13 @@ use super::{Desk, NoticeKind};
 
 const PREFIX: &str = "phux://pane/";
 
+pub(super) struct Reveal {
+    pane: ResourceId,
+    intent: super::view_intent::ViewIntent,
+    origin: super::connection::CallbackFence,
+    choice: u64,
+}
+
 /// The pane a reveal link names, `None` when `url` isn't one.
 pub fn target(url: &str) -> Option<Result<ResourceId, String>> {
     let url = url.trim();
@@ -62,7 +69,16 @@ impl Desk {
             None => self.pair_from_link(url),
             Some(Err(why)) => self.say(NoticeKind::Error, why),
             Some(Ok(pane)) => {
-                self.connection.reveal = Some(pane);
+                let Some(client) = self.connection.client.as_ref() else {
+                    self.say(NoticeKind::Error, "Connect to the server before opening this pane link.");
+                    return;
+                };
+                let Some(origin) = self.connection.callback_fence() else { return; };
+                let intent = super::view_intent::ViewIntent::new(
+                    client, &pane, self.connection.view_server.clone(), self.connection.view_epoch,
+                );
+                self.connection.view_choice += 1;
+                self.connection.reveal = Some(Reveal { pane, intent, origin, choice: self.connection.view_choice });
                 self.follow_reveal();
             }
         }
@@ -79,17 +95,37 @@ impl Desk {
             self.say(NoticeKind::Error, why);
             return;
         }
+        let current = self.connection.reveal.as_ref().is_some_and(|reveal| {
+            reveal.choice == self.connection.view_choice
+                && if reveal.intent.has_source() {
+                    reveal.origin.same_namespace(&self.connection)
+                } else {
+                    reveal.origin.is_current(&self.connection)
+                }
+        });
+        if !current {
+            self.connection.reveal = None;
+            self.say(NoticeKind::Info, "Pane link cancelled: its original view scope is no longer current.");
+            return;
+        }
         let Some(topology) = &self.connection.topology else {
             return;
         };
-        let Some(pane) = self.connection.reveal.take() else {
+        let Some(Reveal { pane, intent, .. }) = self.connection.reveal.take() else {
             return;
         };
         if let Some(window) = &self.machines.window {
             window.open();
         }
         match locate(topology, &pane) {
-            Ok(session) => self.show(pane, &session),
+            Ok(_) => {
+                let Some(client) = self.connection.client.clone() else { return; };
+                intent.select_terminal_session(&client, &pane);
+                self.connection.view_intents.insert(pane.clone(), intent);
+                self.connection.pending_session = None;
+                self.want_automatic(pane);
+                self.open_wanted(&client);
+            },
             Err(why) => self.say(NoticeKind::Error, why),
         }
     }
@@ -153,12 +189,15 @@ mod tests {
             None,
             rune::prefs::Prefs::memory(),
         );
+        desk.connection.client = Some(std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+            phux_client_runtime::control::ControlOptions::default(),
+        )));
         desk.open_system_link("phux://pane/@9");
-        assert_eq!(desk.connection.reveal, Some(ResourceId::local(9)), "held");
+        assert_eq!(desk.connection.reveal.as_ref().map(|reveal| &reveal.pane), Some(&ResourceId::local(9)), "held with its original owner");
         assert!(desk.notice.is_none());
         desk.connection.topology = Some(crate::desk::topology(Vec::new(), vec![pane(1, "w")]));
         desk.follow_reveal();
-        assert_eq!(desk.connection.reveal, None);
+        assert!(desk.connection.reveal.is_none());
         let notice = desk.notice.as_ref().map(|n| n.text.as_str());
         assert_eq!(
             notice,
@@ -168,8 +207,60 @@ mod tests {
 
         desk.machines.current = Some("mini".to_owned());
         desk.open_system_link("phux://pane/@1");
-        assert_eq!(desk.connection.reveal, None);
+        assert!(desk.connection.reveal.is_none());
         let notice = desk.notice.as_ref().map(|n| n.text.as_str());
         assert!(notice.is_some_and(|n| n.contains("mini")), "{notice:?}");
+    }
+}
+
+#[cfg(test)]
+mod source_admission {
+    use super::*;
+    use crate::test_support::terminal::Replica;
+
+    #[test]
+    fn delayed_links_keep_their_original_source_and_first_source_epoch() {
+        for pending in [false, true] {
+            let replica = if pending { Replica::pending(80, 24, 2) } else { Replica::new(80, 24, 2) };
+            let client = &replica.client;
+            let mut desk = replica.window();
+            let topology = desk.connection.topology.take();
+            desk.open_system_link("phux://pane/@2");
+            assert!(desk.connection.reveal.is_some());
+            replica.replace_server(2);
+            desk.connection.topology = topology;
+            let _ = client.take_outbound();
+            desk.follow_reveal();
+            assert!(desk.connection.reveal.is_none());
+            assert!(desk.connection.wanted.is_none());
+            assert!(desk.connection.shown.is_none());
+            assert!(client.take_outbound().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_delayed_link_cannot_supersede_a_newer_focus_gesture() {
+        let replica = Replica::pending(80, 24, 2);
+        let mut desk = replica.window();
+        let topology = desk.connection.topology.take();
+        desk.open_system_link("phux://pane/@2");
+        desk.want(ResourceId::local(1));
+        desk.connection.topology = topology;
+        desk.follow_reveal();
+        assert!(desk.open_wanted(&replica.client));
+        assert_eq!(desk.connection.shown.as_ref().map(|shown| &shown.resource), Some(&ResourceId::local(1)));
+    }
+
+    #[test]
+    fn a_link_with_an_existing_source_can_open_the_retained_offline_replica() {
+        let replica = Replica::new(80, 24, 1);
+        let mut desk = replica.window();
+        let topology = desk.connection.topology.take();
+        desk.open_system_link("phux://pane/@1");
+        replica.client.with_control(|control| control.connection_lost(None));
+        desk.connection.topology = topology;
+        desk.follow_reveal();
+        let view = desk.connection.shown.as_ref().unwrap().view.unwrap();
+        assert!(replica.client.acquire_view(view).is_some());
     }
 }

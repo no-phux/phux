@@ -11,6 +11,7 @@ use phux_core::process::{
 };
 
 use super::{ProcessFacetRequest, PtyOwned, TerminalActor};
+use super::process::TerminalProcess;
 
 /// Facts about the PTY child captured once, right after it is spawned or
 /// adopted, when its pid certainly still names it.
@@ -46,6 +47,13 @@ impl TerminalActor {
     pub(super) fn reply_process_facet(&self, req: ProcessFacetRequest) {
         let _ = req.reply.send(self.process_facet());
     }
+
+    pub(super) fn process_facet(&self) -> TerminalProcessState {
+        self.process.process_facet()
+    }
+}
+
+impl TerminalProcess {
 
     /// The typed process facet. `foreground` and `cwd` are live kernel
     /// queries, so they are `None` once the child has exited; `child` keeps

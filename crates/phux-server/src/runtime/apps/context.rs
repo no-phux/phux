@@ -4,17 +4,14 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities}
 use phux_protocol::ids::StreamId;
 use tokio_util::sync::CancellationToken;
 
-use super::ConnectionLane;
 use crate::resource::ResourceHandle;
-use crate::runtime::connections::hello::NegotiatedConnection;
-use crate::runtime::connections::plumbing::ClientPlumbing;
 use crate::state::{ClientId, Outbound, SharedState};
 
 /// One client's stream onto one resource, ready to bootstrap.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct StreamBootstrap<'a> {
-    /// Server state.
-    pub(crate) state: &'a SharedState,
+    /// This admitted client's resource stream capability.
+    pub(crate) host: super::StreamHost,
     /// The attaching connection.
     pub(crate) client_id: ClientId,
     /// The resource's wire id.
@@ -40,32 +37,7 @@ pub(crate) struct StreamBootstrap<'a> {
     pub(crate) after_seq: Option<u64>,
 }
 
-/// One already-committed launch effect. The app must execute this exact
-/// resource activation, never substitute another kind's default launch.
-#[derive(Clone, Copy)]
-pub(crate) struct ResourceLaunch<'a> {
-    pub(crate) state: &'a SharedState,
-    pub(crate) resource: phux_core::ids::ResourceId,
-    pub(crate) spec: &'a phux_core::LaunchSpec,
-    pub(crate) root_token: &'a CancellationToken,
-}
 
-/// One client's stream or input frame about a resource, with what the
-/// connection it arrived on lends the app to serve it.
-pub(crate) struct ResourceFrame<'a> {
-    /// Server state.
-    pub(crate) state: &'a SharedState,
-    /// The sending connection.
-    pub(crate) client_id: ClientId,
-    /// The connection's cancellation.
-    pub(crate) token: &'a CancellationToken,
-    /// The connection's place on the input lane, when it has one.
-    pub(crate) lane: Option<&'a mut ConnectionLane>,
-    /// The connection's mailboxes: control, and a bound stream per resource.
-    pub(crate) plumbing: &'a ClientPlumbing,
-    /// What `HELLO` negotiated, once it has.
-    pub(crate) negotiated: Option<NegotiatedConnection>,
-}
 
 /// The host-side check an app needs before it sees a local frame. These
 /// distinctions preserve the wire's input, hint, and refusal semantics.
@@ -79,19 +51,3 @@ pub(crate) enum FrameAdmission {
     AttachedInput,
 }
 
-/// A session `ATTACH`'s `CreateIfMissing` for a session that may not exist:
-/// what the app that seeds one needs to create it.
-pub(crate) struct SessionSeed<'a> {
-    pub(crate) state: &'a SharedState,
-    /// The session to attach, created when it does not exist.
-    pub(crate) name: String,
-    /// The wire's command for the seed, if any.
-    pub(crate) command: Option<Vec<String>>,
-    /// The wire's working directory for the seed, if any.
-    pub(crate) cwd: Option<String>,
-    /// Where a refusal goes.
-    pub(crate) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    pub(crate) root_token: &'a CancellationToken,
-    /// The attaching client's default colors.
-    pub(crate) default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-}

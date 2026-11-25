@@ -32,22 +32,19 @@ pub(super) fn update_which_key_deadline(
 /// conditions. Never touches the resolver, so the next chord still completes.
 pub(super) fn push_which_key_overlay(
     overlays: &mut OverlayState,
-    resolver: Option<&phux_config::keybind::Resolver>,
-    keybindings: Option<&phux_config::KeybindingsCfg>,
+    resolver: &phux_config::keybind::Resolver,
+    keybindings: &phux_config::KeybindingsCfg,
     theme: &crate::render::Theme,
 ) -> bool {
     if overlays.is_active() {
         return false;
     }
-    if !resolver.is_some_and(phux_config::keybind::Resolver::pending_at_prefix) {
+    if !resolver.pending_at_prefix() {
         return false;
     }
-    let Some(kb) = keybindings else {
-        return false;
-    };
     tracing::debug!("which-key: prefix hesitation timeout; showing popup");
     overlays.push(Box::new(
-        crate::render::overlay::WhichKeyOverlay::from_config(kb, theme),
+        crate::render::overlay::WhichKeyOverlay::from_config(keybindings, theme),
     ));
     true
 }

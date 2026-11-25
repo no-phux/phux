@@ -49,6 +49,7 @@ mod panes;
 mod path_query;
 mod recovery;
 mod resources;
+pub(crate) mod input_delivery;
 mod view;
 
 pub use attach::AttachPreference;
@@ -196,6 +197,9 @@ pub struct Connection {
     blank: Terminal,
     offered_caps: ClientCapabilities,
     kernel: Option<SessionKernel<WebEngine>>,
+    input_delivery: Rc<std::cell::RefCell<input_delivery::InputDelivery>>,
+    input_server_id: Option<Vec<u8>>,
+    acknowledged_input: bool,
     effects: EffectBuffer,
     cols: u16,
     rows: u16,
@@ -227,8 +231,8 @@ pub struct Connection {
     layout: Option<Layout>,
     /// Last requested geometry, including resizes not yet published by the server.
     pane_sizes: HashMap<ResourceId, CanonicalGeometry>,
-    /// Failed new resources remain isolated until their queued close arrives.
-    retiring_panes: Vec<ResourceId>,
+    /// Failed views are quarantined, not permission to kill their executions.
+    failed_pane_views: Vec<ResourceId>,
     pending_split: Option<PendingSplit>,
     pending_kill: Option<PendingKill>,
     /// Correlate optional child-stream attach refusals without failing its terminal.
@@ -271,6 +275,9 @@ impl Connection {
             blank: vt.terminal(cols, rows),
             offered_caps,
             kernel: None,
+            input_delivery: Rc::new(std::cell::RefCell::new(input_delivery::InputDelivery::default())),
+            input_server_id: None,
+            acknowledged_input: false,
             effects: EffectBuffer::new(),
             cols,
             rows,
@@ -295,7 +302,7 @@ impl Connection {
             attach_ready: false,
             layout: None,
             pane_sizes: HashMap::new(),
-            retiring_panes: Vec::new(),
+            failed_pane_views: Vec::new(),
             pending_split: None,
             pending_kill: None,
             pending_agents: HashMap::new(),
@@ -359,6 +366,7 @@ impl Connection {
     /// Permanently fail this connection after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
+        self.input_delivery.borrow_mut().journal.connection_lost();
         self.lose_pending_kill();
         self.approvals.disconnect();
         self.cancel_path_query();
@@ -432,7 +440,7 @@ fn browser_monotonic_ms() -> u64 {
         .map_or(0, |performance| performance.now().max(0.0) as u64)
 }
 
-fn encode(frame: &FrameKind) -> Vec<u8> {
+pub(crate) fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf.to_vec()

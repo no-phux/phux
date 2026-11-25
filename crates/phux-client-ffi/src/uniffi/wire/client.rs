@@ -27,6 +27,10 @@ mod runtime_access;
 mod search;
 mod selection;
 mod service_http;
+mod input;
+mod presentation;
+mod workflows;
+mod lifetime;
 
 const SCROLLBACK_LINES: u32 = 1000;
 
@@ -139,7 +143,6 @@ pub struct RemoteClient {
     client: Mutex<Option<Client>>,
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
-    authoritative_damage: Mutex<HashSet<ResourceId>>,
     generations: Mutex<HashMap<ResourceId, u64>>,
     /// Committed organization receipts, newest last, kept for `undo`.
     receipts: Mutex<std::collections::VecDeque<phux_protocol::wire::frame::Committed>>,
@@ -168,161 +171,6 @@ pub fn initial_connect_budget_millis() -> u64 {
 
 #[uniffi::export]
 impl RemoteClient {
-    /// A zero `cols` or `rows` casts no window-size vote (ADR-0145): attaches
-    /// and spawns then carry no geometry, and the client sizes exactly the
-    /// panes it shows with [`Self::resize_terminal`].
-    #[uniffi::constructor]
-    pub fn new(
-        url: String,
-        cols: u16,
-        rows: u16,
-        fingerprint: Option<String>,
-        token: Option<String>,
-    ) -> Arc<Self> {
-        Self::build(url, cols, rows, fingerprint, token, None)
-    }
-
-    /// Construct a relay-routed client without changing the legacy constructor.
-    /// The DNS route overrides TLS SNI, not the dial endpoint or certificate pin.
-    /// Initializes the same route as [`Self::set_relay_route`]; the server's
-    /// authority pin and enrolled device identity are still set separately.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid TLS DNS route before starting a runtime.
-    #[uniffi::constructor]
-    pub fn new_routed(
-        url: String,
-        cols: u16,
-        rows: u16,
-        fingerprint: Option<String>,
-        token: Option<String>,
-        tls_server_name: String,
-    ) -> Result<Arc<Self>, WireError> {
-        let tls_server_name =
-            phux_client_runtime::target::validate_tls_server_name(&tls_server_name)
-                .map_err(|reason| WireError::Runtime { reason })?;
-        Ok(Self::build(
-            url,
-            cols,
-            rows,
-            fingerprint,
-            token,
-            Some(tls_server_name),
-        ))
-    }
-
-    pub fn resize_viewport(&self, cols: u16, rows: u16) {
-        let viewport = (cols.max(1), rows.max(1));
-        *self.viewport.lock().unwrap() = viewport;
-        if let Some(client) = self.runtime_client() {
-            client.resize_viewport(viewport.0, viewport.1);
-        }
-    }
-
-    /// Reach the server through a relay route (a connect link's `sni`,
-    /// ADR-0149): the URL is then the relay, the fingerprint the relay's,
-    /// and the authority pin the server's, verified end to end inside the
-    /// relayed stream, where the device identity is presented too
-    /// (ADR-0154). Takes effect at the next `connect` or `enroll_device`.
-    pub fn set_relay_route(&self, route: Option<String>) {
-        *self.route.lock().unwrap() = route.filter(|route| !route.trim().is_empty());
-    }
-
-    /// Attach watch-only (ADR-0127): the server grants `VIEWER`, so input
-    /// and resizes from this connection are refused rather than racing the
-    /// primary. Takes effect at the next `connect`; the default declares no
-    /// role. Taking the wheel later is `acquire_input(seize: true)` on an
-    /// ordinary attach, not a role change.
-    pub fn set_attach_viewer(&self, viewer: bool) {
-        *self.attach_viewer.lock().unwrap() = viewer;
-    }
-
-    /// Pin the server's certificate authority (`sha256:` fingerprint,
-    /// ADR-0153) beside the leaf fingerprint, or clear the pin. Takes effect
-    /// at the next `connect`. A pinned server presenting another authority is
-    /// refused with a "certificate authority changed" error that names both
-    /// fingerprints, and the connection does not retry.
-    pub fn set_authority_pin(&self, authority: Option<String>) {
-        *self.authority.lock().unwrap() = authority.filter(|pin| !pin.trim().is_empty());
-    }
-
-    /// Enroll `key` as this device's workload identity with the single-use
-    /// `ticket` a pairing link carried (`enroll=`), over this client's
-    /// `quic://` endpoint and pins. Blocks for at most the dial timeout; call
-    /// it off the main thread, before `connect`. Returns the issued chain
-    /// (public PEM): store it beside the key and hand both to
-    /// `set_device_identity` on later launches. The server's CA must be
-    /// pinned first ([`Self::set_authority_pin`], the link's `ca`); an
-    /// unpinned client is refused rather than learning it (ADR-0179).
-    pub fn enroll_device(
-        &self,
-        ticket: String,
-        key: Arc<dyn DeviceKey>,
-    ) -> Result<String, WireError> {
-        let target = self.target()?;
-        let signer: Arc<dyn phux_client_runtime::enroll::DeviceSigner> =
-            Arc::new(DeviceKeySigner(key));
-        let enrolled =
-            phux_client_runtime::enroll::enroll_target_blocking(&target, &ticket, signer)
-                .map_err(|reason| WireError::Runtime { reason })?;
-        *self.client_identity.lock().unwrap() =
-            phux_client_runtime::TlsClientIdentity::Held(enrolled.identity);
-        Ok(enrolled.chain_pem)
-    }
-
-    /// Present the enrolled chain, signed by `key`, on every dial from the
-    /// next `connect` (ADR-0154).
-    pub fn set_device_identity(
-        &self,
-        chain_pem: String,
-        key: Arc<dyn DeviceKey>,
-    ) -> Result<(), WireError> {
-        let identity =
-            phux_client_runtime::enroll::held_identity(&chain_pem, Arc::new(DeviceKeySigner(key)))
-                .map_err(|reason| WireError::Runtime { reason })?;
-        *self.client_identity.lock().unwrap() =
-            phux_client_runtime::TlsClientIdentity::Held(identity);
-        Ok(())
-    }
-
-    pub fn connect(&self) -> Result<(), WireError> {
-        let mut slot = self.client.lock().unwrap();
-        if slot.is_some() {
-            return Err(WireError::AlreadyConnected);
-        }
-        let target = self.target()?;
-        let options = ClientOptions {
-            control: self.control_options(),
-            connect: ConnectOptions::default(),
-        };
-        let client = Runtime::connect(target, options).map_err(|error| WireError::Runtime {
-            reason: error.to_string(),
-        })?;
-        if let Some(listener) = self.listener.lock().unwrap().clone() {
-            client.set_listener(Arc::new(ListenerProjection(listener)));
-        }
-        if let Some(theme) = *self.terminal_theme.lock().unwrap() {
-            client.set_terminal_theme(Some(theme));
-        }
-        *slot = Some(client);
-        Ok(())
-    }
-
-    /// Install (or clear, with `None`) the client-side terminal theme
-    /// (ADR-0157): palette 0..=15 and the default foreground, background,
-    /// and cursor every grid is resolved with. An application's OSC colour
-    /// changes still win. Applies immediately when connected and to every
-    /// later `connect`. Fails, changing nothing, unless `ansi16` holds
-    /// exactly sixteen colours.
-    pub fn set_terminal_theme(&self, theme: Option<WireTerminalTheme>) -> Result<(), WireError> {
-        let theme = theme.map(TryInto::try_into).transpose()?;
-        *self.terminal_theme.lock().unwrap() = theme;
-        if let Some(client) = self.runtime_client() {
-            client.set_terminal_theme(theme);
-        }
-        Ok(())
-    }
-
     pub fn take_events(&self) -> Vec<WireEvent> {
         let Some(client) = self.runtime_client() else {
             return Vec::new();
@@ -368,65 +216,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-    pub fn attach_session(&self, name: String) {
-        if let Some(client) = self.runtime_client() {
-            client.attach_session(AttachTarget::ByName(name));
-        }
-    }
-
-    pub fn attach_terminal(&self, terminal_id: String) -> u32 {
-        self.with_terminal(&terminal_id, Client::attach_terminal)
-            .unwrap_or(0)
-    }
-
-    pub fn detach_terminal(&self, terminal_id: String) -> u32 {
-        self.with_terminal(&terminal_id, Client::detach_terminal)
-            .unwrap_or(0)
-    }
-
-    pub fn spawn_terminal(&self) {
-        if let Some(client) = self.runtime_client() {
-            let _ = client.spawn_terminal(SpawnRequest::default());
-        }
-    }
-
-    pub fn spawn_terminal_in(&self, session: String) -> u32 {
-        self.spawn_terminal_in_directory(session, None)
-    }
-
-    pub fn spawn_terminal_in_directory(&self, session: String, cwd: Option<String>) -> u32 {
-        let Some(client) = self.runtime_client() else {
-            return 0;
-        };
-        let session_id = client
-            .topology()
-            .and_then(|topology| topology.session_named(&session).map(|item| item.id));
-        let Some(session_id) = session_id else {
-            client.attach_session(AttachTarget::CreateIfMissing {
-                name: session,
-                command: None,
-                cwd,
-            });
-            return 0;
-        };
-        client.attach_session(AttachTarget::ById(phux_protocol::SessionId::new(
-            session_id,
-        )));
-        client.spawn_terminal(SpawnRequest {
-            cwd,
-            session_id: Some(session_id),
-            ..SpawnRequest::default()
-        })
-    }
-
-    pub fn spawn_terminal_with_command(&self, command: Vec<String>) -> u32 {
-        self.runtime_client().map_or(0, |client| {
-            client.spawn_terminal(SpawnRequest {
-                command: Some(command),
-                ..SpawnRequest::default()
-            })
-        })
-    }
 
     pub fn list_directory(&self, path: String) -> u32 {
         self.runtime_client()
@@ -506,9 +295,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-    pub fn kill_terminal(&self, terminal_id: String) {
-        let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
-    }
 
     /// Write one client-owned `Global` metadata key: the push grant
     /// `phux.push/v1/<device>` (ADR-0155), or any key the server stores as
@@ -569,23 +355,6 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
-    /// Request graceful close per live activation on organization peers,
-    /// or an advertised keep-empty batch on older peers. The id correlates
-    /// `WireEvent::TerminalsClosed`. Zero means no request was queued.
-    /// Pane lifecycle events report closure.
-    pub fn close_terminals(&self, terminal_ids: Vec<String>) -> u32 {
-        let Some(client) = self.runtime_client() else {
-            return 0;
-        };
-        let Some(ids) = terminal_ids
-            .iter()
-            .map(|id| id::parse(id))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return 0;
-        };
-        client.close_terminals(ids).unwrap_or(0)
-    }
 
     /// Resize one pane exactly, without moving the client's viewport vote
     /// (`resize_viewport`). The outcome is local: `Queued` means one
@@ -614,12 +383,6 @@ impl RemoteClient {
             .unwrap_or(0)
     }
 
-    pub fn set_listener(&self, listener: Arc<dyn WireListener>) {
-        *self.listener.lock().unwrap() = Some(listener.clone());
-        if let Some(client) = self.runtime_client() {
-            client.set_listener(Arc::new(ListenerProjection(listener)));
-        }
-    }
 
     pub fn input_ready(&self, terminal_id: String) -> bool {
         self.with_terminal(&terminal_id, Client::input_ready)
@@ -632,32 +395,6 @@ impl RemoteClient {
         }
     }
 
-    pub fn resync(&self) {
-        if let Some(client) = self.runtime_client() {
-            client.resync();
-        }
-    }
-
-    pub fn nudge(&self) {
-        if let Some(client) = self.runtime_client() {
-            client.nudge();
-        }
-    }
-
-    /// The device's network path changed: a QUIC connection migrates onto
-    /// a fresh socket and keeps its incarnation, then every lane probes as
-    /// `nudge` does. Call from the path monitor instead of `nudge`.
-    pub fn network_path_changed(&self) {
-        if let Some(client) = self.runtime_client() {
-            client.network_path_changed();
-        }
-    }
-
-    pub fn stop_connection(&self) {
-        if let Some(client) = self.runtime_client() {
-            client.close();
-        }
-    }
 
     pub fn status(&self) -> WireStatus {
         WireStatus::from(self.runtime_client().map(|client| client.status()))
@@ -691,318 +428,14 @@ impl RemoteClient {
             .map(|graph| session_topology(graph, Some(&replica)))
     }
 
-    pub fn send_text(&self, terminal_id: String, text: String) {
-        let _ = self.with_terminal(&terminal_id, |client, id| client.send_text(id, &text));
-    }
-
-    pub fn send_key(&self, terminal_id: String, key: KeyPress, mods: KeyMods) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.send_key(id, keymap::key_event(&key, mods))
-        });
-    }
-
-    pub fn send_paste(&self, terminal_id: String, text: String) {
-        self.send_paste_with(terminal_id, text, PasteTrust::Untrusted);
-    }
-
-    pub fn send_paste_trusted(&self, terminal_id: String, text: String) {
-        self.send_paste_with(terminal_id, text, PasteTrust::Trusted);
-    }
-
-    /// Submit a dedicated SDK intent to an exact resource and activation.
-    /// Parse and validate before scheduling; `None` means nothing was sent.
-    /// The outcome arrives as `NativeAgentResult`, never an input receipt.
-    pub fn native_agent_command(
-        &self,
-        agent_session_id: String,
-        activation: String,
-        intent_json: String,
-    ) -> Option<u64> {
-        if intent_json.len() > phux_protocol::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
-            return None;
-        }
-        let intent: phux_protocol::native_agent::NativeIntent =
-            serde_json::from_str(&intent_json).ok()?;
-        intent.validate().ok()?;
-        let id = id::parse(&agent_session_id)?;
-        self.runtime_client()?
-            .native_agent_command(&id, &activation, intent)
-    }
-
-    pub fn apply_line(&self, terminal_id: String, text: String) -> u64 {
-        self.apply_acknowledged(&terminal_id, |client, id| client.apply_line(id, &text))
-    }
-
-    pub fn apply_paste(&self, terminal_id: String, text: String) -> u64 {
-        self.apply_acknowledged(&terminal_id, |client, id| client.apply_paste(id, &text))
-    }
-
-    /// Answer the ask `question_id` names (the id an `AgentAsked` event
-    /// carried) with `text` plus Enter, acknowledged. Refused, with the
-    /// receipt saying why, when the pane is no longer asking that question
-    /// or the text cannot be typed as one line; nothing is typed then.
-    pub fn apply_answer(&self, terminal_id: String, question_id: String, text: String) -> u64 {
-        self.apply_acknowledged(&terminal_id, |client, id| {
-            client.apply_answer(id, &question_id, &text)
-        })
-    }
-
-    pub fn apply_tab_completion(&self, terminal_id: String, text: String) -> u64 {
-        self.apply_acknowledged(&terminal_id, |client, id| {
-            client.apply_tab_completion(id, &text)
-        })
-    }
-
-    pub fn put_file(&self, terminal_id: String, extension: String, data: Vec<u8>) -> u64 {
-        let Some(client) = self.runtime_client() else {
-            return 0;
-        };
-        let Some(id) = id::parse(&terminal_id) else {
-            return client.refuse_file_upload("invalid terminal id");
-        };
-        client.put_file(id, extension, data)
-    }
-
-    pub fn transcribe(&self, transfer_id: u64) -> u32 {
-        self.runtime_client()
-            .map_or(0, |client| client.transcribe(transfer_id))
-    }
-
-    pub fn take_transcribe_receipts(&self) -> Vec<WireTranscribeReceipt> {
-        self.runtime_client()
-            .map(|client| {
-                client
-                    .take_transcribe_receipts()
-                    .into_iter()
-                    .map(Into::into)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    pub fn send_mouse(
-        &self,
-        terminal_id: String,
-        action: MouseAction,
-        button: MouseButton,
-        mods: KeyMods,
-        col: u32,
-        row: u32,
-    ) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.send_mouse(
-                id,
-                MouseEvent {
-                    action: action.wire(),
-                    button: button.wire(),
-                    mods: mods.to_mod_set(),
-                    x: f64::from(col),
-                    y: f64::from(row),
-                },
-            )
-        });
-    }
-
-    pub fn send_focus(&self, terminal_id: String, gained: bool) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.send_focus(
-                id,
-                if gained {
-                    FocusEvent::Gained
-                } else {
-                    FocusEvent::Lost
-                },
-            )
-        });
-    }
 }
 
-impl RemoteClient {
-    /// The control options the next `connect` uses. The viewport is the
-    /// constructor's or the last `resize_viewport`'s, unclamped: zero is the
-    /// no-vote contract, not a size.
-    fn control_options(&self) -> phux_client_runtime::control::ControlOptions {
-        phux_client_runtime::control::ControlOptions {
-            client_name: "phux-mobile".to_owned(),
-            viewport: *self.viewport.lock().unwrap(),
-            scrollback_lines: SCROLLBACK_LINES,
-            attach: None,
-            attach_role: self.attach_role(),
-            subscribe_agent_sessions: true,
-            ..phux_client_runtime::control::ControlOptions::default()
-        }
-    }
 
-    fn build(
-        url: String,
-        cols: u16,
-        rows: u16,
-        fingerprint: Option<String>,
-        token: Option<String>,
-        tls_server_name: Option<String>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            url,
-            viewport: Mutex::new((cols, rows)),
-            fingerprint,
-            token,
-            authority: Mutex::new(None),
-            route: Mutex::new(tls_server_name),
-            client_identity: Mutex::new(phux_client_runtime::TlsClientIdentity::None),
-            attach_viewer: Mutex::new(false),
-            terminal_theme: Mutex::new(None),
-            client: Mutex::new(None),
-            listener: Mutex::new(None),
-            input_deliveries: Mutex::new(Vec::new()),
-            authoritative_damage: Mutex::new(HashSet::new()),
-            generations: Mutex::new(HashMap::new()),
-            receipts: Mutex::new(std::collections::VecDeque::new()),
-            kills: Mutex::new(HashMap::new()),
-            last_kill: std::sync::atomic::AtomicU64::new(0),
-            document_input: Mutex::default(),
-        })
-    }
-}
-
-#[uniffi::export]
-impl RemoteClient {
-    pub fn has_projection(&self, terminal_id: String) -> bool {
-        self.with_terminal(&terminal_id, Client::has_projection)
-            .unwrap_or(false)
-    }
-
-    pub fn retain_projection_on_close(&self, terminal_id: String) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.set_retain_on_close(id, true);
-        });
-    }
-
-    pub fn release_projection(&self, terminal_id: String) {
-        let Some(id) = id::parse(&terminal_id) else {
-            return;
-        };
-        self.generations.lock().unwrap().remove(&id);
-        if let Some(client) = self.runtime_client() {
-            client.release(&id);
-        }
-    }
-
-    pub fn projection_changed(&self, terminal_id: String) -> bool {
-        let Some(id) = id::parse(&terminal_id) else {
-            return false;
-        };
-        let Some(client) = self.runtime_client() else {
-            return false;
-        };
-        let Some(generation) = client.generation(&id) else {
-            return false;
-        };
-        self.generations
-            .lock()
-            .unwrap()
-            .get(&id)
-            .copied()
-            .unwrap_or(0)
-            != generation
-    }
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "preserves the established UniFFI throws signature for generated clients"
-    )]
-    pub fn render_projection(
-        &self,
-        terminal_id: String,
-    ) -> Result<Option<engine::GridProjection>, engine::EngineError> {
-        let Some(id) = id::parse(&terminal_id) else {
-            return Ok(None);
-        };
-        let Some(client) = self.runtime_client() else {
-            return Ok(None);
-        };
-        let Some(frame) = client.acquire(&id) else {
-            return Ok(None);
-        };
-        self.generations
-            .lock()
-            .unwrap()
-            .insert(id.clone(), frame.generation);
-        if self.authoritative_damage.lock().unwrap().remove(&id) {
-            client.acknowledge_projection(&id);
-        }
-        Ok(Some(engine::grid_projection(
-            &grid::view(&frame),
-            grid::dirty_rows(&frame),
-        )))
-    }
-
-    pub fn predict_projection_text(&self, terminal_id: String, text: String) {
-        let _ = self.with_terminal(&terminal_id, |client, id| client.predict_text(id, text));
-    }
-
-    pub fn clear_projection_predictions(&self, terminal_id: String) {
-        let _ = self.with_terminal(&terminal_id, Client::clear_predictions);
-    }
-
-    pub fn scroll_projection(&self, terminal_id: String, delta: i64) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.scroll(id, phux_client_runtime::engine::Scroll::Delta(delta))
-        });
-    }
-
-    pub fn scroll_projection_to_bottom(&self, terminal_id: String) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.scroll(id, phux_client_runtime::engine::Scroll::Bottom)
-        });
-    }
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "preserves the established UniFFI throws signature for generated clients"
-    )]
-    pub fn projection_scrollbar(
-        &self,
-        terminal_id: String,
-    ) -> Result<Option<engine::ScrollbarState>, engine::EngineError> {
-        let Some(id) = id::parse(&terminal_id) else {
-            return Ok(None);
-        };
-        Ok(self
-            .runtime_client()
-            .and_then(|client| client.acquire(&id))
-            .map(|frame| engine::scrollbar_state(grid::view(&frame).scrollbar)))
-    }
-
-    pub fn projection_is_alt_screen(&self, terminal_id: String) -> bool {
-        self.with_terminal(&terminal_id, Client::is_alt_screen)
-            .unwrap_or(false)
-    }
-}
 
 impl RemoteClient {
-    fn apply_acknowledged(
-        &self,
-        terminal_id: &str,
-        apply: impl FnOnce(&Client, &ResourceId) -> u64,
-    ) -> u64 {
-        let Some(client) = self.runtime_client() else {
-            return 0;
-        };
-        let Some(id) = id::parse(terminal_id) else {
-            return client.refuse_acknowledged_input("invalid terminal id");
-        };
-        apply(&client, &id)
-    }
 
-    fn send_paste_with(&self, terminal_id: String, text: String, trust: PasteTrust) {
-        let _ = self.with_terminal(&terminal_id, |client, id| {
-            client.send_paste(id, text.into_bytes(), trust)
-        });
-    }
-
-    /// Lower one runtime event. What [`lower_event`] does not name is either
-    /// bridge-local state (the damage bookkeeping) or a fact with no Swift
-    /// vocabulary.
+    /// Lower one runtime event. What [`lower_event`] does not name is a
+    /// runtime-owned fact with no Swift vocabulary.
     fn project_event(&self, client: Option<&Client>, event: Event, projected: &mut Vec<WireEvent>) {
         if Self::project_approval(&event, projected) {
             return;
@@ -1018,14 +451,11 @@ impl RemoteClient {
             return;
         };
         match event {
+            Event::TerminalCreation { request_id, outcome } => {
+                projected.push(WireEvent::TerminalCreation { request_id, outcome: outcome.into() });
+            }
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
-            }
-            Event::TerminalChanged { terminal_id } => {
-                self.authoritative_damage
-                    .lock()
-                    .unwrap()
-                    .insert(terminal_id);
             }
             Event::InputDelivery {
                 delivery_id,
@@ -1058,13 +488,6 @@ impl RemoteClient {
     }
 }
 
-impl Drop for RemoteClient {
-    fn drop(&mut self) {
-        if let Some(client) = self.client.get_mut().unwrap().take() {
-            client.close();
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests;

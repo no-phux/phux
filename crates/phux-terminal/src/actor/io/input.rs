@@ -1,6 +1,6 @@
 use super::{
-    EncodedInputRequest, InputEncoderSnapshot, PasteOutcome, SnapshotBytes, TerminalActor,
-    TerminalInput, WriteCompletion, debug, error, mpsc, trace, warn,
+    EncodedInputRequest, SnapshotBytes, TerminalActor,
+    TerminalInput, debug, trace, warn,
 };
 
 impl TerminalActor {
@@ -89,29 +89,7 @@ impl TerminalActor {
             trace!("input snapshot skipped: canonical terminal is on loan");
             return;
         };
-        match InputEncoderSnapshot::capture(
-            terminal,
-            self.cell_px,
-            &mut self.key_enc.borrow_mut(),
-            &mut self.mouse_enc.borrow_mut(),
-        ) {
-            Ok(snapshot) => {
-                self.input_snapshot_tx.send_if_modified(|current| {
-                    let changed = *current != snapshot;
-                    *current = snapshot;
-                    changed
-                });
-            }
-            Err(err) => warn!(error = %err, "input encoder snapshot capture failed"),
-        }
-    }
-
-    /// Was the PTY quiet long enough that the next output can be attributed
-    /// to this input (not to an already-streaming job)?
-    fn pane_quiet_for_echo(&self) -> bool {
-        self.last_output_at
-            .get()
-            .is_none_or(|at| at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW)
+        self.process.publish_input_snapshot(terminal, self.cell_px);
     }
 
     /// Encode a [`TerminalInput`] into PTY bytes. `Ok(None)` means
@@ -128,33 +106,7 @@ impl TerminalActor {
             trace!("input dropped: canonical terminal is on loan to a capture");
             return Ok(None);
         };
-        match input {
-            TerminalInput::Key(event) => {
-                let mut enc = self.key_enc.borrow_mut();
-                let bytes = enc.encode(event, terminal)?;
-                Ok(Some(bytes.to_vec()))
-            }
-            TerminalInput::Mouse(event) => {
-                let mut enc = self.mouse_enc.borrow_mut();
-                let bytes = enc.encode(event, terminal, self.cell_px)?;
-                Ok(Some(bytes.to_vec()))
-            }
-            TerminalInput::Focus(event) => {
-                let mut enc = self.focus_enc.borrow_mut();
-                let bytes = enc.encode(*event, terminal)?;
-                Ok(bytes.map(<[u8]>::to_vec))
-            }
-            TerminalInput::Paste(event) => {
-                let mut enc = self.paste_enc.borrow_mut();
-                match enc.encode(event, terminal)? {
-                    PasteOutcome::Encoded(bytes) => Ok(Some(bytes.to_vec())),
-                    PasteOutcome::Rejected => Ok(None),
-                }
-            }
-            TerminalInput::ClipboardReply { selection, text } => Ok(Some(
-                crate::ordered_input::clipboard_reply_bytes(*selection, &text.0),
-            )),
-        }
+        self.process.encode_input(input, terminal, self.cell_px)
     }
 
     /// Encode one input event and forward it to the PTY writer. Failures
@@ -182,53 +134,8 @@ impl TerminalActor {
         }
     }
 
-    /// Forward lane-encoded bytes to the PTY writer. Every discard here
-    /// happens before any `write(2)`, so an acknowledged request reports
-    /// [`WriteCompletion::NotWritten`] explicitly.
+    /// Forward lane input through the process-owned admission gate.
     pub(in crate::actor) fn service_encoded_input(&self, request: EncodedInputRequest) {
-        if request.bytes.is_empty() && request.completion.is_none() {
-            return;
-        }
-        let echo_probe = request.echo_probe;
-        let len = request.bytes.len();
-        let queued = if let Some(fast) = self.pty.as_ref().map(|pty| &pty.fast) {
-            fast.enqueue(request)
-        } else if let Some(tx) = self.pty_tx.as_ref() {
-            super::super::try_send_to_writer(tx, request)
-        } else {
-            debug!("no PTY; encoded input discarded");
-            if let Some(completion) = request.completion {
-                completion.complete(WriteCompletion::NotWritten);
-            }
-            return;
-        };
-        match queued {
-            Ok(()) => {
-                crate::perf::INPUT_EVENTS.incr();
-                if echo_probe && self.pane_quiet_for_echo() {
-                    self.last_input_at.set(Some(std::time::Instant::now()));
-                }
-                debug!(len, "input queued to PTY writer");
-            }
-            // Credited input always finds a slot (ADR-0144): only a reply or
-            // uncredited no-lane input can land here.
-            Err(mpsc::error::TrySendError::Full(request)) => {
-                warn!(
-                    len,
-                    credited = request.credit.is_some(),
-                    "PTY writer queue full; dropping input"
-                );
-                if let Some(completion) = request.completion {
-                    completion.complete(WriteCompletion::NotWritten);
-                }
-            }
-            // The writer thread is gone: input is dead while output lives on.
-            Err(mpsc::error::TrySendError::Closed(request)) => {
-                error!(len, "PTY writer channel closed; pane input is dead");
-                if let Some(completion) = request.completion {
-                    completion.complete(WriteCompletion::NotWritten);
-                }
-            }
-        }
+        self.process.submit(request);
     }
 }

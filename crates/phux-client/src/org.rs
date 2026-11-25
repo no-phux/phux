@@ -29,8 +29,10 @@ pub use phux_client_runtime::control::mint_operation;
 mod edit;
 mod inventory;
 mod verbs;
+mod session_workflows;
 
 pub use inventory::{KeyMatch, KeyNames, OrgInventory, arrangement, fetch, fetch_from_socket};
+pub use session_workflows::{attach_target_for_receipt, create_session, ensure_session, session_inventory_for_receipt};
 pub use verbs::{
     BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, lock_group,
     move_many, move_resource, relaunch, remove_resource, rename_resource,
@@ -51,8 +53,8 @@ const MAX_PAGES: usize = 4096;
 /// Why an organization request did not succeed.
 #[derive(Debug, thiserror::Error)]
 pub enum OrgError {
-    /// The server does not advertise `ORGANIZATION`; nothing was sent.
-    #[error("the server does not support the organization commands (it predates ORGANIZATION)")]
+    /// A capability required by this organization workflow is absent; nothing sent.
+    #[error("the server does not support the requested organization workflow")]
     Unsupported,
     /// The server refused the command and nothing changed.
     #[error("{}", refusal_sentence(.0))]
@@ -159,6 +161,13 @@ pub async fn request(
     request_id: u32,
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
+    if (command.is_organization()
+        && !conn.server_features_ext().contains(ServerFeatureExt::Organization))
+        || (matches!(&command, Command::SessionEnsure { .. })
+            && !conn.server_features_ext().contains(ServerFeatureExt::SessionEnsure))
+    {
+        return Err(OrgError::Unsupported);
+    }
     if matches!(
         &command,
         Command::ResourceCreate {
@@ -173,17 +182,11 @@ pub async fn request(
     }
     let operation = command.idempotency_key().copied();
     let receipt_operation = operation.filter(|_| command.is_organization());
-    let terminate_operation = match &command {
-        Command::ResourceTerminate { operation, .. } => Some(*operation),
-        _ => None,
-    };
+    let expected = phux_client_core::org_ops::OrgReplyExpectation::for_command(&command);
     match conn.request(request_id, command).await {
         Ok(reply) => {
             let (result, interleaved) = reply.into_parts();
-            let outcome = terminate_operation.map_or_else(
-                || OrgOutcome::from_result(&result),
-                |operation| OrgOutcome::from_terminate_reply(operation, &result),
-            );
+            let outcome = expected.classify(&result);
             Ok((
                 checked_outcome(outcome, receipt_operation)?,
                 Degradation::from_interleaved(&interleaved),
@@ -245,14 +248,7 @@ fn checked_outcome(
     operation: Option<OperationId>,
 ) -> Result<OrgOutcome, OrgError> {
     match &outcome {
-        OrgOutcome::Committed(receipt)
-            if operation.is_some_and(|expected| expected != receipt.operation) =>
-        {
-            Err(OrgError::OutcomeUnknown { operation })
-        }
-        OrgOutcome::Unknown { .. } | OrgOutcome::Value(_) if operation.is_some() => {
-            Err(OrgError::OutcomeUnknown { operation })
-        }
+        OrgOutcome::Unknown { .. } if operation.is_some() => Err(OrgError::OutcomeUnknown { operation }),
         _ => Ok(outcome),
     }
 }

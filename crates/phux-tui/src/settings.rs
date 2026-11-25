@@ -54,13 +54,10 @@ pub struct SidebarSettings {
 /// Everything the TUI derives from the on-disk config, loaded before any
 /// input can reach the loop (discovery surfaces never do config I/O).
 pub struct TuiSettings {
-    /// The plugin-merged keybindings snapshot. Every load path fills it (a
-    /// config that does not load falls back to the shipped defaults); `None`
-    /// is left for tests that build settings by hand.
-    pub keybindings: Option<KeybindingsCfg>,
-    /// The keybind resolver built from that snapshot. `None`
-    /// exactly when [`Self::keybindings`] is.
-    pub resolver: Option<Resolver>,
+    /// Plugin-merged snapshot and the resolver built from it. Both are
+    /// required, including when a failed load falls back to shipped defaults.
+    pub keybindings: KeybindingsCfg,
+    pub resolver: Resolver,
     /// Single source of truth for chrome + overlay colors.
     pub theme: Theme,
     /// The responsive-chrome thresholds.
@@ -102,8 +99,7 @@ pub struct TuiSettings {
 impl std::fmt::Debug for TuiSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TuiSettings")
-            .field("keybindings", &self.keybindings.is_some())
-            .field("resolver", &self.resolver.is_some())
+            .field("keybindings", &self.keybindings)
             .field("theme", &self.theme)
             .field("chrome", &self.chrome)
             .field("status_bar", &self.status_bar.is_some())
@@ -307,8 +303,8 @@ impl TuiSettings {
                 enabled: keybindings.which_key,
                 delay: Duration::from_millis(keybindings.which_key_delay_ms),
             },
-            keybindings: Some(keybindings),
-            resolver: Some(resolver),
+            keybindings,
+            resolver,
             theme: Theme::default(),
             chrome: ChromeBreakpoints::from_cfg(&cfg.chrome),
             status_bar,

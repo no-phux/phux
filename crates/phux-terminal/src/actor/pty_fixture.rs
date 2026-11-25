@@ -22,8 +22,8 @@ impl TerminalActor {
         if let CanonicalTerminal::Plain(Some(terminal)) = &mut *self.terminal.borrow_mut() {
             Self::install_pty_writer(terminal, &writer_tx, None).expect("pty writer");
         }
-        self.pty_rx = Some(evt_rx);
-        self.pty_tx = Some(writer_tx);
+        self.process.pty_rx = Some(evt_rx);
+        self.process.pty_tx = Some(writer_tx);
         (evt_tx, writer_rx)
     }
 }

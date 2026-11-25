@@ -98,26 +98,12 @@ fn submitted(result: Result<OperationId, SubmitError>) -> Result<String, WireErr
         .map_err(submit_error)
 }
 
-/// The `SESSION_CREATE` `create_session` sends. A `cwd` launches the first
-/// shell there; an ephemeral session always launches one (it is never
-/// empty), in the server's default directory when `cwd` is absent.
-fn create_command(
-    name: String,
-    lifetime: WireSessionLifetime,
-    cwd: Option<String>,
-) -> Result<Command, WireError> {
-    session_name(&name)?;
-    let lifetime = SessionLifetime::from(lifetime);
+/// Foreign optional-directory projection: persistent sessions may start empty;
+/// ephemeral sessions always carry a seed launch.
+fn create_launch(lifetime: WireSessionLifetime, cwd: Option<String>) -> Option<Box<LaunchSpec>> {
     let cwd = cwd.filter(|cwd| !cwd.is_empty());
-    let launch = (cwd.is_some() || lifetime == SessionLifetime::Ephemeral)
-        .then(|| Box::new(LaunchSpec::new(Vec::new()).with_cwd(cwd)));
-    Ok(Command::SessionCreate {
-        operation: mint_operation(),
-        name,
-        lifetime,
-        attrs: Vec::new(),
-        launch,
-    })
+    (cwd.is_some() || lifetime == WireSessionLifetime::Ephemeral)
+        .then(|| Box::new(LaunchSpec::new(Vec::new()).with_cwd(cwd)))
 }
 
 /// Keep `committed` in `receipts`, dropping the oldest past the bound.
@@ -150,6 +136,10 @@ pub(super) fn lower(event: &Event) -> Option<WireEvent> {
                     OrgOutcome::Committed(committed) => {
                         committed.session.map(|key| key.to_string())
                     }
+                    _ => None,
+                },
+                ensured_created: match outcome {
+                    OrgOutcome::Committed(committed) => committed.ensured_created,
                     _ => None,
                 },
             })
@@ -254,8 +244,30 @@ impl RemoteClient {
         lifetime: WireSessionLifetime,
         cwd: Option<String>,
     ) -> Result<String, WireError> {
-        let command = create_command(name, lifetime, cwd)?;
-        submitted(self.connected()?.submit_organization(command))
+        session_name(&name)?;
+        match self.connected()?.create_session(name, lifetime.into(), create_launch(lifetime, cwd)) {
+            phux_client_runtime::control::WorkflowSubmission::Journaled { operation, .. } =>
+                Ok(operation_text(&operation)),
+            phux_client_runtime::control::WorkflowSubmission::NotQueued { reason: why } =>
+                Err(reason(&why)),
+            phux_client_runtime::control::WorkflowSubmission::Queued { .. } =>
+                unreachable!("session creates are journaled"),
+        }
+    }
+
+    /// Host-serialized existing-or-created session resolution. Never a local
+    /// existence check, implicit attach, or replay under a fresh create id.
+    /// `OrganizationOperation.ensured_created` distinguishes the two outcomes.
+    pub fn ensure_session(
+        &self,
+        name: String,
+        lifetime: WireSessionLifetime,
+        cwd: Option<String>,
+    ) -> WireWorkflowSubmission {
+        let Some(client) = self.runtime_client() else {
+            return WireWorkflowSubmission::NotQueued { reason: "not_connected".into() };
+        };
+        client.ensure_session(name, lifetime.into(), create_launch(lifetime, cwd)).into()
     }
 
     /// Rename a session.

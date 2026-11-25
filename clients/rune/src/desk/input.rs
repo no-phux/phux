@@ -265,14 +265,14 @@ impl Desk {
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
             if !control.input_ready(&terminal) {
-                control.trace_input(false);
+                client.trace_input(false);
                 return false;
             }
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
             let sent = send(control, &terminal);
-            control.trace_input(sent);
+            client.trace_input(sent);
             for other in &others {
                 if control.input_ready(other) {
                     send(control, other);
@@ -422,16 +422,17 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return Err(OFFLINE);
         };
-        if !client.input_ready(terminal) {
-            return Err(OFFLINE);
+        use phux_client_core::input_replay::InputSubmission;
+        match client.apply_user_paste(terminal, text) {
+            InputSubmission::NotQueued => return Err(OFFLINE),
+            InputSubmission::Refused { .. } => {
+                return Err("Paste refused; nothing was written.");
+            }
+            InputSubmission::QueuedRaw => {}
+            InputSubmission::AwaitingReceipt { delivery_id } => {
+                self.connection.pastes.insert(delivery_id);
+            }
         }
-        // The server brackets it per DEC 2004 and classifies it. A paste too
-        // large for acknowledged input goes as one atomic event, unreceipted.
-        // A refusal's receipt is left untracked: the caller says it instead.
-        let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
-        client.wake();
-        let receipt = receipt.map_err(|_| "Paste refused; nothing was written.")?;
-        self.connection.pastes.extend(receipt);
         self.reclaim_fits();
         Ok(())
     }

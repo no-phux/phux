@@ -2,6 +2,9 @@
 
 mod outbound;
 mod spawn;
+mod selection;
+
+pub use spawn::WorkflowSubmission;
 
 pub(super) use outbound::OutboundFrame;
 
@@ -110,20 +113,21 @@ impl ControlPlane {
     /// Select a session, switching a healthy connection with per-terminal
     /// attach/detach commands instead of redialing it.
     ///
-    /// Returns whether the driver must resync because the target cannot be
-    /// resolved from the live topology (notably a new `CreateIfMissing`).
+    /// Returns whether the driver must resync for a lookup-only attach.
+    /// Creation and ensure are separate journaled intents.
     /// The connection-level attach remains the home session and its pumps
     /// stay open; only foreign-session panes need explicit subscriptions.
     pub fn attach_session(&mut self, target: AttachTarget) -> bool {
+        if matches!(target, AttachTarget::CreateIfMissing { .. }) {
+            self.error = Some(selection::CREATION_IS_NOT_ATTACH.into());
+            return false;
+        }
+        self.org.pending_attach = None;
         if self.status != Status::Attached {
             self.attach_target = Some(target);
             return self.handshake_ready;
         }
         let Some(session_id) = self.session_id_for_target(&target) else {
-            if matches!(target, AttachTarget::CreateIfMissing { .. }) {
-                self.attach_target = Some(target);
-                return true;
-            }
             return false;
         };
         // Once resolved, follow this identity even when the lookup name changes.
@@ -140,7 +144,7 @@ impl ControlPlane {
     fn session_id_for_target(&self, target: &AttachTarget) -> Option<u32> {
         let topology = self.topology.as_ref()?;
         match target {
-            AttachTarget::ByName(name) | AttachTarget::CreateIfMissing { name, .. } => {
+            AttachTarget::ByName(name) => {
                 topology.session_named(name).map(|session| session.id)
             }
             AttachTarget::ById(id) => topology

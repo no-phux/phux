@@ -203,6 +203,19 @@ pub struct TerminalPublication {
 }
 
 impl TerminalPublication {
+    /// The original slot and replica token identify source, not presentation.
+    #[cfg(feature = "engine")]
+    pub(crate) fn same_slot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.slot, &other.slot)
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn source_generation(&self) -> Option<u128> {
+        let current = self.slot.frame.read().unwrap_or_else(PoisonError::into_inner);
+        let Published::Grid(frame) = current.as_ref()? else { return None };
+        Some(u128::from(frame.stream_id) << 64 | u128::from(frame.bootstrap_id))
+    }
+
     /// The generation of the current frame; zero before the first publish.
     #[must_use]
     pub fn generation(&self) -> u64 {
@@ -262,6 +275,21 @@ impl Publication {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Inspect a current grid without acquiring it or driving a deferred
+    /// projection. A deferred newer projection makes old evidence stale.
+    pub(crate) fn current_frame(
+        &self,
+        terminal: &ResourceId,
+        view: Option<ViewId>,
+    ) -> Option<Arc<GridFrame>> {
+        let key = view.map_or_else(|| FrameKey::Default(terminal.clone()), FrameKey::View);
+        let slot = self.slot_arc(&key)?;
+        if slot.stale.load(Ordering::Acquire) {
+            return None;
+        }
+        slot.current()?.into_grid()
     }
 
     /// The current frame for `terminal`, if one is published.

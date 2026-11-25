@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::runtime::apps::agent_session::upgrade::request_agent_session_cut;
+use crate::runtime::upgrade::kinds::agent_session::request_agent_session_cut;
 use phux_agent_session::session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]

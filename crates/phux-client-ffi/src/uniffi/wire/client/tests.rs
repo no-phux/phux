@@ -59,7 +59,7 @@ fn a_zero_viewport_casts_no_vote_until_one_is_requested() {
     let remote = RemoteClient::new("unused".into(), 0, 0, None, None);
     let options = remote.control_options();
     assert_eq!(options.viewport, (0, 0));
-    assert!(!phux_client_runtime::control::ControlPlane::new(options).votes_on_geometry());
+    assert!(!phux_client_runtime::control::ControlPlane::new(std::time::Instant::now(), options).votes_on_geometry());
 
     let sized = RemoteClient::new("unused".into(), 80, 24, None, None);
     assert_eq!(sized.control_options().viewport, (80, 24));

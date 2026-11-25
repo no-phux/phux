@@ -114,6 +114,8 @@ define_server_feature_word! {
         /// command carries contract 2. Advertised only beside
         /// [`Self::Checkout`]; a client MUST see the bit before sending `show`.
         CheckoutV2 = CHECKOUT_V2 = 0x4000_0000,
+        /// Atomic, journaled current-host named session resolution.
+        SessionEnsure = SESSION_ENSURE = 0x8000_0000,
     }
 }
 

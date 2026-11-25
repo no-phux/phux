@@ -121,6 +121,7 @@ async fn a_version_refusal_marks_the_canvas_and_never_redials() {
             canvas: canvas.clone(),
             cols: 80,
             rows: 24,
+            input_delivery: app.borrow().session.input_delivery_state(),
         }));
     let mut refusal = bytes::BytesMut::new();
     FrameKind::Error {

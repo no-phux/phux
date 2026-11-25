@@ -62,6 +62,89 @@ async fn dispatch_queues_paste_then_paste_then_enter_in_terminal_order() {
     }
 }
 
+/// The real DEC2004 parser preserves non-UTF8 clipboard bytes. Oversized
+/// local, satellite and old-peer fallback each send one unchanged raw frame.
+#[tokio::test]
+async fn user_paste_raw_fallback_is_atomic_and_byte_preserving() {
+    for (target, active, size) in [
+        (tid(1), true, 70 * 1024),
+        (ResourceId::satellite("edge", 7), true, 16),
+        (tid(1), false, 16),
+    ] {
+        let journal = journal();
+        if !active {
+            assert!(journal.borrow_mut().begin_connection(Some(&[0xAB; 16]), false).is_empty());
+        }
+        let mut bytes = vec![b'x'; size];
+        bytes[..4].copy_from_slice(&[0xff, 0, 0xfe, b'x']);
+        let mut parser = crate::attach::input::StdinParser::new();
+        let mut events = parser.feed(b"\x1b[200~");
+        events.extend(parser.feed(&bytes));
+        events.extend(parser.feed(b"\x1b[201~"));
+        assert_eq!(events.len(), 1);
+        let paste = events.pop().expect("DEC2004 paste");
+        let expected = paste.clone().into_frame(target.clone());
+        let mut env = Env::new(fx(ArrangementDoc::single(target.clone())));
+        env.focused = Some(target);
+        env.journal = Some(&journal);
+        let sent = env.dispatch(vec![paste]).await;
+        assert_eq!(sent.frames, vec![expected]);
+        assert!(journal.borrow_mut().take_reports().is_empty());
+        assert!(journal.borrow_mut().next_frames(&mut 900).1.is_empty());
+    }
+}
+
+/// Only the unresolved paste window receipts keys. Arbitrary bytes stay in
+/// their original acknowledged operation; after settlement keys go raw again.
+#[tokio::test]
+async fn arbitrary_byte_user_paste_orders_keys_only_until_its_receipt() {
+    let journal = journal();
+    let mut env = Env::new(CtxFixture::default());
+    env.journal = Some(&journal);
+    let key = press(PhysicalKey::A, Some("a"));
+    let sent = env.dispatch(vec![key.clone()]).await;
+    assert_eq!(sent.frames, vec![key.clone().into_frame(tid(1))]);
+    let mut parser = crate::attach::input::StdinParser::new();
+    let mut events = parser.feed(b"\x1b[200~\xff\0\xfe\x1b[201~");
+    let original = events[0].clone();
+    events.push(press(PhysicalKey::Enter, None));
+    let sent = env.dispatch(events).await;
+    assert_eq!(sent.frames.len(), 1);
+    let (request, events) = apply_input_events(&sent.frames[0]);
+    assert_eq!(events, &[original]);
+    journal.borrow_mut().resolve(request, &phux_protocol::wire::frame::CommandResult::Ok).expect("paste receipt");
+    let (_, frames) = journal.borrow_mut().next_frames(&mut 900);
+    assert_eq!(frames.len(), 1);
+    let (request, events) = apply_input_events(&frames[0]);
+    assert!(matches!(events, [InputEvent::Key(key)] if key.key == PhysicalKey::Enter));
+    journal.borrow_mut().resolve(request, &phux_protocol::wire::frame::CommandResult::Ok).expect("ordered key receipt");
+    let sent = env.dispatch(vec![key.clone()]).await;
+    assert_eq!(sent.frames, vec![key.into_frame(tid(1))]);
+}
+
+#[tokio::test]
+async fn large_raw_fallback_cannot_cross_an_unknown_delivery_fence() {
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+    let journal = journal();
+    let mut env = Env::new(CtxFixture::default());
+    env.journal = Some(&journal);
+    let paste = |data| InputEvent::Paste(PasteEvent { trust: PasteTrust::Trusted, data });
+    let sent = env.dispatch(vec![paste(b"first".to_vec())]).await;
+    let (request, _) = apply_input_events(&sent.frames[0]);
+    let report = journal.borrow_mut().resolve(request, &CommandResult::Error {
+        code: ErrorCode::UnreadableReply,
+        message: "receipt was unreadable".to_owned(),
+    }).expect("unknown receipt");
+    assert_eq!(report.disposition, ReplayDisposition::Unknown);
+    let sent = env.dispatch(vec![paste(vec![0xff; 70 * 1024])]).await;
+    assert!(sent.frames.is_empty());
+    let reports = journal.borrow_mut().take_reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].disposition, ReplayDisposition::Refused);
+    assert!(journal.borrow().delivery_fenced(&tid(1)));
+}
+
 /// A failed send leaves the frame it failed on uncertain and rolls the
 /// never-handed-over rest back to refused.
 #[tokio::test]

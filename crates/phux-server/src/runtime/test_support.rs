@@ -28,7 +28,7 @@ use crate::state::{ClientId, SharedState};
 use crate::transport::{FrameReader, FrameWriter};
 
 /// A session whose seed pane runs no process.
-pub(super) use crate::runtime::apps::terminal::commands::seed::seed_session_with_actor;
+pub(super) use crate::runtime::commands::terminal::seed::seed_session_with_actor;
 /// The server's input lane alone, without the rest of the apps' startup.
 pub(super) use crate::runtime::apps::terminal::input_lane::spawn_input_lane;
 /// Server state with the Terminal engine installed.

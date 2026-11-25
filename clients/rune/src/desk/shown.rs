@@ -6,7 +6,6 @@ use std::time::Instant;
 use phux_client_runtime::control::Status;
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::AttachTarget;
 
 use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
@@ -24,8 +23,8 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return;
         };
-        // A popup's command ends with the window that showed it.
-        self.close_popup(&client, true);
+        // Window teardown retires presentation, never durable execution.
+        self.close_popup(&client, false);
         if let Some(view) = self.connection.shown.take().and_then(|s| s.view) {
             let _ = client.destroy_view(view);
         }
@@ -34,6 +33,16 @@ impl Desk {
         }
     }
     pub(super) fn want(&mut self, terminal: ResourceId) {
+        let Some(client) = self.connection.client.as_ref() else { return; };
+        let intent = super::view_intent::ViewIntent::new(
+            client, &terminal, self.connection.view_server.clone(), self.connection.view_epoch,
+        );
+        self.connection.view_intents.insert(terminal.clone(), intent);
+        self.connection.view_choice += 1;
+        self.request_terminal(terminal);
+    }
+
+    fn request_terminal(&mut self, terminal: ResourceId) {
         self.retry_document(&terminal);
         self.connection.resources.returning = None;
         if let Some(document) = self.connection.resources.entries.get(&terminal) {
@@ -48,7 +57,14 @@ impl Desk {
     /// Recovery can show a fallback without replacing the person's last choice.
     pub(super) fn want_automatic(&mut self, terminal: ResourceId) {
         let returning = self.connection.resources.returning;
-        self.want(terminal);
+        if !self.connection.view_intents.contains_key(&terminal) {
+            let Some(client) = self.connection.client.as_ref() else { return; };
+            let intent = super::view_intent::ViewIntent::new(
+                client, &terminal, self.connection.view_server.clone(), self.connection.view_epoch,
+            );
+            self.connection.view_intents.insert(terminal.clone(), intent);
+        }
+        self.request_terminal(terminal);
         self.connection.resources.returning = returning;
     }
 
@@ -113,24 +129,12 @@ impl Desk {
             .cloned()
     }
 
-    /// A new connection may be a new server incarnation, whose engine forgot
-    /// every view: open the shown terminal again on this connection.
-    pub(super) fn reopen_after_reconnect(&mut self, client: &Client) -> bool {
-        if let Some(phone) = self.phone.as_mut() {
-            phone.reconcile(None, None);
-        }
-        for view in self.connection.others.drain().filter_map(|(_, v)| v) {
-            let _ = client.destroy_view(view);
-        }
+    /// A transport epoch is not a publication replacement. Retained offline
+    /// views stay valid; dead views retry only their original source below.
+    pub(super) fn reopen_after_reconnect(&mut self, _client: &Client) -> bool {
         self.connection.fetched.clear();
         self.connection.fitted.clear();
-        let Some(terminal) = self.drop_shown(client) else {
-            return false;
-        };
-        if self.connection.wanted.is_none() {
-            self.want_automatic(terminal);
-        }
-        true
+        false
     }
 
     /// Let go of views the engine forgot. A terminal whose replica leaves
@@ -194,15 +198,29 @@ impl Desk {
     }
 
     fn new_session_target(&mut self, client: &Client) -> Option<ResourceId> {
+        if !self.connection.pending_session_origin.as_ref().is_some_and(|origin| origin.is_current(&self.connection)) {
+            self.connection.pending_session = None;
+            self.connection.pending_session_origin = None;
+            self.link.created = None;
+            return None;
+        }
+        if self.link.creating.is_some() {
+            return None;
+        }
         let topology = self.connection.topology.as_ref()?;
         let name = self.connection.pending_session.as_ref()?;
-        let session = topology.sessions.iter().find(|s| &s.name == name)?;
+        let session = match self.link.created {
+            Some(key) => topology.sessions.iter().find(|session| session.key == Some(key)),
+            None => topology.sessions.iter().find(|session| &session.name == name),
+        }?;
         if client.selected_session() != Some(session.id) {
             return None;
         }
         let target = sessions::default_pane(topology, session.id)
             .or_else(|| self.default_document(session.id));
         self.connection.pending_session = None;
+        self.connection.pending_session_origin = None;
+        self.link.created = None;
         if target.is_none() {
             // An existing persistent session can be empty. Completing its
             // attach must stop showing the previous session's terminal.
@@ -211,26 +229,30 @@ impl Desk {
         target
     }
 
-    /// Whether `terminal` is in a session this client doesn't stream yet.
-    fn foreign(&self, client: &Client, terminal: &ResourceId) -> Option<String> {
-        let pane = self.connection.topology.as_ref()?.pane(terminal)?;
-        (client.selected_session() != Some(pane.session_id)).then(|| pane.session_name.clone())
-    }
 
-    /// A view of `terminal`, or `None` while it has no replica. A terminal
-    /// the selected session lists but its attach never streamed (one moved
-    /// in from another session) would never get one, and clicking it would
-    /// do nothing forever: ask for it alone (#2223).
-    pub(super) fn create_view(&self, client: &Client, terminal: &ResourceId) -> Option<ViewId> {
-        let error = match client.create_view(terminal) {
-            Ok(view) => return Some(view),
-            Err(error) => error,
-        };
+    /// Retry the original presentation intent, never a newer incarnation of
+    /// the same numeric handle. Only a missing first publication may attach.
+    pub(super) fn create_view(&mut self, client: &Client, terminal: &ResourceId) -> Option<ViewId> {
+        if !self.connection.owns_client(client) {
+            return None;
+        }
+        if !self.connection.view_intents.contains_key(terminal) {
+            let intent = super::view_intent::ViewIntent::new(client, terminal,
+                self.connection.view_server.clone(), self.connection.view_epoch);
+            self.connection.view_intents.insert(terminal.clone(), intent);
+        }
+        let intent = self.connection.view_intents.get_mut(terminal).expect("captured above");
+        if let Some(view) = intent.open(client, terminal) {
+            return Some(view);
+        }
+        if intent.refused() {
+            return None;
+        }
         let here = (self.connection.topology.as_ref())
             .and_then(|topology| topology.pane(terminal))
             .is_some_and(|pane| client.selected_session() == Some(pane.session_id));
-        if here && client.status() == Status::Attached && client.attach_terminal(terminal) != 0 {
-            eprintln!("opening {terminal}: {error}; attaching it");
+        if here && client.status() == Status::Attached {
+            intent.subscribe(client, terminal);
         }
         None
     }
@@ -270,12 +292,16 @@ impl Desk {
             None
         } else {
             let Some(view) = self.create_view(client, &target) else {
+                if self.connection.view_intents.get(&target).is_some_and(|intent| intent.refused()) {
+                    self.connection.wanted = None;
+                    return false;
+                }
                 // Keep the first asking's clock, or the grace never runs out.
                 if self.connection.wanted.is_none() {
                     self.want_automatic(target.clone());
                 }
-                if let Some(session) = self.foreign(client, &target) {
-                    client.attach_session(AttachTarget::ByName(session));
+                if let Some(intent) = self.connection.view_intents.get(&target) {
+                    intent.select_terminal_session(client, &target);
                 }
                 return false;
             };
@@ -336,6 +362,7 @@ mod tests {
         let client = std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
             phux_client_runtime::control::ControlOptions::default(),
         ));
+        desk.connection.client = Some(client.clone());
         let view = |raw| phux_client_runtime::ViewId::from_raw(raw).expect("nonzero");
         // Nothing is published for either view: both died with the replica.
         desk.connection.shown = Some(Shown {
@@ -375,3 +402,6 @@ mod tests {
         assert_eq!(desk.notice, None);
     }
 }
+
+#[cfg(test)]
+mod source_admission;

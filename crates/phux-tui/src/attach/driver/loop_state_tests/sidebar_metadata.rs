@@ -27,7 +27,9 @@ async fn missing_or_refused_host_identity_keeps_fallback_without_retrying() {
         let (mut state, mut client, mut server, _) =
             bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::Whoami])).await;
         state.request_serving_host(&mut client).await.unwrap();
-        let request_id = state.peers.serving_host_pending.unwrap();
+        let request_id = frames_sent(&mut client, &mut server).await.into_iter().find_map(|frame| {
+            match frame { FrameKind::GetMetadata { request_id, key, .. } if key == phux_protocol::wire::frame::WHOAMI_KEY => Some(request_id), _ => None }
+        }).expect("identity GET");
         state
             .intercept_peer_reply(
                 &mut client,
@@ -36,16 +38,18 @@ async fn missing_or_refused_host_identity_keeps_fallback_without_retrying() {
             )
             .await
             .unwrap();
-        assert!(state.peers.serving_host_pending.is_none());
+        assert!(state.peers.take_metadata_reply(FrameKind::MetadataValue { request_id, value: None }).is_err());
         assert!(state.peers.serving_host.is_none());
         frames_sent(&mut client, &mut server).await;
         state.request_serving_host(&mut client).await.unwrap();
         assert!(frames_sent(&mut client, &mut server).await.is_empty());
     }
-    let (mut state, mut client, _server, _) =
+    let (mut state, mut client, mut server, _) =
         bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::Whoami])).await;
     state.request_serving_host(&mut client).await.unwrap();
-    let request_id = state.peers.serving_host_pending.unwrap();
+    let request_id = frames_sent(&mut client, &mut server).await.into_iter().find_map(|frame| {
+        match frame { FrameKind::GetMetadata { request_id, key, .. } if key == phux_protocol::wire::frame::WHOAMI_KEY => Some(request_id), _ => None }
+    }).expect("identity GET");
     let result = state
         .intercept_peer_reply(
             &mut client,
@@ -59,7 +63,7 @@ async fn missing_or_refused_host_identity_keeps_fallback_without_retrying() {
         .await
         .unwrap();
     assert!(result.is_none());
-    assert!(state.peers.serving_host_pending.is_none());
+    assert!(state.peers.take_metadata_reply(FrameKind::MetadataValue { request_id, value: None }).is_err());
 }
 
 fn seed_cached_peer(state: &mut SessionLoop, peer_id: &ResourceId) {
@@ -90,11 +94,9 @@ async fn peer_metadata_and_hostname_reach_visible_sidebar_at_the_burst_drain() {
     });
     let peer_id = ResourceId::local(10);
     seed_cached_peer(&mut state, &peer_id);
-    state
-        .peers
-        .foreign_agent_pending
-        .insert(900, peer_id.clone());
-    state.peers.serving_host_pending = Some(901);
+    state.next_request_id = 900;
+    state.peers.watch_agents(&mut client, vec![peer_id.clone()], &mut state.next_request_id).await.unwrap();
+    state.request_serving_host(&mut client).await.unwrap();
     let mut repaint = RepaintAccumulator::default();
     let record = AgentRecord {
         name: "reviewer".into(),

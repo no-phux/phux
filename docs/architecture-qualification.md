@@ -34,8 +34,8 @@ Source prefixes: **S** = `crates/phux-server/src/`, **ST** = `crates/phux-server
 
 | Intent | Required observation/cut; current seam |
 | --- | --- |
-| 1. Create | Durable admission before engine, not observed start; store refusal/lost reply. `S/runtime/organization/mutate.rs`, `R/src/control/commands/spawn.rs`. |
-| 2. Ensure-session | Existing/missing session, no extra pane on retry. Runtime spawn above; FFI `crates/phux-client-ffi/src/uniffi/wire/client.rs::spawn_terminal_in_directory` can currently queue creation then return `0`: replacement required. |
+| 1. Create | Durable admission before engine, not observed start; store refusal/lost reply. `S/state/org/operation.rs`, `R/src/control/commands/spawn.rs`. |
+| 2. Ensure-session | Exact existing/created receipt, no reseed, replay after name reuse, storage refusal and revoked/disconnected authority. `S/runtime/organization/tests/create.rs`, `S/state/org/tests.rs`, core session tests. |
 | 3. Select-view | Local focus/scroll/search, not membership/execution; two views. `N/src/desk/splits.rs`, `B/tests/session/splits.rs`, `R/src/engine/owner/views.rs`. |
 | 4. Attach | Authorized exact generation; staging invisible until ready; disconnect/late chunks. `R/tests/it/control_plane/views.rs`, `S/runtime/apps/terminal/attach/tests/publication_recovery.rs`. |
 | 5. Raw input | Bounded latency/order/local queue result under saturation/reconnect; not all keys receipted. `R/src/control/input.rs`, `ST/terminal/input.rs`. |
@@ -43,9 +43,9 @@ Source prefixes: **S** = `crates/phux-server/src/`, **ST** = `crates/phux-server
 | 7. Close-view | Retire view/callback/interest, not execution. Runtime views above; `B/src/session/pane_replies.rs` currently couples failed split to legacy kill. Compensation must explicitly cancel exact created activation. |
 | 8. Terminate | Admit exact activation/revision before end; replay cannot signal replacement. `S/runtime/organization/tests/session.rs`. |
 | 9. Purge | Full descendant set, child-first close, retained removal during outage. `S/state/org/activation.rs`, `ST/lifecycle/agent_session/family.rs`. |
-| 10. Session-kill | Explicit override; persist set before close/mirror/announce; replay closes once. `S/runtime/organization/mutate.rs`, `S/runtime/organization/tests/session.rs`. |
+| 10. Session-kill | Explicit override; persist set before close/mirror/announce; replay closes once. `S/state/org/operation.rs`, `S/runtime/organization/tests/session.rs`. |
 | 11. Restore | Import inert; disabled/changed integration requires current trust/raw approval. `C/archive.rs`, `CT/automation_e2e/workspace_archive_e2e.rs`. |
-| 12. Relaunch | Fresh admission/exact old activation; ambiguity cannot grant retry. `S/runtime/organization/mutate.rs`, `S/reconcile.rs`, `ST/lifecycle/crash_restart.rs`. |
+| 12. Relaunch | Fresh admission/exact old activation; ambiguity cannot grant retry. `S/state/org/operation.rs`, `S/reconcile.rs`, `ST/lifecycle/crash_restart.rs`. |
 
 Parity compares **intent plus facts**: interactive paste across TUI/Rune/FFI/browser; supported create/ensure through CLI/MCP/headless/native; native route/trust decisions; view closure. Intentionally distinct: raw/acknowledged, user/automation paste, create/ensure, select/attach, close-view/terminate/purge, restore/relaunch, hot handoff/cold restart. Gestures, painting, browser origin and credential acquisition stay platform-owned. No universal event bus or forced native-runtime wasm driver. Work/organization retain separate authorities; wakeups trigger exact level reads, not global transactions/fabricated success.
 
@@ -53,7 +53,7 @@ Parity compares **intent plus facts**: interactive paste across TUI/Rune/FFI/bro
 
 ### 1. Atomic admission
 
-**Existing:** `S/runtime/organization/tests/session.rs`: refused-store kill closes nothing; fenced terminate after commit. `S/runtime/organization/mutate.rs`: serialized choreography. `ST/lifecycle/agent_session/family.rs`: children; core `crates/phux-core/tests/domain/commands/organization.rs`: atomic moves/revisions. Route: organization/root/e2e.
+**Existing:** `S/runtime/organization/tests/session.rs`: refused-store kill closes nothing; fenced terminate after commit. `S/state/org/operation.rs`: private serialized authority/choreography owner. `ST/lifecycle/agent_session/family.rs`: children; core `crates/phux-core/tests/domain/commands/organization.rs`: atomic moves/revisions. Route: organization/root/e2e.
 
 **Required:** locked descendants, overlapping parent/child/duplicate targets, session-kill override, stale activation/revision and changed affected set. Refuse stores before each irreversible effect: no partial close/receipt/memory/publication. Acceptance proves exact set, child-first close, receipt/journal order, mirror/effect transfer. Replay/concurrency cannot widen sets or repeat effects. Operation ownership hides choreography without weakening assertions.
 

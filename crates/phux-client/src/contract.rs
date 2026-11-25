@@ -28,6 +28,7 @@ pub const ERROR_SCHEMA_VERSION: u8 = 1;
     reason = "each doc comment is one meaning, catalogued verbatim by `phux --capabilities`"
 )]
 pub mod codes;
+mod session_recovery;
 
 /// One failure, carrying everything every output channel needs: a stable
 /// machine `code`, the human `message`, and the `remedy` naming the way out.
@@ -166,6 +167,9 @@ pub fn transport_refusal(
     verb: &str,
     pid: Option<i32>,
 ) -> Refusal {
+    if let Some(refusal) = session_recovery::session_refusal(err, verb) {
+        return refusal;
+    }
     let server_log = phux_config::instance::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",
@@ -481,3 +485,6 @@ mod tests {
         assert_eq!(codes::AGENT_WITHDRAWN, "agent_withdrawn");
     }
 }
+
+#[cfg(test)]
+mod session_recovery_tests;

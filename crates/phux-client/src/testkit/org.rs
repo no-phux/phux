@@ -33,6 +33,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, Wind
 
 mod answer;
 mod mutate;
+mod ensure;
 
 /// One stored receipt: the command, its result, and how to undo it.
 #[derive(Debug, Clone)]

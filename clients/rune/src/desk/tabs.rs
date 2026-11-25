@@ -175,22 +175,22 @@ impl Desk {
 
     /// A new tab in `cwd`, as `new_tab`.
     fn new_tab_at(&mut self, cwd: Option<String>) {
-        let Some(client) = &self.connection.client else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         if self.connection.shown.is_none() {
             return self.new_terminal_at(cwd);
         }
-        let request = client.spawn_terminal(SpawnRequest {
+        let Some(request) = self.spawn_request(&client, SpawnRequest {
             command: None,
             cwd,
             env: None,
             session_id: client.selected_session(),
             initial_size: self.tab_spawn_size(),
-        });
+        }) else { return; };
         self.connection
             .pending_splits
-            .insert(request, (self.placement_session(client), None));
+            .insert(request, (self.placement_session(&client), None));
         self.connection.zoomed = None;
     }
 
@@ -329,6 +329,14 @@ impl Desk {
     }
 
     pub(super) fn close_now(&mut self, terminal: &ResourceId) {
+        if self.connection.popup.terminal() == Some(terminal) {
+            if let Some(client) = self.connection.client.clone() {
+                self.close_popup(&client, true);
+            } else {
+                self.report_close_submission(None);
+            }
+            return;
+        }
         if self.is_document(terminal) {
             return self.hide_documents(std::slice::from_ref(terminal));
         }

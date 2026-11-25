@@ -365,6 +365,7 @@ fn only_organization_commands_need_the_v2_verbs() {
             let method = command_method(encoded_command_tag(&command)).unwrap();
             let gate = match command {
                 Command::SessionKill { .. } => crate::caps::ServerFeatureExt::SessionKill,
+                Command::SessionEnsure { .. } => crate::caps::ServerFeatureExt::SessionEnsure,
                 Command::SessionSetProject { .. } => crate::caps::ServerFeatureExt::SessionProject,
                 Command::ArrangementLock { .. } => crate::caps::ServerFeatureExt::TabLock,
                 Command::GetCreation { .. } => crate::caps::ServerFeatureExt::ApiDescription,

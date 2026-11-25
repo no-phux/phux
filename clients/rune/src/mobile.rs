@@ -404,7 +404,7 @@ pub fn set_active(rt: &mut rune::Runtime<State>, active: bool) {
 /// Qualification log: the probe observed `input_ready` and is about to type.
 pub fn trace_input_ready(rt: &rune::Runtime<State>) {
     if let Some(client) = rt.state.connection.client.as_ref() {
-        client.with_control(|control| control.trace_input_ready());
+        client.trace_input_ready();
     }
 }
 

@@ -241,6 +241,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::ApiDescription,
         ServerFeatureExt::DurableResourceInspection,
         ServerFeatureExt::SessionKill,
+        ServerFeatureExt::SessionEnsure,
         ServerFeatureExt::NativeAgent,
         ServerFeatureExt::NativeAgentLaunch,
         ServerFeatureExt::CurrentQuestions,

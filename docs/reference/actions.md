@@ -100,6 +100,16 @@ The **Palette** column is the command-palette section the action is offered unde
 | `enter-mode` | — | `name` (a `[keybindings.modes.<name>]` table); `once?` (`true` leaves after one of the mode's keys) | Turn on a key mode: its keys work without the prefix until exit-mode or Esc |
 | `exit-mode` | — |  | Leave the active key mode |
 
+`new-session` creates exactly one persistent session and selects the committed
+session identity, not a reusable name. A name collision refuses instead of
+switching to the existing session; use `switch-session` to select one. Older
+servers that cannot preserve creation intent refuse without creating anything.
+If a creation receipt is lost, its original operation remains unknown: the TUI
+does not automatically create again. A committed session is not killed if its
+subsequent selection fails.
+Satellite-host creation is currently unsupported and refuses before accepting
+work; it never redirects the creation to the attached server.
+
 Why the dash rows have no palette entry:
 
 - `approval-review` — opened from the approvals picker.

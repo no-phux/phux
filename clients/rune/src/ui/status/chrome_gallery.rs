@@ -108,6 +108,7 @@ fn window(dark: bool) -> Runtime<Desk> {
     replica.feed("\x1b[2J\x1b[H$ cargo test --locked\r\n   Compiling phux-rune\r\n".to_owned());
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
+    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.layout = Some(LayoutNode::Split {
         dir: SplitDir::Horizontal,
         ratio: 0.55,

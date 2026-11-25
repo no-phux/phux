@@ -12,7 +12,13 @@ pub(super) fn remote_with(panes: &[(u32, Vec<u8>)]) -> Arc<RemoteClient> {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
-        .feed(HelloOk::new([0xAB; 16], l3_caps()).build())
+        .feed(
+            HelloOk::new([0xAB; 16], l3_caps())
+                .features(phux_protocol::caps::ServerFeatureSet::with(&[
+                    phux_protocol::caps::ServerFeature::AcknowledgedInput,
+                ]))
+                .build(),
+        )
         .expect("HELLO_OK");
     let attach_id = client
         .take_outbound()

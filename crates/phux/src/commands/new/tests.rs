@@ -2,7 +2,7 @@
 
 use super::empty::empty_session_json;
 use super::naming::{
-    RANDOM_NAME_ATTEMPTS, choose_session_name, fresh_session_name, requested_session_name,
+    RANDOM_NAME_ATTEMPTS, fresh_session_name, requested_session_name,
     unique_session_name,
 };
 use super::{new_session_json, seed_cwd};
@@ -176,17 +176,6 @@ fn requested_session_name_merges_the_two_spellings() {
     assert_eq!(merged(Some("a"), Some("a")).ok(), named("a"));
     assert!(merged(Some("a"), Some("b")).is_err());
     assert_eq!(merged(None, None).ok(), Some(None));
-}
-
-/// A taken name is refused; a free one is kept.
-#[test]
-fn choose_session_name_refuses_a_duplicate() {
-    let existing = vec!["work".to_owned()];
-    assert!(choose_session_name(Some("work".to_owned()), &existing).is_err());
-    assert_eq!(
-        choose_session_name(Some("play".to_owned()), &existing).ok(),
-        Some("play".to_owned())
-    );
 }
 
 #[test]

@@ -3,6 +3,7 @@
 use super::publication_client::Replica;
 use super::publication_supersession::{context, resize_and_acknowledge, resize_to_and_acknowledge};
 use super::*;
+use crate::runtime::spawn::terminal::publication::SpawnPublication;
 use phux_terminal::actor::{
     NativePublicationRequest, PtyEvent, TerminalActor, TerminalHandle, TerminalResource as _,
 };
@@ -236,20 +237,17 @@ async fn session_entry(
     output: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) {
     let reply = capture(&ctx).await;
-    let (cut, cursor) = publish_native_bootstrap(&ctx.out_tx, reply)
+    let (cut, capture) = publish_native_bootstrap(&ctx.out_tx, reply)
         .await
         .expect("queue capture");
     let (gate, receive) = oneshot::channel();
     let client_id = ctx.client_id;
-    let stream_id = ctx.stream_id;
-    let bootstrap_id = ctx.initial_bootstrap_id;
     let snapshot_gate = SnapshotGate {
         terminal_id: core,
-        wire_terminal_id: ctx.wire_terminal_id.clone(),
         terminal: ctx.terminal.clone(),
         gate,
         cut: Some(cut),
-        native_cursor: Some(cursor),
+        native_capture: Some(capture),
     };
     let state_for_pump = state.clone();
     let connection_for_pump = connection.clone();
@@ -259,14 +257,11 @@ async fn session_entry(
         }
     });
     release_gates(
-        state,
+        &crate::runtime::apps::StreamHost::new(state, client_id),
         connection,
-        client_id,
-        stream_id,
-        bootstrap_id,
         vec![snapshot_gate],
     )
-    .await;
+    .await.expect("session publication");
     pump.await.expect("session pump");
 }
 
@@ -280,16 +275,12 @@ async fn replacement_entry(
     let barrier = ctx.terminal.native_publication.clone();
     ctx.terminal.native_publication = real.native_publication.clone();
     let reply = capture(&ctx).await;
-    let (cut, cursor) = publish_native_bootstrap(&ctx.out_tx, reply)
+    let (cut, capture) = publish_native_bootstrap(&ctx.out_tx, reply)
         .await
         .expect("initial READY");
     let publication = activate_native_publication(
         real,
-        ctx.client_id.0,
-        ctx.wire_terminal_id.clone(),
-        ctx.stream_id,
-        ctx.initial_bootstrap_id,
-        cursor,
+        capture,
     )
     .await
     .expect("initial activation");
@@ -298,6 +289,7 @@ async fn replacement_entry(
         published_cut: cut,
         replay: Vec::new(),
         live: None,
+        interest: None,
     };
     start.adopt_native_publication(publication);
     ctx.terminal.native_publication = barrier;
@@ -365,9 +357,10 @@ async fn run_entry(
             pumps.shutdown().await;
         }
         Entry::Resource => {
+            let host = crate::runtime::apps::StreamHost::new(&state, ctx.client_id);
             let session =
-                crate::runtime::apps::terminal::commands::attach_resource::AttachResourceSession {
-                    state: &state,
+                crate::runtime::apps::terminal::capture::attach_resource::AttachResourceSession {
+                    host: &host,
                     out_tx: &ctx.out_tx,
                     connection_token: &connection,
                     terminal_id: &ctx.wire_terminal_id,
@@ -380,12 +373,12 @@ async fn run_entry(
                     stream_profile: ctx.profile,
                     bootstrap_limits: ctx.limits,
                 };
-            let mut generation = session
+            let generation = session
                 .establish_generation(ctx.initial_bootstrap_id)
                 .await
                 .expect("establish ATTACH_RESOURCE");
             session
-                .finish_bootstrap(&mut generation)
+                .publish_generation(generation)
                 .await
                 .expect("finish ATTACH_RESOURCE");
             stop.cancelled().await;

@@ -15,7 +15,8 @@ use std::time::Duration;
 use futures_util::future::join_all;
 
 use super::RuntimeFlags;
-use crate::runtime::apps::UpgradeCut;
+pub(crate) mod kinds;
+use crate::runtime::upgrade::kinds::UpgradeCut;
 use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 
@@ -186,7 +187,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 
 async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
     refuse_invalid_org_store(state)?;
-    let mut cuts = crate::runtime::apps::upgrade::begin(state).ok_or(UpgradeError::TreeChanged)?;
+    let mut cuts = crate::runtime::upgrade::kinds::begin(state).ok_or(UpgradeError::TreeChanged)?;
     let UpgradeContext {
         listener_fd,
         socket_path,

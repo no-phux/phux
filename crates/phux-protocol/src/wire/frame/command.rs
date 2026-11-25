@@ -143,6 +143,7 @@ impl Command {
             | Self::KillResources { operation_id, .. }
             | Self::SignalTerminal { operation_id, .. } => operation_id.as_ref(),
             Self::SessionCreate { operation, .. }
+            | Self::SessionEnsure { operation, .. }
             | Self::SessionRename { operation, .. }
             | Self::SessionSetProject { operation, .. }
             | Self::SessionSetLifetime { operation, .. }
@@ -175,6 +176,7 @@ impl Command {
             Self::GetOrganization { .. }
                 | Self::GetCreation { .. }
                 | Self::SessionCreate { .. }
+                | Self::SessionEnsure { .. }
                 | Self::SessionRename { .. }
                 | Self::SessionSetProject { .. }
                 | Self::SessionSetLifetime { .. }

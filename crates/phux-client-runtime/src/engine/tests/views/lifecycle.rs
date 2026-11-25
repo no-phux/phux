@@ -4,8 +4,9 @@ fn gestures_and_teardown_are_isolated() {
     let (owner, publication) = owner();
     let terminal = id(104);
     attach(&owner, &terminal, b"abc");
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     let press = owner.view_selection_gesture(a, gesture(0, 0, 0)).unwrap();
     assert!(
         owner
@@ -41,8 +42,9 @@ fn retained_closed_views_scroll_but_document_apis_require_a_published_replica() 
         &terminal,
         b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
     );
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     owner.scroll_view(a, Scroll::Top).unwrap();
     owner.set_retain_on_close(&terminal, true);
     apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
@@ -66,7 +68,8 @@ fn replica_replacement_keeps_view_identity_but_rejects_old_handles() {
     let (owner, publication) = owner();
     let terminal = id(106);
     attach(&owner, &terminal, b"old");
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let (start, end) = select(&owner, view, 0, 2);
     let held = publication.acquire_view(view).unwrap();
     let press = owner
@@ -95,8 +98,10 @@ fn view_ids_are_not_accepted_by_another_owner() {
     let terminal = id(107);
     attach(&first, &terminal, b"a");
     attach(&second, &terminal, b"b");
-    let a = first.create_view(&terminal).unwrap();
-    let b = second.create_view(&terminal).unwrap();
+    let first_source = first.view_source(&terminal).unwrap();
+    let second_source = second.view_source(&terminal).unwrap();
+    let a = first.create_view(&first_source).unwrap();
+    let b = second.create_view(&second_source).unwrap();
     assert_ne!(a, b);
     assert!(first.republish_view(b).is_err());
     assert!(second.destroy_view(a).is_err());

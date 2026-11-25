@@ -202,9 +202,7 @@ fn dismiss_passthrough_popup(ctx: &mut DispatchCtx<'_>, ev: &InputEvent) -> Stag
             let escape_cancels_prefix = ctx.overlays.passthrough_escape_cancels_prefix();
             ctx.overlays.dismiss();
             if key_event.key == PhysicalKey::Escape && escape_cancels_prefix {
-                if let Some(resolver) = ctx.resolver.as_deref_mut() {
-                    resolver.reset();
-                }
+                ctx.resolver.reset();
                 tracing::debug!("which-key: Esc cancelled the pending prefix");
                 return StageOutcome::consumed(true);
             }
@@ -213,9 +211,7 @@ fn dismiss_passthrough_popup(ctx: &mut DispatchCtx<'_>, ev: &InputEvent) -> Stag
         }
         InputEvent::Mouse(_) => {
             ctx.overlays.dismiss();
-            if let Some(resolver) = ctx.resolver.as_deref_mut() {
-                resolver.reset();
-            }
+            ctx.resolver.reset();
             // Fall through to normal mouse routing.
             StageOutcome::passed(true)
         }

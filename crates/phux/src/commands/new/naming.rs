@@ -51,8 +51,8 @@ pub(super) fn report_invalid_session_name(
     )
 }
 
-/// The session names already on the server, for duplicate rejection and
-/// auto-suffixing. No server (or no answer) means none.
+/// The server's names, used only to choose a convenient generated name.
+/// The host's exact create remains authoritative, including concurrent collisions.
 pub(crate) fn existing_session_names(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,
@@ -75,27 +75,19 @@ pub(crate) fn existing_session_names(
     )
 }
 
-/// The name to create: the requested one unless it is taken, else the
-/// configured template made unique.
-pub(super) fn choose_session_name(
+/// Preserve an explicit name without any existence probe. An omitted name is
+/// generated from the configured template; a concurrent collision still refuses.
+pub(super) fn resolve_session_name(
+    rt: &tokio::runtime::Runtime,
+    target: &ServerTarget,
     requested: Option<String>,
-    existing: &[String],
-) -> Result<String, ExitCode> {
-    let Some(requested) = requested else {
-        // No name given: render the session-name-template and disambiguate.
-        // `${cwd-basename}` uses the local directory even for a remote server.
-        return Ok(fresh_session_name(
-            existing,
-            &configured_session_name_template(),
-            &std::env::current_dir().unwrap_or_default(),
-            &mut phux_config::NameRng::from_entropy(),
-        ));
-    };
-    if existing.contains(&requested) {
-        error!("session '{requested}' already exists (use `phux attach {requested}` to join it)");
-        return Err(ExitCode::FAILURE);
-    }
-    Ok(requested)
+) -> String {
+    requested.unwrap_or_else(|| fresh_session_name(
+        &existing_session_names(rt, target),
+        &configured_session_name_template(),
+        &std::env::current_dir().unwrap_or_default(),
+        &mut phux_config::NameRng::from_entropy(),
+    ))
 }
 
 /// A session name for an omitted-name `phux new` not in `existing`: render

@@ -13,14 +13,16 @@ pub struct NativeBootstrapReply {
     pub retained_bytes: usize,
     /// Actor-global raw output cut included by the checkpoint.
     pub base_seq: u64,
-    /// Actor-private generation key used only for the publication fence.
-    pub publication_cursor: crate::native_state::OpaqueHistoryCursor,
+    /// Exact, drop-owned publication capability for this capture.
+    pub capture: NativeCapture,
 }
 
 /// Live bytes after a native checkpoint fence, plus the receiver installed
 /// atomically after the replay cut.
 #[derive(Debug)]
 pub struct NativePublicationReply {
+    /// Transferred with replay/live; dropping an unread reply retires the cut.
+    pub interest: NativeCaptureInterest,
     pub replay: Vec<(u64, Bytes)>,
     pub live: broadcast::Receiver<ResourceOutput>,
 }
@@ -38,6 +40,9 @@ pub struct NativePublicationRequest {
     pub bootstrap_id: BootstrapId,
     /// Authenticated actor-private generation cursor returned with READY.
     pub cursor: crate::native_state::OpaqueHistoryCursor,
+    /// The exact capture lifetime, captured before this request is queued.
+    /// Supersession cancels it even when numeric identities and cursor repeat.
+    pub cancellation: tokio_util::sync::CancellationToken,
     /// Completion carrying replay bytes and the post-replay live receiver.
     pub reply:
         oneshot::Sender<Result<NativePublicationReply, crate::native_state::NativeStateError>>,
@@ -127,4 +132,66 @@ pub struct NativeHistoryRequest {
 pub struct NativeReleaseRequest {
     /// Server-local owner identity.
     pub owner: u64,
+}
+
+/// Exact ownership of an unpublished native cut. The actor owns its cancellation
+/// wait; dropping this handle never allocates or depends on a release mailbox.
+#[derive(Debug)]
+pub struct NativeCaptureInterest {
+    cancellation: tokio_util::sync::CancellationToken,
+    pending: bool,
+}
+
+impl Default for NativeCaptureInterest {
+    fn default() -> Self {
+        Self { cancellation: tokio_util::sync::CancellationToken::new(), pending: true }
+    }
+}
+
+impl NativeCaptureInterest {
+    #[must_use]
+    pub fn cancellation(&self) -> tokio_util::sync::CancellationToken {
+        self.cancellation.clone()
+    }
+
+    /// The real pump/connection now owns the published cursor's lifetime.
+    pub fn published(&mut self) {
+        self.pending = false;
+    }
+}
+
+impl Drop for NativeCaptureInterest {
+    fn drop(&mut self) {
+        if self.pending {
+            self.cancellation.cancel();
+        }
+    }
+}
+
+/// The exact resource/stream cut and its unpublished ownership travel together.
+#[derive(Debug)]
+pub struct NativeCapture {
+    pub owner: u64,
+    pub terminal_id: phux_protocol::ids::ResourceId,
+    pub stream_id: StreamId,
+    pub bootstrap_id: BootstrapId,
+    pub cursor: crate::native_state::OpaqueHistoryCursor,
+    interest: NativeCaptureInterest,
+}
+
+impl NativeCapture {
+    #[must_use]
+    pub fn new(owner: u64, terminal_id: phux_protocol::ids::ResourceId, stream_id: StreamId, bootstrap_id: BootstrapId, cursor: crate::native_state::OpaqueHistoryCursor) -> Self {
+        Self { owner, terminal_id, stream_id, bootstrap_id, cursor, interest: NativeCaptureInterest::default() }
+    }
+
+    #[must_use]
+    pub fn cancellation(&self) -> tokio_util::sync::CancellationToken {
+        self.interest.cancellation()
+    }
+
+    /// The receiving owner has installed this cut and will release it explicitly.
+    pub fn published(&mut self) {
+        self.interest.published();
+    }
 }

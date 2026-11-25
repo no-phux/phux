@@ -35,7 +35,7 @@ impl TerminalActor {
         operation_id: Option<phux_protocol::ids::IdempotencyKey>,
     ) {
         let event = AgentEvent::TerminalControl {
-            lifecycle: self.lifecycle,
+            lifecycle: self.process.lifecycle,
             exit_status: None,
             input_holder,
             action,
@@ -56,7 +56,7 @@ impl TerminalActor {
     /// Whether this actor drives a PTY child, the precondition for an agent
     /// detector (a no-PTY pane has no foreground process to identify).
     pub const fn has_pty(&self) -> bool {
-        self.pty.is_some()
+        self.process.pty.is_some()
     }
 
     /// Subscribe to authoritative OSC 7501 state before starting this actor.
@@ -225,11 +225,11 @@ impl TerminalActor {
         } else {
             None
         };
-        let master_fd = self
+        let master_fd = self.process
             .pty
             .as_ref()
             .and_then(|p| p.master.lock().ok().and_then(|m| m.as_raw_fd()));
-        let pane_child_pid = self
+        let pane_child_pid = self.process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id().and_then(|pid| i32::try_from(pid).ok()));
@@ -337,7 +337,7 @@ impl TerminalActor {
     fn observe_effects(&mut self, effects: &[effects::Effect]) {
         let mut changed = false;
         for effect in effects {
-            self.prompt.observe(effect);
+            self.process.prompt.observe(effect);
             match effect {
                 effects::Effect::Progress(progress) => self.last_progress.clone_from(progress),
                 effects::Effect::ProgramStatus(update) => {
@@ -361,7 +361,7 @@ impl TerminalActor {
         }
         self.flush_icon();
         // A native cut can replay the child's last bytes after EOF was observed.
-        if self.exit.is_some() {
+        if self.process.exit.is_some() {
             changed |= self.program_status.expire_active();
         }
         if changed {
@@ -411,7 +411,7 @@ impl TerminalActor {
     /// on a change. Best-effort; the first successful observation always
     /// emits so the starting directory is announced.
     pub(super) fn check_cwd_changed(&self) {
-        let Some(pid) = self.pty.as_ref().and_then(|p| p.child.process_id()) else {
+        let Some(pid) = self.process.pty.as_ref().and_then(|p| p.child.process_id()) else {
             return;
         };
         let query_started = std::time::Instant::now();

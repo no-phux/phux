@@ -30,6 +30,10 @@ impl RelaySession {
     ) -> Self {
         Self {
             host,
+            epoch: {
+                static NEXT_EPOCH: super::AtomicU64 = super::AtomicU64::new(1);
+                NEXT_EPOCH.fetch_add(1, super::Ordering::Relaxed)
+            },
             bootstrap_limits,
             bootstrap_profile,
             next_request_id: 1,
@@ -62,6 +66,16 @@ impl RelaySession {
 
     /// Re-stamp relayed events from `journal`, the hub's own state.
     pub(crate) fn set_journal(&mut self, journal: Option<crate::state::SharedState>) {
+        if let Some(journal) = &journal {
+            journal.with_mut(|s| {
+                s.interrupt_satellite_host(&self.host);
+                s.federation_mut().begin_satellite_link(
+                    self.host.clone(),
+                    self.epoch,
+                    self.satellite_features,
+                );
+            });
+        }
         self.journal = journal;
     }
 
@@ -93,6 +107,7 @@ impl RelaySession {
             catalog.kinds.clear();
             catalog.controls.clear();
             catalog.terminal_profile = Some(self.bootstrap_profile);
+            catalog.epoch = self.epoch;
         }
         self.resource_kinds = Some(resource_kinds);
     }

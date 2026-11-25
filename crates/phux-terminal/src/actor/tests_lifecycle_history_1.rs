@@ -153,9 +153,10 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
         }
 
         let expected_reason = if mode == "expire" {
-            actor.native_cursor_owners.insert(
+            actor.publication.native_cursor_owners.insert(
                 NativeCursorKey::new(7, phux_protocol::ids::StreamId::new(1).expect("stream")),
                 NativeCursorOwner {
+            cancellation: tokio_util::sync::CancellationToken::new(),
                     history_released: false,
                     superseded: false,
                     cursor: [0; 32],
@@ -204,7 +205,7 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
             }) if reason == expected_reason
         ));
         assert_eq!(
-            actor
+            actor.publication
                 .pending_native_history
                 .as_ref()
                 .map(|pending| pending.request.owner),
@@ -212,8 +213,8 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
         );
         let _ = actor
             .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
-        assert!(actor.pending_native_history.is_none());
-        assert!(actor.native_history_backlog.is_empty());
+        assert!(actor.publication.pending_native_history.is_none());
+        assert!(actor.publication.native_history_backlog.is_empty());
         assert!(matches!(
             replies
                 .remove(0)
@@ -304,7 +305,7 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
 
         let fault = Rc::new(Cell::new(None));
         let mut bundle = TerminalActor::new(20, 5).expect("new actor");
-        bundle.actor.native_alloc = {
+        bundle.actor.publication.native_alloc = {
             let fault = Rc::clone(&fault);
             Box::new(move |capacity| match fault.take() {
                 Some(AllocFault::Fail) => Err(crate::native_state::NativeStateError::OutOfMemory),

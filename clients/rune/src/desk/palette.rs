@@ -478,6 +478,11 @@ impl Desk {
         let Some(session) = topology.sessions.iter().find(|s| s.name == name) else {
             return;
         };
+        // A newer local selection retires only the old selection callback,
+        // not the already journaled creation or its durable execution.
+        self.link.creating = None;
+        self.link.created = None;
+        self.link.uncertain_session = None;
         let panes = || topology.panes.iter().filter(|p| p.session_id == session.id);
         let pane = panes()
             .find(|p| p.terminal_id == topology.focused_pane)
@@ -486,12 +491,16 @@ impl Desk {
             .map(|p| p.terminal_id.clone())
             .or_else(|| self.default_document(session.id));
         let Some(id) = id else {
-            if let Some(client) = &self.connection.client {
-                client.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(
-                    name.to_owned(),
-                ));
-                self.connection.pending_session = Some(name.to_owned());
-                self.connection.wanted = None;
+            if let Some(client) = self.connection.client.clone() {
+                let accepted = client.with_control(|control| {
+                    if control.status() != phux_client_runtime::control::Status::Attached
+                        || control.connection_epoch() != self.connection.view_epoch
+                        || control.server().map(|server| server.id.as_slice()) != self.connection.view_server.as_deref()
+                    { return false; }
+                    control.attach_session(phux_protocol::wire::frame::AttachTarget::ByName(name.to_owned()));
+                    true
+                });
+                if accepted { self.wait_for_session(name.to_owned()); }
             }
             return;
         };

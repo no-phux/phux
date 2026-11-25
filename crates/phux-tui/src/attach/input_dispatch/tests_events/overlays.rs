@@ -5,7 +5,7 @@
 #[tokio::test]
 async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     let keys = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut env = Env::new(CtxFixture::default()).with_default_bindings();
+    let mut env = Env::new(CtxFixture::default());
     env.fx
         .overlays
         .push(Box::new(crate::render::overlay::RecordingOverlay {
@@ -46,9 +46,9 @@ async fn passthrough_popups_never_eat_the_pending_chord() {
         ),
     ] {
         let cfg = default_cfg();
-        let mut env = Env::new(CtxFixture::default()).with_default_bindings();
+        let mut env = Env::new(CtxFixture::default());
         let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
-        let resolver = env.resolver.as_mut().expect("resolver");
+        let resolver = &mut env.fx.resolver;
         assert_eq!(resolver.feed(prefix), phux_config::keybind::Feed::Partial);
         let theme = Theme::default();
         if onboarding {
@@ -66,7 +66,7 @@ async fn passthrough_popups_never_eat_the_pending_chord() {
         }
         let sent = env.dispatch(events).await;
         assert!(!env.fx.overlays.is_active(), "the popup is dismissed");
-        assert!(!env.resolver.as_ref().expect("resolver").is_pending());
+        assert!(!env.fx.resolver.is_pending());
         assert_eq!(sent.detach, detaches, "onboarding={onboarding}");
     }
 }
@@ -77,7 +77,7 @@ async fn passthrough_popups_never_eat_the_pending_chord() {
 async fn prefix_chord_matches_with_caps_lock_reported() {
     let cfg = default_cfg();
     let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
-    let mut env = Env::new(CtxFixture::default()).with_default_bindings();
+    let mut env = Env::new(CtxFixture::default());
     let leader = InputEvent::Key(crate::test_util::press_mods(prefix.key, prefix.modifiers | ModSet::CAPS_LOCK));
     let sent = env
         .dispatch(vec![leader, press(PhysicalKey::D, Some("d"))])

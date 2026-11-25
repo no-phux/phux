@@ -42,7 +42,7 @@ struct SessionAttach<'a> {
 /// The immutable generation and remaining resource ceilings lent to an app.
 #[derive(Clone)]
 pub(crate) struct SessionCapture<'a> {
-    pub(crate) state: &'a SharedState,
+    pub(crate) host: apps::StreamHost,
     pub(crate) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     pub(crate) connection_token: &'a CancellationToken,
     pub(crate) live_gate: tokio::sync::watch::Receiver<bool>,
@@ -165,10 +165,7 @@ async fn prepare_panes(
     if viewport.cols == 0 || viewport.rows == 0 {
         return;
     }
-    attach.state.with_mut(|s| {
-        s.set_client_viewport(attach.client_id, viewport);
-        terminal::attach::apply_panes_viewport(s, panes, viewport);
-    });
+    apps::StreamHost::new(attach.state, attach.client_id).apply_viewport(panes, viewport);
 }
 
 /// [`prepare_panes`] for a first attach with no palette, driven to
@@ -194,17 +191,9 @@ pub(crate) fn prepare_panes_now(
 
 /// Record the declared session role and apply it to Terminal leases.
 async fn apply_role(attach: SessionAttach<'_>, panes: &[AttachSnapshotPane], role: RolePolicy) {
-    attach
-        .state
-        .with_mut(|s| s.set_attached_viewer(attach.client_id, role.is_viewer()));
-    terminal::attach::apply_session_role(
-        attach.state,
-        attach.client_id,
-        panes,
-        role,
-        attach.same_session,
-    )
-    .await;
+    apps::StreamHost::new(attach.state, attach.client_id)
+        .apply_session_role(panes, role, attach.same_session)
+        .await;
 }
 
 /// Roll back a session `ATTACH` that failed before publication: stop every
@@ -229,7 +218,13 @@ async fn fail_prepublication(
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
     super::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
-    terminal::attach::release_aborted_consumers(client_id, staged_handles).await;
+    terminal::attach::release_aborted_consumers(
+        client_id,
+        stream_id_from(u64::from(attach_id)),
+        initial_bootstrap_id(),
+        staged_handles,
+    )
+    .await;
     super::connections::detach_and_release_consumer_state(state, client_id);
 
     // The writer closes right after this terminal ERROR, discarding anything
@@ -341,7 +336,7 @@ pub(crate) async fn handle_attach(
         .cloned()
         .collect();
     let capture = SessionCapture {
-        state,
+        host: apps::StreamHost::new(state, client_id),
         out_tx,
         connection_token,
         live_gate: gate,

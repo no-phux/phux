@@ -5,10 +5,10 @@ use std::os::fd::AsRawFd;
 
 use super::super::validate::*;
 use super::super::*;
-pub(super) use crate::runtime::apps::agent_session::upgrade::{
+pub(super) use crate::runtime::upgrade::kinds::agent_session::{
     AgentSessionSeal, AgentSessionUpgrade, carried_sessions, collect_agent_session_cuts,
 };
-pub(super) use crate::runtime::apps::terminal::upgrade::{
+pub(super) use crate::runtime::upgrade::kinds::terminal::{
     TerminalCut, collect_pane_handoffs, pane_senders, request_pane_handoff,
 };
 use phux_agent_session::session::AgentSessionBootstrap;

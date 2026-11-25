@@ -270,3 +270,67 @@ fn a_gap_owed_during_a_replay_arrives_before_later_seqs() {
     );
     assert_eq!(stream[4].1, gap(relayed, relayed));
 }
+
+#[test]
+fn an_old_link_subscribe_refusal_cannot_restore_an_interrupted_scope() {
+    let mut state = ServerState::new();
+    let host = phux_protocol::ids::SatelliteHost::new("sat");
+    state.federation_mut().begin_satellite_link(
+        host.clone(),
+        1,
+        phux_protocol::caps::ServerFeatureSet::new(),
+    );
+    let client = state.clients_mut().new_client_id();
+    let terminal = WireResourceId::satellite(host.clone(), 9);
+    let other = WireResourceId::satellite("other", 9);
+    let (tx, mut rx) = mpsc::channel(8);
+    state.subscribe_satellite_events(
+        client,
+        terminal.clone(),
+        EventFilter::all(),
+        None,
+        tx.clone(),
+    );
+    state.subscribe_satellite_events(client, other.clone(), EventFilter::all(), None, tx.clone());
+    let stale =
+        state.subscribe_satellite_events(client, terminal.clone(), EventFilter::all(), None, tx);
+    state.interrupt_satellite_host(&host);
+    state.federation_mut().begin_satellite_link(
+        host,
+        2,
+        phux_protocol::caps::ServerFeatureSet::new(),
+    );
+    state.restore_satellite_scope(client, stale);
+    let _ = drain(&mut rx); // The ended link's owed gap is not an event replay.
+    let _ = state.record_relayed_event(terminal, AgentEvent::Bell, None);
+    assert!(
+        drain(&mut rx).is_empty(),
+        "a late refusal must not reinstall the old link's scope"
+    );
+    let _ = state.record_relayed_event(other.clone(), AgentEvent::Bell, None);
+    assert!(
+        matches!(rx.try_recv(), Ok(Outbound::Frame(FrameKind::Event { terminal: Some(id), event: AgentEvent::Bell, .. })) if id == other)
+    );
+}
+
+#[test]
+fn an_old_consumer_subscribe_refusal_cannot_remove_a_new_subscription() {
+    let mut state = ServerState::new();
+    let client = state.clients_mut().new_client_id();
+    let terminal = WireResourceId::satellite("sat", 9);
+    let (tx, mut rx) = mpsc::channel(8);
+    let stale = state.subscribe_satellite_events(
+        client,
+        terminal.clone(),
+        EventFilter::all(),
+        None,
+        tx.clone(),
+    );
+    state.detach(client);
+    state.subscribe_satellite_events(client, terminal.clone(), EventFilter::all(), None, tx);
+    state.restore_satellite_scope(client, stale);
+    let _ = state.record_relayed_event(terminal.clone(), AgentEvent::Bell, None);
+    assert!(
+        matches!(rx.try_recv(), Ok(Outbound::Frame(FrameKind::Event { terminal: Some(id), event: AgentEvent::Bell, .. })) if id == terminal)
+    );
+}

@@ -84,7 +84,7 @@ SCC/count reports are investigation leads; they are not current measured facts.
    may remain. Reduce caller knowledge, not file size.
 2. **Storage ownership is not operation ownership.** Source-proven:
    [`contexts`](../crates/phux-server/src/runtime/apps/context.rs) expose shared
-   state; [`session_kill`](../crates/phux-server/src/runtime/organization/mutate.rs)
+   state; [`session_kill`](../crates/phux-server/src/state/org/operation.rs)
    coordinates persist/suppress/close/mirror/effect/announce. Preserve correctness
    while making full admitted workflows private: current grant/exact set, commit,
    effects/publication; no routine raw-table or prepared-state access.
@@ -96,7 +96,7 @@ SCC/count reports are investigation leads; they are not current measured facts.
    Inferred outage risk: stranded intent. Required: one exact-activation evidence
    ingress, recoverable inspectable retirement; retry commits, never execution.
 4. **Missing evidence is not nonexecution.** Source-proven:
-   [`spawn.rs`](../crates/phux-server/src/runtime/apps/terminal/commands/spawn.rs)
+   [`spawn.rs`](../crates/phux-server/src/runtime/commands/terminal/spawn.rs)
    builds before start reporting; [`reconcile.rs`](../crates/phux-server/src/reconcile.rs)
    maps Starting without identity to NeverLaunched. Inferred crash-window risk:
    overstated certainty. Required across server/client/recording/keeper: distinguish

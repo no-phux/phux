@@ -1,13 +1,41 @@
 //! The producer handle a consumer path uses to reach one satellite relay.
 
 use super::{
-    Arc, AtomicU64, BootstrapProfile, ClientId, Command, CommandResult, DirectoryListingResult,
+    Arc, AtomicU64, ClientId, Command, CommandResult, DirectoryListingResult,
     ErrorCode, FrameKind, Mutex, Ordering, Outbound, PathQueryResult, ProxySubscription,
     RELAY_COMMAND_TIMEOUT, RELAY_LIST_DEADLINE, RELAY_MAILBOX, RelayCatalog, RelayHandle,
     RelayMailbox, RelayRequest, SatelliteHost, SatelliteSpawn, SpawnError, SpawnResult,
     Unsubscribe, WithdrawalReceipt, debug, listing_refusal, lock_withdrawal_outcome, mpsc, oneshot,
     path_refusal, trace, warn,
 };
+
+mod catalog;
+
+/// A dropped waiter owns withdrawal, including an already queued registration.
+struct PendingSubscription {
+    unsub_tx: mpsc::UnboundedSender<super::QueuedUnsubscribe>,
+    client: ClientId,
+    terminal: u32,
+    seq: u64,
+    epoch: u64,
+    armed: bool,
+}
+
+impl Drop for PendingSubscription {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.unsub_tx.send(super::QueuedUnsubscribe {
+                epoch: self.epoch,
+                unsubscribe: Unsubscribe::Terminal {
+                    client: self.client,
+                    terminal: self.terminal,
+                    seq: self.seq,
+                    reply: None,
+                },
+            });
+        }
+    }
+}
 
 impl RelayHandle {
     /// Pair a fresh handle with the mailbox its link supervisor drains.
@@ -22,6 +50,8 @@ impl RelayHandle {
                 unsub_tx,
                 seq: Arc::new(AtomicU64::new(1)),
                 resource_kinds: Arc::clone(&resource_kinds),
+                epoch: None,
+                owner: None,
             },
             RelayMailbox {
                 requests: rx,
@@ -33,6 +63,60 @@ impl RelayHandle {
         )
     }
 
+    /// Bind a routing decision to its observed link, never a later redial.
+    pub(crate) fn pinned(&self) -> Self {
+        let mut handle = self.clone();
+        handle.epoch = Some(self.link_epoch());
+        handle
+    }
+    pub(crate) fn for_consumer(&self, owner: tokio_util::sync::CancellationToken) -> Self {
+        let mut handle = self.pinned();
+        if handle.owner.is_none() {
+            handle.owner = Some(owner);
+        }
+        handle
+    }
+
+    pub(crate) fn link_epoch(&self) -> u64 {
+        self.epoch.unwrap_or_else(|| {
+            self.resource_kinds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .epoch
+        })
+    }
+
+    fn link_is_current(&self) -> bool {
+        self.epoch.is_none_or(|epoch| {
+            self.resource_kinds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .epoch
+                == epoch
+        })
+    }
+
+    fn expired_link(&self) -> CommandResult {
+        CommandResult::error(
+            ErrorCode::SatelliteUnreachable,
+            format!("satellite {} link changed during the request", self.host),
+        )
+    }
+
+    /// Rejected payloads are not retried; callers need only full versus closed
+    /// to settle their retained receipt, path, or consumer mailbox.
+    fn try_send(&self, request: RelayRequest) -> Result<(), mpsc::error::TrySendError<()>> {
+        let queued = super::QueuedRelayRequest {
+            epoch: self.link_epoch(),
+            owner: self.owner.clone(),
+            request,
+        };
+        self.tx.try_send(queued).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => mpsc::error::TrySendError::Full(()),
+            mpsc::error::TrySendError::Closed(_) => mpsc::error::TrySendError::Closed(()),
+        })
+    }
+
     /// Next issue-order token. `Relaxed` suffices on the single-threaded hub.
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
@@ -41,86 +125,6 @@ impl RelayHandle {
     /// The satellite host this handle relays to.
     pub(crate) const fn host(&self) -> &SatelliteHost {
         &self.host
-    }
-
-    pub(crate) fn known_resource_kind(
-        &self,
-        terminal: u32,
-    ) -> Option<phux_protocol::ids::ResourceKind> {
-        self.resource_kinds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .kinds
-            .get(&terminal)
-            .copied()
-    }
-
-    pub(crate) fn needs_kind_for_profile(&self, profile: BootstrapProfile) -> bool {
-        self.resource_kinds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .terminal_profile
-            .is_some_and(|selected| selected != profile)
-    }
-
-    /// Read the connection's known kind, falling back to the existing bounded
-    /// inventory request for a direct target never previously enumerated.
-    pub(crate) async fn resource_kind(
-        &self,
-        terminal: u32,
-    ) -> Result<phux_protocol::ids::ResourceKind, CommandResult> {
-        if let Some(kind) = self.known_resource_kind(terminal) {
-            return Ok(kind);
-        }
-        match self
-            .command(Command::GetState {
-                scope: phux_protocol::wire::frame::StateScope::Server,
-            })
-            .await
-        {
-            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => {
-                self.known_resource_kind(terminal).ok_or_else(|| {
-                    CommandResult::error(
-                        ErrorCode::TerminalNotFound,
-                        format!("unknown satellite resource: {terminal}"),
-                    )
-                })
-            }
-            refusal => Err(refusal),
-        }
-    }
-
-    /// A satellite resource's control class, as the satellite's inventory
-    /// reports it, fetching that inventory once when this link has not
-    /// enumerated it yet. `Ok(None)` for a resource with no class, or one
-    /// the inventory does not hold (the relay itself then refuses it).
-    pub(crate) async fn resource_control(
-        &self,
-        terminal: u32,
-    ) -> Result<Option<phux_protocol::wire::frame::ControlClass>, CommandResult> {
-        let known = |handle: &Self| {
-            handle
-                .resource_kinds
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .controls
-                .get(&terminal)
-                .copied()
-        };
-        if let Some(class) = known(self) {
-            return Ok(class);
-        }
-        match self
-            .command(Command::GetState {
-                scope: phux_protocol::wire::frame::StateScope::Server,
-            })
-            .await
-        {
-            CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(_)) => {
-                Ok(known(self).flatten())
-            }
-            refusal => Err(refusal),
-        }
     }
 
     /// Relay `command` and await the result. Fails fast with a typed error on
@@ -156,6 +160,7 @@ impl RelayHandle {
                 reply,
             },
             rx,
+            None,
         )
         .await
     }
@@ -171,6 +176,14 @@ impl RelayHandle {
             sub
         });
         let (reply, rx) = oneshot::channel();
+        let mut registration = subscribe.as_ref().map(|sub| PendingSubscription {
+            unsub_tx: self.unsub_tx.clone(),
+            client: sub.client,
+            terminal: sub.terminal,
+            seq: sub.seq + 1,
+            epoch: self.link_epoch(),
+            armed: true,
+        });
         self.send_and_await(
             RelayRequest::Command {
                 command,
@@ -178,6 +191,7 @@ impl RelayHandle {
                 subscribe,
             },
             rx,
+            registration.as_mut(),
         )
         .await
     }
@@ -188,16 +202,23 @@ impl RelayHandle {
         &self,
         request: RelayRequest,
         rx: oneshot::Receiver<CommandResult>,
+        registration: Option<&mut PendingSubscription>,
     ) -> CommandResult {
-        match self.tx.try_send(request) {
+        match self.try_send(request) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(())) => {
+                if let Some(registration) = registration {
+                    registration.armed = false;
+                }
                 return CommandResult::error(
                     ErrorCode::ResourceExhausted,
                     format!("satellite {} link is saturated; retry", self.host),
                 );
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                if let Some(registration) = registration {
+                    registration.armed = false;
+                }
                 return CommandResult::error(
                     ErrorCode::SatelliteUnreachable,
                     format!("satellite {} link is down", self.host),
@@ -205,7 +226,12 @@ impl RelayHandle {
             }
         }
         match tokio::time::timeout(RELAY_COMMAND_TIMEOUT, rx).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                if let Some(registration) = registration {
+                    registration.armed = false;
+                }
+                result
+            }
             Ok(Err(_)) => CommandResult::error(
                 ErrorCode::SatelliteUnreachable,
                 format!("satellite {} link dropped before the reply", self.host),
@@ -226,15 +252,15 @@ impl RelayHandle {
     /// or silent link `SatelliteUnreachable`.
     pub(crate) async fn spawn(&self, spawn: SatelliteSpawn) -> SpawnResult {
         let (reply, rx) = oneshot::channel();
-        match self.tx.try_send(RelayRequest::Spawn { spawn, reply }) {
+        match self.try_send(RelayRequest::Spawn { spawn, reply }) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(())) => {
                 return SpawnResult::Err(SpawnError::SpawnFailed(format!(
                     "satellite {} link is saturated; retry",
                     self.host
                 )));
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(mpsc::error::TrySendError::Closed(())) => {
                 return SpawnResult::Err(SpawnError::SatelliteUnreachable(format!(
                     "satellite {} link is down",
                     self.host
@@ -260,13 +286,10 @@ impl RelayHandle {
     pub(crate) async fn list_directory(&self, path: String) -> DirectoryListingResult {
         let attempted = path.clone();
         let (reply, rx) = oneshot::channel();
-        if let Err(err) = self
-            .tx
-            .try_send(RelayRequest::ListDirectory { path, reply })
-        {
+        if let Err(err) = self.try_send(RelayRequest::ListDirectory { path, reply }) {
             let why = match err {
-                mpsc::error::TrySendError::Full(_) => "link is saturated; retry",
-                mpsc::error::TrySendError::Closed(_) => "link is down",
+                mpsc::error::TrySendError::Full(()) => "link is saturated; retry",
+                mpsc::error::TrySendError::Closed(()) => "link is down",
             };
             return Err(listing_refusal(
                 &attempted,
@@ -299,15 +322,15 @@ impl RelayHandle {
     ) -> PathQueryResult {
         let attempted = root.clone();
         let (reply, rx) = oneshot::channel();
-        if let Err(err) = self.tx.try_send(RelayRequest::PathQuery {
+        if let Err(err) = self.try_send(RelayRequest::PathQuery {
             root,
             query,
             recursive,
             reply,
         }) {
             let why = match err {
-                mpsc::error::TrySendError::Full(_) => "link is saturated; retry",
-                mpsc::error::TrySendError::Closed(_) => "link is down",
+                mpsc::error::TrySendError::Full(()) => "link is saturated; retry",
+                mpsc::error::TrySendError::Closed(()) => "link is down",
             };
             return Err(path_refusal(
                 &attempted,
@@ -338,7 +361,6 @@ impl RelayHandle {
     pub(crate) fn command_detached(&self, command: Command) {
         let (reply, _rx) = oneshot::channel();
         if self
-            .tx
             .try_send(RelayRequest::Command {
                 command,
                 reply,
@@ -354,10 +376,10 @@ impl RelayHandle {
     /// never retried.
     pub(crate) fn forward(&self, frame: FrameKind) {
         let category = forward_drop_category(&frame);
-        if let Err(err) = self.tx.try_send(RelayRequest::Forward { frame }) {
+        if let Err(err) = self.try_send(RelayRequest::Forward { frame }) {
             warn!(
                 satellite = %self.host,
-                reason = %trysend_reason(&err),
+                reason = %trysend_reason(err),
                 category,
                 disposition = "dropped_before_satellite",
                 retry = false,
@@ -377,7 +399,7 @@ impl RelayHandle {
         subscription.seq = self.next_seq();
         let consumer = subscription.out_tx.clone();
         let terminal = subscription.terminal;
-        let Err(err) = self.tx.try_send(RelayRequest::Subscribe {
+        let Err(err) = self.try_send(RelayRequest::Subscribe {
             subscription,
             forward,
         }) else {
@@ -385,11 +407,11 @@ impl RelayHandle {
         };
         {
             let (code, message) = match err {
-                mpsc::error::TrySendError::Full(_) => (
+                mpsc::error::TrySendError::Full(()) => (
                     ErrorCode::ResourceExhausted,
                     format!("satellite {} link is saturated; retry", self.host),
                 ),
-                mpsc::error::TrySendError::Closed(_) => (
+                mpsc::error::TrySendError::Closed(()) => (
                     ErrorCode::SatelliteUnreachable,
                     format!("satellite {} link is down", self.host),
                 ),
@@ -412,11 +434,11 @@ impl RelayHandle {
     /// Ask the link to mirror `terminal`'s agent metadata (ADR-0136). A full
     /// or dead mailbox drops the request; the next inventory retries.
     pub(crate) fn mirror_terminal(&self, terminal: u32) {
-        if let Err(err) = self.tx.try_send(RelayRequest::MirrorTerminal { terminal }) {
+        if let Err(err) = self.try_send(RelayRequest::MirrorTerminal { terminal }) {
             trace!(
                 satellite = %self.host,
                 terminal,
-                reason = %trysend_reason(&err),
+                reason = %trysend_reason(err),
                 "agent metadata mirror was not queued"
             );
         }
@@ -425,7 +447,10 @@ impl RelayHandle {
     /// Drop every proxy subscription `client` holds on this link, via the
     /// undroppable unsubscribe channel.
     pub(crate) fn unsubscribe_client(&self, client: ClientId) {
-        let _ = self.unsub_tx.send(Unsubscribe::Client(client));
+        let _ = self.unsub_tx.send(super::QueuedUnsubscribe {
+            epoch: self.link_epoch(),
+            unsubscribe: Unsubscribe::Client(client),
+        });
     }
 
     /// Drop `client`'s subscription to one terminal and wait for the proxy
@@ -439,11 +464,14 @@ impl RelayHandle {
         let (reply, received) = oneshot::channel();
         let reply = WithdrawalReceipt::new(reply);
         let outcome = Arc::clone(&reply.outcome);
-        let _ = self.unsub_tx.send(Unsubscribe::Terminal {
-            client,
-            terminal,
-            seq,
-            reply: Some(reply),
+        let _ = self.unsub_tx.send(super::QueuedUnsubscribe {
+            epoch: self.link_epoch(),
+            unsubscribe: Unsubscribe::Terminal {
+                client,
+                terminal,
+                seq,
+                reply: Some(reply),
+            },
         });
         // A dropped receipt means no live session, hence no proxy. A timeout
         // cancels an unapplied withdrawal; if it already applied, report that.
@@ -462,10 +490,10 @@ impl RelayHandle {
     }
 }
 
-pub(super) const fn trysend_reason(err: &mpsc::error::TrySendError<RelayRequest>) -> &'static str {
+pub(super) const fn trysend_reason(err: mpsc::error::TrySendError<()>) -> &'static str {
     match err {
-        mpsc::error::TrySendError::Full(_) => "mailbox full",
-        mpsc::error::TrySendError::Closed(_) => "link task gone",
+        mpsc::error::TrySendError::Full(()) => "mailbox full",
+        mpsc::error::TrySendError::Closed(()) => "link task gone",
     }
 }
 

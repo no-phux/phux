@@ -45,10 +45,10 @@ async fn populated_shared_history_finishes_before_or_after_publication() {
                     "populated history must import multiple authenticated pages and FINISH"
                 );
             }
-            assert_no_native_retains(&actor, &captures[0].publication_cursor);
+            assert_no_native_retains(&actor, &captures[0].capture.cursor);
             if !activate_first {
                 assert_eq!(
-                    actor.native_cursor_owners.len(),
+                    actor.publication.native_cursor_owners.len(),
                     2,
                     "pending identities survive FINISH"
                 );
@@ -57,8 +57,8 @@ async fn populated_shared_history_finishes_before_or_after_publication() {
                     [None; 2]
                 );
             }
-            assert!(actor.native_publications.is_empty());
-            assert!(actor.native_cursor_owners.is_empty());
+            assert!(actor.publication.native_publications.is_empty());
+            assert!(actor.publication.native_cursor_owners.is_empty());
             assert_eq!(
                 activate_replacements(&mut actor, pumps, &captures),
                 [Some(NativeStateError::InvalidHandle); 2],
@@ -80,7 +80,8 @@ fn activation(
         terminal_id: phux_protocol::ids::ResourceId::local(1),
         stream_id: pump.1,
         bootstrap_id: replacement_id(),
-        cursor: capture.publication_cursor,
+        cursor: capture.capture.cursor,
+        cancellation: capture.capture.cancellation(),
         reply,
     };
     match mutation {
@@ -96,6 +97,7 @@ fn activation(
     response
         .try_recv()
         .expect("immediate activation reply")
+        .map(|mut reply| { reply.interest.published(); reply })
         .err()
 }
 
@@ -112,15 +114,15 @@ async fn only_the_complete_pending_identity_consumes_one_resize_receipt() {
             }
         }
         let mut controls = actor.core.output_tx.subscribe();
-        let touched: Vec<_> = actor
+        let touched: Vec<_> = actor.publication
             .native_cursor_owners
             .values()
             .map(|b| b.touched)
             .collect();
         actor.apply_resize_request(resize(30, 8));
         actor.apply_resize_request(resize(31, 9));
-        assert_eq!(actor.native_cursor_owners.len(), 2);
-        let after: Vec<_> = actor
+        assert_eq!(actor.publication.native_cursor_owners.len(), 2);
+        let after: Vec<_> = actor.publication
             .native_cursor_owners
             .values()
             .map(|b| b.touched)
@@ -166,9 +168,9 @@ async fn only_the_complete_pending_identity_consumes_one_resize_receipt() {
                 Some(NativeStateError::InvalidHandle)
             );
         }
-        assert!(actor.native_cursor_owners.is_empty());
-        assert!(actor.native_publications.is_empty());
-        assert_no_native_retains(&actor, &captures[0].publication_cursor);
+        assert!(actor.publication.native_cursor_owners.is_empty());
+        assert!(actor.publication.native_publications.is_empty());
+        assert_no_native_retains(&actor, &captures[0].capture.cursor);
     }
 }
 
@@ -180,7 +182,7 @@ fn cleanup(actor: &mut TerminalActor, pump: Pump, mode: &str) {
             actor.release_native_owner(pump.0);
         }
         "expiry" => {
-            actor
+            actor.publication
                 .native_cursor_owners
                 .get_mut(&NativeCursorKey::new(pump.0, pump.1))
                 .unwrap()
@@ -203,7 +205,7 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
     let capture = capture_native_for_pump(&mut actor, pump.0, pump.1, replacement_id());
     complete_history(&mut actor, pump, &capture).await;
     let key = NativeCursorKey::new(pump.0, pump.1);
-    let touched = actor.native_cursor_owners.get(&key).unwrap().touched;
+    let touched = actor.publication.native_cursor_owners.get(&key).unwrap().touched;
     let (outbound, _mailbox) = mpsc::channel(1);
     let (reply, _response) = oneshot::channel();
     let request = NativeHistoryRequest {
@@ -212,7 +214,7 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
         terminal_id: phux_protocol::ids::ResourceId::local(1),
         stream_id: pump.1,
         bootstrap_id: replacement_id(),
-        cursor: Bytes::copy_from_slice(&capture.publication_cursor),
+        cursor: Bytes::copy_from_slice(&capture.capture.cursor),
         max_bytes: 65536,
         max_rows: 1024,
         limits: phux_protocol::caps::BootstrapLimits::default(),
@@ -232,7 +234,7 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
         );
     }
     assert_eq!(
-        actor.native_cursor_owners.get(&key).unwrap().touched,
+        actor.publication.native_cursor_owners.get(&key).unwrap().touched,
         touched
     );
     assert_eq!(activation(&mut actor, pump, &capture, ""), None);
@@ -240,8 +242,8 @@ async fn completed_history_and_wrong_identities_cannot_consume_or_refresh_pendin
         activation(&mut actor, pump, &capture, ""),
         Some(NativeStateError::InvalidHandle)
     );
-    assert!(actor.native_publications.is_empty());
-    assert!(actor.native_cursor_owners.is_empty());
+    assert!(actor.publication.native_publications.is_empty());
+    assert!(actor.publication.native_cursor_owners.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -254,7 +256,7 @@ async fn every_retirement_reaches_publication_only_waiters_after_history_finish(
         for i in 0..2 {
             complete_history(&mut actor, pumps[i], &captures[i]).await;
         }
-        assert_no_native_retains(&actor, &captures[0].publication_cursor);
+        assert_no_native_retains(&actor, &captures[0].capture.cursor);
         cleanup(&mut actor, pumps[0], mode);
         assert_eq!(
             activation(&mut actor, pumps[0], &captures[0], ""),
@@ -274,11 +276,11 @@ async fn every_retirement_reaches_publication_only_waiters_after_history_finish(
             );
         }
         assert!(
-            actor.native_cursor_owners.is_empty(),
+            actor.publication.native_cursor_owners.is_empty(),
             "{mode} retained identities"
         );
         assert!(
-            actor.native_publications.is_empty(),
+            actor.publication.native_publications.is_empty(),
             "{mode} retained replay"
         );
     }
@@ -313,16 +315,16 @@ async fn finished_and_superseded_waiters_share_the_existing_capacity_and_ttl() {
         let pump = (owner as u64, StreamId::new(1).unwrap());
         let capture = capture_native_for_pump(&mut actor, pump.0, pump.1, replacement_id());
         complete_history(&mut actor, pump, &capture).await;
-        assert_no_native_retains(&actor, &capture.publication_cursor);
+        assert_no_native_retains(&actor, &capture.capture.cursor);
         captures.push((pump, capture));
     }
-    assert_eq!(actor.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
+    assert_eq!(actor.publication.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
     refused_capture(&mut actor, 99);
-    assert_eq!(actor.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
+    assert_eq!(actor.publication.native_cursor_owners.len(), MAX_NATIVE_HISTORY_CLIENTS);
     actor.apply_resize_request(resize(30, 8));
     refused_capture(&mut actor, 99);
     assert!(
-        actor.native_publications.is_empty(),
+        actor.publication.native_publications.is_empty(),
         "resize discarded shared replay"
     );
     tokio::time::advance(NATIVE_HISTORY_TTL / 2).await;
@@ -341,19 +343,19 @@ async fn finished_and_superseded_waiters_share_the_existing_capacity_and_ttl() {
             "invalid requests/repeated resize must not refresh TTL"
         );
     }
-    assert!(actor.native_cursor_owners.is_empty());
-    assert!(actor.native_publications.is_empty());
+    assert!(actor.publication.native_cursor_owners.is_empty());
+    assert!(actor.publication.native_publications.is_empty());
     let new = capture_native_for_pump(&mut actor, 99, StreamId::new(1).unwrap(), replacement_id());
     activate_native_for_pump(
         &mut actor,
         99,
         StreamId::new(1).unwrap(),
         replacement_id(),
-        new.publication_cursor,
+        new.capture.cursor,
     )
     .unwrap();
     actor.release_native_owner(99);
-    assert_no_native_retains(&actor, &new.publication_cursor);
+    assert_no_native_retains(&actor, &new.capture.cursor);
 }
 
 #[allow(
@@ -387,7 +389,7 @@ async fn history_finish_keeps_capture_ready_and_finish_replay_then_live_exactly_
         pump.0,
         pump.1,
         replacement_id(),
-        capture.publication_cursor,
+        capture.capture.cursor,
     )
     .expect("handoff survives FINISH");
     assert_eq!(
@@ -405,6 +407,132 @@ async fn history_finish_keeps_capture_ready_and_finish_replay_then_live_exactly_
         Ok(ResourceOutput::Live { seq: 5, .. })
     ));
     assert!(publication.live.try_recv().is_err());
-    assert!(actor.native_publications.is_empty());
-    assert!(actor.native_cursor_owners.is_empty());
+    assert!(actor.publication.native_publications.is_empty());
+    assert!(actor.publication.native_cursor_owners.is_empty());
+}
+
+#[test]
+fn exact_consumer_withdrawal_releases_only_its_native_generation() {
+    let mut actor = TerminalActor::new(20, 5).unwrap().actor;
+    let owner = 7;
+    let stream = StreamId::new(8).unwrap();
+    let old = BootstrapId::new(1).unwrap();
+    let new = BootstrapId::new(2).unwrap();
+    let first = capture_native_for_pump(&mut actor, owner, stream, old);
+    actor.release_native_consumer_generation(owner, stream, old);
+    assert_no_native_retains(&actor, &first.capture.cursor);
+    assert!(actor.publication.native_cursor_owners.is_empty());
+    assert!(actor.publication.native_publications.is_empty());
+
+    let replacement = capture_native_for_pump(&mut actor, owner, stream, new);
+    actor.release_native_consumer_generation(owner, stream, old);
+    assert_eq!(
+        actor.publication.native_cursor_owners[&NativeCursorKey::new(owner, stream)].bootstrap_id,
+        new
+    );
+    assert!(
+        activate_native_for_pump(
+            &mut actor,
+            owner,
+            stream,
+            new,
+            replacement.capture.cursor,
+        )
+        .is_ok(),
+        "old withdrawal must not invalidate replacement publication"
+    );
+    actor.release_native_consumer_generation(owner, stream, new);
+    assert_no_native_retains(&actor, &replacement.capture.cursor);
+}
+
+#[test]
+fn withdrawn_native_request_cannot_invalidate_a_newer_binding() {
+    let mut actor = TerminalActor::new(20, 5).unwrap().actor;
+    let owner = 7;
+    let stream = StreamId::new(8).unwrap();
+    let old = BootstrapId::new(1).unwrap();
+    let new = BootstrapId::new(2).unwrap();
+    let replacement = capture_native_for_pump(&mut actor, owner, stream, new);
+    let (reply, response) = oneshot::channel();
+    drop(response);
+    actor.handle_native_bootstrap(native_request(
+        owner,
+        phux_protocol::ids::ResourceId::local(1),
+        (stream, old),
+        reply,
+    ));
+    assert!(actor.publication.pending_native_bootstrap.is_none());
+    assert!(
+        activate_native_for_pump(
+            &mut actor,
+            owner,
+            stream,
+            new,
+            replacement.capture.cursor,
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn old_consumer_withdrawal_keeps_replacement_native_capture_waiters() {
+    let mut actor = TerminalActor::new(20, 5).unwrap().actor;
+    let owner = 7;
+    let stream = StreamId::new(8).unwrap();
+    let old = BootstrapId::new(1).unwrap();
+    let new = BootstrapId::new(2).unwrap();
+    let (reply, mut response) = oneshot::channel();
+    actor.handle_native_bootstrap(native_request(
+        owner,
+        phux_protocol::ids::ResourceId::local(1),
+        (stream, new),
+        reply,
+    ));
+    actor.release_native_consumer_generation(owner, stream, old);
+    for _ in 0..64 {
+        actor.cooperative_native_step();
+        if let Ok(result) = response.try_recv() {
+            let capture = result.unwrap();
+            assert!(
+                activate_native_for_pump(
+                    &mut actor,
+                    owner,
+                    stream,
+                    new,
+                    capture.capture.cursor,
+                )
+                .is_ok()
+            );
+            return;
+        }
+    }
+    panic!("replacement capture waiter was withdrawn by old cleanup");
+}
+
+#[test]
+fn cancelled_consumer_interest_also_releases_its_advanced_native_bootstrap() {
+    let mut actor = TerminalActor::new(20, 5).unwrap().actor;
+    let client = ClientId(7);
+    let stream = StreamId::new(8).unwrap();
+    let root = BootstrapId::new(1).unwrap();
+    let recovered = BootstrapId::new(2).unwrap();
+    let (outbound, _output) = dummy_outbound();
+    actor
+        .register_consumer_generation(
+            client,
+            outbound,
+            1,
+            stream,
+            root,
+            false,
+            watch::channel(true).1,
+            1,
+            CancellationToken::new(),
+        )
+        .unwrap();
+    let capture = capture_native_for_pump(&mut actor, 7, stream, recovered);
+    actor.unregister_consumer_generation(client, stream, root);
+    assert_eq!(actor.consumer_count(), 0);
+    assert!(actor.publication.native_cursor_owners.is_empty());
+    assert_no_native_retains(&actor, &capture.capture.cursor);
 }

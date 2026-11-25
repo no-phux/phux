@@ -156,7 +156,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::Credentials { .. } => &C_CREDENTIALS,
         Command::HostChecklist => &C_HOST_CHECKLIST,
         Command::GetCreation { .. } => &C_GET_CREATION,
-        Command::SessionCreate { .. } => &C_SESSION_CREATE,
+        Command::SessionCreate { .. } | Command::SessionEnsure { .. } => &C_SESSION_CREATE,
         Command::SessionRename { .. }
         | Command::SessionSetProject { .. }
         | Command::SessionSetLifetime { .. }

@@ -152,23 +152,3 @@ pub(super) async fn wait_for_attached(
     }
 }
 
-/// Make the session `new-session` asked for persistent by creating it
-/// headless with that lifetime, as `phux new` does; the `CreateIfMissing`
-/// attach then opens it.
-pub(super) async fn create_persistent_session(conn: &mut Connection, target: &AttachTarget) {
-    let AttachTarget::CreateIfMissing { name, cwd, .. } = target else {
-        return;
-    };
-    let request = phux_client::session::CreateSessionRequest {
-        name,
-        command: None,
-        cwd: cwd.as_deref(),
-        env: &std::collections::BTreeMap::new(),
-        agent_session: None,
-        idempotency_key: None,
-        lifetime: phux_protocol::wire::frame::SessionLifetime::Persistent,
-        attrs: &[],
-    };
-    let created = phux_client::session::create_session(conn, &request, &mut Vec::new()).await;
-    tracing::debug!(session = %name, ?created, "new-session: persistent create");
-}

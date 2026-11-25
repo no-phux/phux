@@ -138,8 +138,8 @@ fn the_box_takes_the_keyboard_and_goes_when_its_command_ends() {
 
     // Another terminal ending leaves it; its own takes the box down and
     // gives the keyboard back.
-    rt.update(|d, _| assert!(!d.popup_ended(&client, &id(1), true)));
-    rt.update(|d, _| assert!(d.popup_ended(&client, &id(7), true)));
+    rt.update(|d, _| assert!(!d.popup_ended(&client, &id(1))));
+    rt.update(|d, _| assert!(d.popup_ended(&client, &id(7))));
     rt.frame(0.0);
     assert_eq!(rt.state.modal(), None);
     assert!(rt.find("popup").is_none());
@@ -158,7 +158,7 @@ fn a_spawn_that_fails_takes_the_box_down_and_says_why() {
 }
 
 #[test]
-fn replacing_the_runtime_closes_only_its_popup_and_releases_its_view() {
+fn replacing_the_runtime_releases_its_popup_view_without_terminating_execution() {
     use phux_protocol::caps::{ServerCapabilities, ServerFeature, ServerFeatureSet};
     use phux_protocol::wire::frame::Command;
     let replica = crate::test_support::terminal::Replica::with_capabilities(
@@ -172,6 +172,7 @@ fn replacing_the_runtime_closes_only_its_popup_and_releases_its_view() {
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(client.clone());
     desk.connection.status = Status::Attached;
+    desk.connection.seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.shown = Some(crate::desk::Shown {
         resource: id(1),
         view: Some(replica.views[0]),
@@ -195,19 +196,28 @@ fn replacing_the_runtime_closes_only_its_popup_and_releases_its_view() {
             _ => None,
         })
         .collect();
-    assert_eq!(closed, vec![vec![id(2)]]);
+    assert!(closed.is_empty(), "runtime replacement is view retirement, not termination");
 }
 
 #[test]
 fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
     let (client, mut rt) = window();
     let request = open(&mut rt, "lazygit");
-    // Dismissed while it starts: the box goes now, and the terminal that
-    // lands later is still the popup's to close.
+    // Dismissing a pending view never authorizes terminating an execution
+    // that may only become known after the view has gone.
     rt.update(|d, tx| d.shortcut(Shortcut::CloseTerminal, tx));
     assert_eq!(rt.state.connection.popup.command(), None);
-    assert_eq!(rt.state.connection.popup.request, Some(request));
-    rt.update(|d, _| assert!(d.popup_spawned(&client, request, Some(&id(7)), None)));
+    assert_eq!(rt.state.connection.popup.request, None);
+    let _ = client.take_outbound();
+    rt.update(|d, _| assert!(!d.popup_spawned(&client, request, Some(&id(7)), None)));
+    assert!(!client.take_outbound().iter().any(|bytes| matches!(
+        FrameKind::decode(bytes).unwrap().0,
+        FrameKind::Command {
+            command: phux_protocol::wire::frame::Command::CloseTabResources { .. }
+                | phux_protocol::wire::frame::Command::KillResource { .. }
+                | phux_protocol::wire::frame::Command::ResourceTerminate { .. }, ..
+        }
+    )), "pending view dismissal must not issue an incidental kill");
     assert!(
         rt.state.connection.popup.terminal().is_none()
             && rt.state.connection.popup.request.is_none()
@@ -231,7 +241,7 @@ fn dismissing_asks_as_closing_a_terminal_does_and_spares_the_pane_under_it() {
     assert!(rt.find("confirm-bar").is_some(), "asked in the box");
 
     // Its terminal closing answers the question; the pane under it stays.
-    rt.update(|d, _| assert!(d.popup_ended(&client, &id(7), false)));
+    rt.update(|d, _| assert!(d.popup_ended(&client, &id(7))));
     assert_eq!(rt.state.pending, None);
     assert_eq!(
         rt.state

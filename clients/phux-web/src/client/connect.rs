@@ -330,6 +330,9 @@ pub(super) fn spawn_reconnect(config: ReconnectConfig) {
     wasm_bindgen_futures::spawn_local(async move {
         TimeoutFuture::new(250).await;
         loop {
+            for (delivery_id, report) in config.input_delivery.borrow_mut().expire_disconnected() {
+                super::app::publish_input_report(&config.canvas, delivery_id, &report);
+            }
             let canvas = config.canvas.clone();
             let attempt = match config.wt_url.as_deref() {
                 Some(wt_url) => {
@@ -340,11 +343,24 @@ pub(super) fn spawn_reconnect(config: ReconnectConfig) {
             };
             match attempt {
                 Ok(client) => {
+                    {
+                        let mut app = client.app.borrow_mut();
+                        app.session.adopt_input_delivery(Rc::clone(&config.input_delivery));
+                        if let Err(message) = app.flush_input() {
+                            app.session.fail_protocol(&message);
+                            app.dispose();
+                            continue;
+                        }
+                        app.request_paint();
+                    }
                     client.enable_auto_reconnect(config.wt_url.as_deref(), &config.ws_url);
                     return;
                 }
                 Err(error) => {
                     if let Some(message) = error.as_string().filter(|m| is_version_refusal(m)) {
+                        for (delivery_id, report) in config.input_delivery.borrow_mut().stop_reconnecting() {
+                            super::app::publish_input_report(&config.canvas, delivery_id, &report);
+                        }
                         mark_incompatible(&config.canvas, &message);
                         return;
                     }

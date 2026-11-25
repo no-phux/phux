@@ -61,6 +61,8 @@ mod query;
 mod types;
 #[cfg(feature = "engine")]
 mod views;
+#[cfg(feature = "engine")]
+pub use views::ViewSource;
 
 use query::{Command, Lifecycle, Query, QueuedCommand};
 pub(crate) use types::EngineEvent;
@@ -514,5 +516,7 @@ fn catch_up(commands: std::sync::Weak<Sender<QueuedCommand>>) -> CatchUp {
     })
 }
 
+#[cfg(test)]
+mod testing;
 #[cfg(test)]
 mod tests;

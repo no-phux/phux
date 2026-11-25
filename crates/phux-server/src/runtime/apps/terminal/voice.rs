@@ -9,7 +9,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 use tracing::{debug, warn};
 
-use super::commands::handle_route_input;
+use crate::runtime::commands::terminal::handle_route_input;
 use super::input_lane::InputLaneHandle;
 use crate::state::{ClientId, SharedState};
 

@@ -197,7 +197,7 @@ async fn unvisited_peer_agent_paints_from_server_inventory() {
             ..AgentRecord::default()
         },
     );
-    state.peers.chrome_dirty = true;
+    state.peer_presentation.chrome_dirty = true;
     out.clear();
     state.drain_repaint(&mut out, sidebar, &mut RepaintAccumulator::default());
     let screen = painted_sidebar_text(&out);

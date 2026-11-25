@@ -28,6 +28,7 @@ use crate::org_store::{
 mod activation;
 mod create;
 mod journal;
+pub use lifecycle::ActivationToken;
 
 /// [`FreshKeys`] from the OS CSPRNG.
 #[derive(Debug, Clone, Copy, Default)]
@@ -95,23 +96,26 @@ impl OrgSide {
     }
 }
 
+pub(super) mod launch;
+pub(crate) mod operation;
+
 /// Core's admitted transition before the store write. The runtime can
 /// validate the live effects while it still holds the state lock.
 #[must_use]
-pub(crate) struct PreparedCommit {
+struct PreparedCommit {
     applied: Applied,
     now: Stamp,
 }
 
 impl PreparedCommit {
-    pub(crate) const fn effects(&self) -> &[phux_core::Effect] {
+    const fn effects(&self) -> &[phux_core::Effect] {
         self.applied.effects.as_slice()
     }
 }
 
 /// A command whose store write has been decided, before memory mirrors it.
 #[must_use]
-pub(crate) struct PersistedCommit {
+struct PersistedCommit {
     applied: Applied,
     now: Stamp,
     /// `false` for a replay: the store was not written and memory must stay
@@ -121,7 +125,7 @@ pub(crate) struct PersistedCommit {
 
 impl PersistedCommit {
     /// Whether the store accepted a new transition. A replay is `false`.
-    pub(crate) const fn stored(&self) -> bool {
+    const fn stored(&self) -> bool {
         self.stored
     }
 }
@@ -329,7 +333,7 @@ impl ServerState {
     /// # Errors
     ///
     /// As [`Self::commit`]. A store failure leaves memory unchanged.
-    pub(crate) fn persist_command_from(
+    fn persist_command_from(
         &mut self,
         cmd: &Command,
         actor: &Actor,
@@ -339,7 +343,7 @@ impl ServerState {
         self.persist_prepared(prepared, leading_journal)
     }
 
-    pub(crate) fn prepare_commit(
+    fn prepare_commit(
         &mut self,
         cmd: &Command,
         actor: &Actor,
@@ -358,7 +362,7 @@ impl ServerState {
         Ok(PreparedCommit { applied, now })
     }
 
-    pub(crate) fn persist_prepared(
+    fn persist_prepared(
         &mut self,
         prepared: PreparedCommit,
         leading_journal: u64,
@@ -409,7 +413,7 @@ impl ServerState {
 
     /// Mirror a [`Self::persist_command_from`] result into the registry and
     /// the journal. A replay changes nothing.
-    pub(crate) fn mirror_persisted(
+    fn mirror_persisted(
         &mut self,
         persisted: PersistedCommit,
         actor: &Actor,
@@ -514,8 +518,8 @@ pub struct Reconciled {
     pub lost: u32,
     /// Activations that ended unobserved.
     pub unobserved: u32,
-    /// Activations whose launch intent committed and never started a process.
-    pub never_launched: u32,
+    /// Activations whose launch/process ownership is unresolved.
+    pub unresolved: u32,
 }
 
 /// Where [`ServerState::create_terminal`] puts a new Terminal.

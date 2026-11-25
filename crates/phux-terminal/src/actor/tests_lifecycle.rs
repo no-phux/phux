@@ -232,7 +232,7 @@ async fn run_native_server_kernel_flow(
         .await
         .expect("bootstrap reply")
         .expect("bootstrap capture");
-    let cursor = capture.publication_cursor;
+    let cursor = capture.capture.cursor;
 
     let mut kernel = SessionKernel::with_history_config(
         GhosttyAdapter::new(limits),
@@ -259,15 +259,17 @@ async fn run_native_server_kernel_flow(
             stream_id,
             bootstrap_id,
             cursor,
+            cancellation: capture.capture.cancellation(),
             reply: publication_reply,
         })
         .await
         .expect("publication request");
-    let mut live = published
+    let mut publication = published
         .await
         .expect("publication reply")
-        .expect("publication")
-        .live;
+        .expect("publication");
+    publication.interest.published();
+    let mut live = publication.live;
 
     let (outbound, _outbound_rx) = mpsc::channel(2);
     let mut pages = 0_usize;
@@ -397,7 +399,11 @@ fn capture_native_for_pump(
     ));
     for _ in 0..64 {
         match response.try_recv() {
-            Ok(result) => return result.expect("native capture"),
+            Ok(result) => {
+                let mut capture = result.expect("native capture");
+                capture.capture.published();
+                return capture;
+            }
             Err(oneshot::error::TryRecvError::Empty) => actor.cooperative_native_step(),
             Err(oneshot::error::TryRecvError::Closed) => {
                 panic!("native bootstrap reply dropped")
@@ -421,11 +427,13 @@ fn activate_native_for_pump(
         stream_id,
         bootstrap_id,
         cursor,
+        cancellation: CancellationToken::new(),
         reply,
     });
     response
         .try_recv()
         .expect("publication is answered on the same turn")
+        .map(|mut reply| { reply.interest.published(); reply })
 }
 
 #[path = "tests_lifecycle_construction_1.rs"]

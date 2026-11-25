@@ -289,3 +289,116 @@ fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
         });
     });
 }
+
+#[test]
+fn ensure_is_journaled_exact_and_never_reseeds_an_existing_session() {
+    run(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root = CancellationToken::new();
+        let ensure = |n, lifetime, launched: bool| Command::SessionEnsure {
+            operation: op(n),
+            name: "ensured".to_owned(),
+            lifetime,
+            attrs: vec![("project".to_owned(), format!("created-{n}"))],
+            launch: launched.then(|| Box::new(LaunchSpec::new(Vec::new()))),
+        };
+        let first = committed(handle(&state, CLIENT, ensure(70, SessionLifetime::Persistent, false), &root));
+        assert_eq!(first.ensured_created, Some(true));
+        let original = first.session.expect("exact session");
+        let duplicate = committed(handle(&state, CLIENT, ensure(71, SessionLifetime::Ephemeral, true), &root));
+        assert_eq!(duplicate.session, Some(original));
+        assert_eq!(duplicate.ensured_created, Some(false));
+        state.with(|s| {
+            let session = s.org().session(&ow::core_session_key(&original)).unwrap();
+            assert_eq!(session.lifetime, phux_core::SessionLifetime::Persistent);
+            assert_eq!(session.attrs.project.as_deref(), Some("created-70"));
+            assert!(session.members.is_empty());
+            assert!(s.org().receipt(&ow::core_operation(&op(71))).is_some());
+        });
+        committed(handle(&state, CLIENT, Command::SessionDelete { operation: op(72), session: original }, &root));
+        let replacement = committed(handle(&state, CLIENT, ensure(73, SessionLifetime::Persistent, false), &root));
+        assert_ne!(replacement.session, Some(original));
+        let replay = committed(handle(&state, CLIENT, ensure(70, SessionLifetime::Persistent, false), &root));
+        assert_eq!(replay.session, Some(original));
+        assert_eq!(replay.ensured_created, Some(true));
+        assert!(replay.replayed);
+        assert_eq!(handle(&state, CLIENT, ensure(70, SessionLifetime::Ephemeral, true), &root),
+            CommandResult::Refused(WireRefusal::DuplicateOperation));
+    });
+}
+
+#[test]
+fn revoked_authority_cannot_replay_or_resolve_a_named_session() {
+    run(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root = CancellationToken::new();
+        let ensure = |n| Command::SessionEnsure {
+            operation: op(n),
+            name: "private".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        };
+        let original = committed(handle(&state, CLIENT, ensure(80), &root));
+        state.with_mut(|s| s.mark_connection_revoked(CLIENT, crate::policy::Revocation::Revoked));
+        for operation in [80, 81] {
+            assert!(matches!(handle(&state, CLIENT, ensure(operation), &root),
+                CommandResult::Refused(WireRefusal::Unauthorized { .. })));
+        }
+        state.with(|s| {
+            assert!(s.org().session(&ow::core_session_key(&original.session.unwrap())).is_some());
+            assert!(s.org().receipt(&ow::core_operation(&op(81))).is_none());
+        });
+    });
+}
+
+#[test]
+fn disconnected_caller_cannot_adopt_owner_authority_for_ensure_replay() {
+    run(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root = CancellationToken::new();
+        let ensure = || Command::SessionEnsure {
+            operation: op(82),
+            name: "disconnected".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        };
+        committed(handle(&state, CLIENT, ensure(), &root));
+        state.with_mut(|s| s.remove_peer_identity(CLIENT));
+        assert!(matches!(
+            super::super::handle(&state, CLIENT, ensure(), &root),
+            CommandResult::Refused(WireRefusal::Unauthorized { .. })
+        ));
+    });
+}
+
+#[test]
+fn narrowed_current_grant_cannot_replay_a_previously_authorized_ensure() {
+    run(async {
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
+        let root = CancellationToken::new();
+        let ensure = || Command::SessionEnsure {
+            operation: op(83),
+            name: "narrowed".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        };
+        let receipt = committed(handle(&state, CLIENT, ensure(), &root));
+        let scope = format!("inventory@session:{}", receipt.session.unwrap());
+        let grant = crate::policy::ConnectionGrant::scoped(
+            phux_protocol::scope::TerminalScopeSet::parse_all(&[scope.as_str()]).unwrap(),
+            Some("sha256:narrowed".to_owned()),
+        ).unwrap();
+        state.with_mut(|s| s.set_connection_grant(CLIENT, grant));
+        assert!(matches!(
+            handle(&state, CLIENT, ensure(), &root),
+            CommandResult::Refused(WireRefusal::Unauthorized { .. })
+        ));
+        state.with(|s| {
+            assert!(s.org().receipt(&ow::core_operation(&op(83))).is_some());
+            assert_eq!(s.org().sessions().filter(|session| session.name == "narrowed").count(), 1);
+        });
+    });
+}
