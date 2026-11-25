@@ -37,9 +37,8 @@ pub(crate) fn run(json: bool, spec: ServerSpec) -> ExitCode {
     let heading = format!("What works on {host}");
     out!(
         "{}",
-        checklist::render_doc(&doc, &heading, color, &|command| format!(
-            "fix: {}",
-            fix_from_here(&host, command)
+        checklist::render_doc(&doc, &heading, color, &|command| fix_from_here(
+            &host, command
         ))
     );
     ExitCode::SUCCESS

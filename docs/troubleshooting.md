@@ -21,9 +21,10 @@ phux logs --server -f       # follow the server log; --client for the terminal U
 
 ### What works here
 
-Doctor ends with a checklist (agent status, notifications, remote reach,
-file transfer, restore, the agent skill), each with a reason and a fix. It
-never changes doctor's exit code. Clients read the same list; its JSON is in
+After its checks, doctor prints a checklist (agent status, notifications,
+remote reach, file transfer, restore, the agent skill), each with a reason
+and a fix. A capability that is off is marked `–`, not as a failure, and
+the checklist never changes doctor's exit code. Clients read the same list; its JSON is in
 [Host checklist](./building.md#host-checklist).
 
 ## Reporting a bug
