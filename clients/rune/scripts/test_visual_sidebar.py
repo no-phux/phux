@@ -11,7 +11,7 @@ class SidebarHierarchyInventory(unittest.TestCase):
         self.assertEqual(sum(name.startswith("navigation/sidebar-hierarchy-") for name in cases), 72)
         for theme, mode, state, (width, height) in product(
             ("dark", "light"), ("normal", "large", "forced"),
-            ("expanded", "collapsed", "children", "hosts", "focused", "empty"),
+            ("expanded", "single", "split", "hosts", "focused", "empty"),
             ((1100, 720), (640, 360)),
         ):
             stem = f"sidebar-hierarchy-{theme}-{mode}-{state}-{width}x{height}-2x"

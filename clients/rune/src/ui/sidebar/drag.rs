@@ -21,13 +21,25 @@ pub(super) fn resource(handle: El, id: &ResourceId, session: SessionKey) -> El {
         return handle;
     };
     let grab = Grab::Resource(id, session);
-    handle
-        .help("Open resource · drag to another session, or onto a pane as a tab")
-        .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag))
-        .on_layout_tx(move |d: &mut Desk, rect, tx| {
-            d.connection.reorder.laid_out(grab, rect);
-            tx.live_only();
-        })
+    resource_target(
+        handle
+            .help("Open resource · drag to another session, or onto a pane as a tab")
+            .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(grab, drag)),
+        &ResourceId::local(id),
+        session,
+    )
+}
+
+/// Split rows accept session drops without pretending to drag their lead alone.
+pub(super) fn resource_target(handle: El, id: &ResourceId, session: SessionKey) -> El {
+    let Some(id) = id.local_id() else {
+        return handle;
+    };
+    let grab = Grab::Resource(id, session);
+    handle.on_layout_tx(move |d: &mut Desk, rect, tx| {
+        d.connection.reorder.laid_out(grab, rect);
+        tx.live_only();
+    })
 }
 
 /// `handle` dragging the session `key` names, outlined in the focus ring's

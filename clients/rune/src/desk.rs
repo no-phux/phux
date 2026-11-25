@@ -5,7 +5,6 @@
 //! namespace; replacing it leaves window preferences and platform services alone.
 
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +13,7 @@ use phux_client_core::layout::SplitDir;
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::ProjectionFence;
 use phux_client_runtime::publication::GridFrame;
-use phux_protocol::ids::{ResourceId, SessionKey};
+use phux_protocol::ids::ResourceId;
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
@@ -199,10 +198,6 @@ pub struct Desk {
     pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
-    /// Session disclosure belongs to this window, independent of selection.
-    pub sidebar_collapsed: HashSet<SessionKey>,
-    /// Rows whose child panes show; every parent starts folded.
-    pub sidebar_unfolded: HashSet<ResourceId>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -353,8 +348,6 @@ impl Desk {
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
-            sidebar_collapsed: HashSet::new(),
-            sidebar_unfolded: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),

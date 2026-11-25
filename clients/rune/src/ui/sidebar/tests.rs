@@ -203,13 +203,16 @@ fn twins_with_an_agent_still_name_their_pane() {
             place: place.map(str::to_owned),
             key: None,
             agent: Some("claude"),
-            kind: Some("claude"),
+            identity: crate::addressable::Identity {
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                tool: Some("claude".to_owned()),
+                agent: true,
+                glyph: None,
+            },
             mark: crate::activity::Mark::Done,
             panes: 1,
             selected: false,
-            children: 0,
-            open: false,
-            child: false,
+            members: Vec::new(),
             host: ("mini", 0),
             color: None,
             state: Forced::Rest,
@@ -314,7 +317,7 @@ fn a_tab_is_one_row_however_many_panes_it_splits_into() {
 }
 
 #[test]
-fn child_panes_fold_under_their_root_and_a_cycle_folds_nothing() {
+fn ancestry_and_cycles_never_invent_tab_membership() {
     let pane = |id: u32, parent: Option<u32>| crate::addressable::Addressable {
         id: ResourceId::local(id),
         label: String::new(),
@@ -323,6 +326,7 @@ fn child_panes_fold_under_their_root_and_a_cycle_folds_nothing() {
         kind: phux_protocol::ids::ResourceKind::Terminal,
         mirror: "",
         parent: parent.map(ResourceId::local),
+        program: None,
     };
     // 3 is 2's child, so it sits with 2 under 1; 4's parent closed; 5 and
     // 6 name each other.
@@ -336,25 +340,100 @@ fn child_panes_fold_under_their_root_and_a_cycle_folds_nothing() {
     ];
     let rows: Vec<_> = panes.iter().collect();
     let items = items::items(&[], &rows);
-    assert_eq!(
-        items::fold(&items),
-        vec![(0, vec![1, 2]), (3, vec![]), (4, vec![]), (5, vec![])]
+    assert_eq!(items.len(), 6);
+    assert!(items.iter().all(|item| item.members.len() == 1));
+}
+
+#[test]
+fn child_rows_are_naturally_visible_without_a_gutter_or_fake_stack() {
+    for dark in [true, false] {
+        let rt = listed_with(dark, &[(3, 2), (4, 2)]);
+        for id in 1..=4 {
+            assert!(focusable(&rt, &format!("pane-{}", ResourceId::local(id))));
+        }
+        assert!(rt.find("fold-@2").is_none());
+        assert!(
+            rt.find("identity-layer-1").is_none(),
+            "ancestry is not a split"
+        );
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.path.contains("pane-@2/") && e.label.as_deref() == Some("needs you"))
+        );
+    }
+}
+
+#[test]
+fn satellite_singles_share_useful_detail_without_stacking_or_inventing_unknown_targets() {
+    let mut rt = listed(true);
+    let remote = ResourceId::satellite("box", 7);
+    let unknown = ResourceId::satellite("box", 9);
+    let (resource, unsupported) = (remote.clone(), unknown.clone());
+    rt.update(move |d, _| {
+        let topology = d.connection.topology.as_mut().unwrap();
+        let mut pane = topology.panes[0].clone();
+        pane.terminal_id = resource.clone();
+        pane.session_id = 0;
+        pane.session_name = "box".to_owned();
+        pane.name = Some("Remote build".to_owned());
+        pane.cwd = Some("/repo/component".to_owned());
+        topology.panes.push(pane);
+        let mut record = topology.resources[0].clone();
+        record.id = resource.clone();
+        record.session_id = 0;
+        topology.resources.push(record.clone());
+        record.id = unsupported.clone();
+        record.kind = phux_protocol::ids::ResourceKind::Unknown { tag: 90 };
+        topology.resources.push(record);
+        topology
+            .satellite_sessions
+            .push(phux_client_runtime::control::SatelliteSession {
+                host: "box".to_owned(),
+                name: "work".to_owned(),
+                members: vec![resource, unsupported],
+            });
+    });
+    rt.frame(3.0);
+    let key = format!("pane-{remote}");
+    assert!(focusable(&rt, &key));
+    assert!(
+        crate::ui::element(&rt, &key)
+            .help
+            .as_deref()
+            .unwrap()
+            .contains("component")
+    );
+    assert!(!focusable(&rt, &format!("pane-{unknown}")));
+    assert!(
+        rt.find("identity-layer-1").is_none(),
+        "satellite membership is not a split"
     );
 }
 
 #[test]
-fn a_parent_row_starts_folded_and_its_count_unfolds_it() {
-    let mut rt = listed_with(true, &[(3, 2), (4, 2)]);
-    let child = format!("pane-{}", ResourceId::local(3));
-    assert!(!focusable(&rt, &child), "children start folded");
-    let fold = format!("fold-{}", ResourceId::local(2));
-    let (x, y) = rt.find(&fold).expect("the parent row's fold");
-    rt.poll = Some(|d, _, tx| d.return_keyboard(tx));
-    rt.pointer_down(x, y);
-    rt.pointer_up(x, y);
-    rt.frame(0.0);
-    assert!(focusable(&rt, &child), "unfolded, the children show");
-    rt.frame(0.0);
-    // The row around the fold takes a press on it, and would keep the keys.
-    rt.update(|_, tx| assert_eq!(tx.focused(), None));
+fn a_split_count_cannot_be_truncated_by_long_resource_detail() {
+    let mut rt = listed(true);
+    rt.update(|d, _| {
+        d.connection.topology.as_mut().unwrap().panes[0].cwd =
+            Some("/repo/a-long-declared-folder-that-needs-to-be-elided".to_owned());
+        d.connection.tabs.by_session.insert(
+            1,
+            vec![crate::desk::Tab {
+                id: [1; 16],
+                name: "Build".to_owned(),
+                resources: [1, 4].map(ResourceId::local).to_vec(),
+                active: true,
+                locked: false,
+            }],
+        );
+    });
+    rt.frame(3.0);
+    let count = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.path.contains("pane-@1/") && e.text.as_deref() == Some("2"))
+        .expect("the exact split count is separate from elided detail");
+    assert!(count.visible[2] > 0.0);
+    assert!((count.visible[2] - count.rect[2]).abs() < 0.01);
 }

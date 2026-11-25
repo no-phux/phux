@@ -10,6 +10,9 @@ use phux_protocol::ids::{ResourceId, ResourceKind};
 use crate::desk::Desk;
 use crate::palette::pane_label;
 
+mod presentation;
+pub(crate) use presentation::{Identity, Program};
+
 /// One resource that can occupy the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Addressable {
@@ -22,9 +25,9 @@ pub struct Addressable {
     pub kind: ResourceKind,
     /// What a list calls the document when `!kind.is_terminal()`.
     pub mirror: &'static str,
-    /// The pane a terminal was started from, which the sidebar folds it
-    /// under (`phux.parent/v1`).
+    /// The pane a terminal was started from (`phux.parent/v1`), not split membership.
     pub parent: Option<ResourceId>,
+    pub(crate) program: Option<Program>,
 }
 
 /// The topology's terminals and documents that `wanted` keeps. An agent
@@ -65,6 +68,7 @@ fn list(topology: &Topology, wanted: impl Fn(&ResourceId) -> bool) -> Vec<Addres
                 kind: r.kind,
                 mirror: "Read-only mirror",
                 parent: panes.get(&r.id).and_then(|pane| pane.parent.clone()),
+                program: panes.get(&r.id).map(|pane| Program::of(pane)),
             }
         })
         .collect();

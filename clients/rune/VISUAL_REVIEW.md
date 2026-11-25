@@ -142,21 +142,23 @@ terminal's keyboard preference, selected pane and server arrangement.
 
 Sidebar keyboard cases start in a non-leading split pane. Compare idle,
 Focus Sidebar, Shift+Tab to Inbox and Space activation at both desktop sizes,
-light/dark and forced colours, at true 2×. Include a collapsed containing
-session. The keyboard ring must mark the actual grouped row without selecting
+light/dark, forced colours and 140% interface zoom, at true 2×. The keyboard ring
+must mark the actual grouped row without selecting
 another pane or changing its arrangement. Behavioral tests additionally cover
 agent-led identity, missing members, unplaced/document rows, keyless sessions
 and unchanged terminal input. These are desktop keyboard cases; the core phone
 gallery remains surrounding nonregression evidence, not a phone-sidebar claim.
 
-Sidebar hierarchy cases add actual project/linked-worktree sessions, folded
-and expanded child panes, remote-machine previews and empty inventory. Retain
+Sidebar hierarchy cases add actual project/linked-worktree sessions, naturally
+visible descendants, flat singles, real inline splits, remote-machine previews
+and empty inventory. `single` and `split` replace obsolete `collapsed` and
+`children` scenes; local folding no longer exists. Retain
 the app's macOS traffic-light reservation, standard and 140% interface zoom,
 forced colours, both desktop widths and real 2× backing scale. Zoom changes
 the logical viewport and effective scale; it must not resize a finished PNG or
-loosen the geometry contract. Compare disclosure gutters, section rhythm,
+loosen the geometry contract. Compare arrow-free leading edges, section rhythm,
 unboxed attention summaries and the complete machine menu. Check optional
-keep-awake controls, independent disclosure/selection/drag ownership, Left/Right,
+keep-awake controls, independent session/resource drag ownership, Left/Right split-member navigation,
 focus, and unchanged terminal input and arrangement. A retained but covered
 sidebar element is not a valid pointer target: open the narrow drawer through
 its handler after initial layout and verify the actual hit path.
