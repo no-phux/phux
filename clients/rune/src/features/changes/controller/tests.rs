@@ -110,6 +110,12 @@ fn requests(client: &Client) -> Vec<(u32, CheckoutRequest)> {
                 Some((request_id, request))
             }
             FrameKind::ResizeTerminal { .. } => None,
+            // The panel covers the panes, so they report leaving view.
+            FrameKind::SetMetadata { key, .. }
+                if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY =>
+            {
+                None
+            }
             frame => panic!("unexpected outbound frame: {frame:?}"),
         })
         .collect()

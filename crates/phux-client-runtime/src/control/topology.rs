@@ -94,6 +94,10 @@ pub struct PaneDescriptor {
     /// it under; `None` until read, for a root, and for a satellite pane. It
     /// may name a pane that has closed.
     pub parent: Option<ResourceId>,
+    /// What happened in it since anyone last looked (`phux.unseen/v1`);
+    /// `None` until read, for a satellite pane, and on a server that keeps no
+    /// marks.
+    pub unseen: Option<phux_protocol::wire::frame::PaneUnseen>,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -233,6 +237,7 @@ impl Topology {
                     foreground: None,
                     icon: None,
                     parent: None,
+                    unseen: None,
                 }
             })
             .collect();

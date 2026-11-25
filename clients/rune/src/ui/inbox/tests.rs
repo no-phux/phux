@@ -220,6 +220,12 @@ fn no_actions(client: &Client) {
     use phux_protocol::wire::frame::{Command, FrameKind};
     for bytes in client.take_outbound() {
         let frame = FrameKind::decode(&bytes).unwrap().0;
+        // The Inbox covers the panes, so they report leaving view.
+        if matches!(&frame, FrameKind::SetMetadata { key, .. }
+            if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY)
+        {
+            continue;
+        }
         assert!(
             !matches!(
                 frame,

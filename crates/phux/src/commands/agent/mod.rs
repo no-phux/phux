@@ -11,6 +11,7 @@ mod prompt;
 mod questions;
 mod record;
 mod report_state;
+mod seen;
 // AgentSession resource verbs (ADR-0103); unrelated to `session.rs`, the
 // provider-native resume record in L3 metadata.
 mod native_control;
@@ -38,6 +39,7 @@ use self::record::{run_agent_clear, run_agent_set};
 pub(crate) use self::action::AgentAction;
 pub(crate) use self::notify::{run_notify, run_notify_mode};
 pub(crate) use self::record::fetch_agent_index;
+pub(crate) use self::seen::run_seen;
 pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
 
 #[allow(

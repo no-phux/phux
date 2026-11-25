@@ -331,6 +331,7 @@ mod tests {
             foreground: None,
             icon: None,
             parent: None,
+            unseen: None,
         }
     }
 

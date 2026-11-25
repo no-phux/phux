@@ -194,6 +194,8 @@ The kind's facet.
 - `phux.note/v1`
 - `phux.notify/v1`
 - `phux.parent/v1`
+- `phux.unseen/v1`
+- `phux.in-view/v1`
 
 ## Kind `AGENT_SESSION`
 

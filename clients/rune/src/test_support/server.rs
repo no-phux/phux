@@ -54,6 +54,7 @@ pub fn pane(
         foreground: None,
         icon: None,
         parent: None,
+        unseen: None,
     }
 }
 

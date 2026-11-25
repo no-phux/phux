@@ -55,6 +55,8 @@ pub struct Connection {
     pub reorder: reorder::Reorder,
     /// The server's keep-awake record; `None` while its mode is `off`.
     pub keep_awake: Option<super::keep_awake::Awake>,
+    /// The panes this attachment last reported showing (`phux.in-view/v1`).
+    pub(super) in_view: HashSet<ResourceId>,
     /// This window holds the view size lock; claimed again on each attach.
     pub size_locked: bool,
     /// A screenshot being taken for a terminal on this client. Replacing the
@@ -134,6 +136,7 @@ impl Default for Connection {
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
             keep_awake: None,
+            in_view: HashSet::new(),
             size_locked: false,
             capture: None,
             uploads: Vec::new(),

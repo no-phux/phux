@@ -60,3 +60,21 @@ fn the_parent_folds_the_pane_and_survives_a_refresh() {
     metadata_changed(&mut plane, RESOURCE_PARENT_KEY, None);
     assert_eq!(parent(&plane), None, "a delete makes it a root");
 }
+
+/// `phux.unseen/v1` marks the pane, and a refresh keeps the mark.
+#[test]
+fn the_unseen_mark_survives_a_refresh() {
+    use phux_protocol::wire::frame::{PaneUnseen, RESOURCE_UNSEEN_KEY};
+    let mut plane = settled();
+    let unseen = |plane: &ControlPlane| plane.topology().unwrap().pane(&terminal()).unwrap().unseen;
+    assert_eq!(unseen(&plane), None);
+    metadata_changed(&mut plane, RESOURCE_UNSEEN_KEY, Some(b"bell"));
+    assert!(
+        (plane.take_events().iter()).any(|event| matches!(event, Event::TopologyChanged)),
+        "lists re-read the topology"
+    );
+    let _ = refresh_after_settling(&mut plane, snapshot());
+    assert_eq!(unseen(&plane), Some(PaneUnseen::Bell));
+    metadata_changed(&mut plane, RESOURCE_UNSEEN_KEY, Some(b"seen"));
+    assert_eq!(unseen(&plane), Some(PaneUnseen::Seen));
+}

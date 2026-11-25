@@ -14,9 +14,12 @@ use phux_client_core::agent_record::{AgentAttention, AgentState, parse_agent_rec
 use phux_client_runtime::control::Event;
 use phux_design::{State, ToneInput};
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::PaneUnseen;
 
 /// A shell command this long that finishes off screen is worth a mark.
 const LONG_COMMAND: Duration = Duration::from_secs(5);
+
+mod seen;
 
 #[derive(Debug, Clone, Default)]
 pub struct Activity {
@@ -40,6 +43,9 @@ pub struct Activity {
     pub background: bool,
     /// An agent finished off screen; cleared once seen.
     pub done_unseen: bool,
+    /// The server's mark (`phux.unseen/v1`), which overrules the three above;
+    /// `None` when its server keeps none.
+    unseen: Option<PaneUnseen>,
     /// When the mark last changed, for ranking what needs you.
     pub changed_at: Option<Instant>,
 }
@@ -259,7 +265,7 @@ impl Activity {
     /// lost link window-wide, so `exit`, `crashed` and `link` stay unset.
     pub(crate) fn tone_input(&self) -> ToneInput {
         let declared = self.agent.as_ref().map(|a| agent_fact(a.state));
-        let (agent, failed) = match self.finished {
+        let (agent, failed) = match self.held_finish() {
             Some(Some(code)) if code != 0 => (declared, true),
             // A working or blocked agent outranks a shell result.
             Some(_) => match declared {
@@ -272,7 +278,7 @@ impl Activity {
         };
         // Shell work under an agent at rest is work, below a held result.
         let shell_work = self.command_since.is_some() || self.background;
-        let held = self.done_unseen || self.finished.is_some();
+        let held = self.held_done() || self.held_finish().is_some();
         let agent = match agent {
             Some(phux_design::Agent::Working | phux_design::Agent::Blocked) => agent,
             _ if shell_work && !held => Some(phux_design::Agent::Working),
@@ -289,7 +295,7 @@ impl Activity {
             // A failed command reads as a failed exit; tone_of ranks it.
             exit: failed.then_some(1),
             // A result is unseen while it is held for you off screen.
-            seen: done && !self.done_unseen && self.finished.is_none(),
+            seen: done && !held,
             ..ToneInput::default()
         }
     }
@@ -317,9 +323,9 @@ impl Activity {
         match self.state() {
             State::NeedsYou => Mark::Blocked,
             State::Failed | State::Lost => Mark::Failed,
-            State::Done if self.done_unseen => Mark::Done,
+            State::Done if self.held_done() => Mark::Done,
             State::Done => Mark::Succeeded,
-            _ if self.bell => Mark::Bell,
+            _ if self.held_bell() => Mark::Bell,
             State::Working if agent_working => Mark::Working,
             State::Working => shell(),
             State::DoneSeen | State::Idle => Mark::Idle,
@@ -423,9 +429,7 @@ impl Activities {
     pub fn seen(&mut self, id: &ResourceId) {
         let before = self.terminals.get(id).map(Activity::face);
         if let Some(entry) = self.terminals.get_mut(id) {
-            entry.bell = false;
-            entry.finished = None;
-            entry.done_unseen = false;
+            entry.see();
         }
         self.settled(id, before);
     }
