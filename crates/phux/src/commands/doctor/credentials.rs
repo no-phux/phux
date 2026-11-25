@@ -92,12 +92,19 @@ pub(super) fn workload_authority_check(
                 .iter()
                 .filter(|credential| credential.is_active_at(now))
                 .count();
+            let enrolled = if snapshot.is_empty() {
+                "no credentials enrolled yet".to_owned()
+            } else {
+                format!(
+                    "{active} of {} active",
+                    super::count(snapshot.len(), "credential", "credentials")
+                )
+            };
             Check::pass(
                 "workload-authority",
                 format!(
-                    "workload CA {fingerprint}; registry generation {}, {active} of {} active",
+                    "workload CA {fingerprint}; registry generation {}, {enrolled}",
                     snapshot.generation(),
-                    super::count(snapshot.len(), "credential", "credentials")
                 ),
             )
         }

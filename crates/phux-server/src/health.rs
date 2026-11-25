@@ -74,8 +74,18 @@ pub fn running_version() -> Option<String> {
 /// Whether recent restarts look like a crash-loop, and the count.
 #[must_use]
 pub fn crash_loop() -> Option<usize> {
-    let count = recent_starts(CRASH_LOOP_WINDOW).len();
+    let count = distinct_processes(&recent_starts(CRASH_LOOP_WINDOW));
     (count >= CRASH_LOOP_THRESHOLD).then_some(count)
+}
+
+/// How many server processes `records` started. A `phux upgrade` re-execs
+/// in place under the same pid and records a start too, but it is a
+/// hand-over, not a restart.
+fn distinct_processes(records: &[StartRecord]) -> usize {
+    let mut pids: Vec<u32> = records.iter().map(|record| record.pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids.len()
 }
 
 /// Seconds since the Unix epoch, or `None` on a clock before 1970.
@@ -145,5 +155,18 @@ mod tests {
         let records = read_records(&path);
         assert_eq!(records.len(), 1, "the one valid record must survive");
         assert_eq!(records[0].pid, 1);
+    }
+
+    /// Upgrades re-exec under the same pid: one process, however many
+    /// hand-overs it took.
+    #[test]
+    fn in_place_upgrades_are_not_restarts() {
+        let record = |pid| StartRecord {
+            at: 1,
+            pid,
+            version: "0.1.0".to_owned(),
+        };
+        let starts = [record(7), record(7), record(7), record(9)];
+        assert_eq!(distinct_processes(&starts), 2);
     }
 }
