@@ -235,12 +235,18 @@ fn only_a_dns_name_earns_the_overlay_hint() {
 /// The ssh:// refusal names the command actually being run.
 #[test]
 fn the_ssh_refusal_names_the_verb() {
-    let err = ssh_only_refusal("mini", "me@mini", "kill");
+    let err = ssh_only_refusal("mini", "me@box", "phux", "kill");
     assert_eq!(err.code, codes::REMOTE_UNRESOLVED);
     assert!(
-        err.remedy.contains("ssh me@mini phux kill"),
+        err.remedy.contains("ssh me@box phux kill")
+            && err.remedy.contains("phux host add me@box --name mini"),
         "{}",
         err.remedy
+    );
+    let ported = ssh_only_refusal("mini", "ssh://me@box:2222", "~/bin/phux", "kill").remedy;
+    assert!(
+        ported.contains("ssh ssh://me@box:2222 ~/bin/phux kill") && !ported.contains("host add"),
+        "{ported}"
     );
     assert!(!err.remedy.contains("phux ls"), "{}", err.remedy);
 }

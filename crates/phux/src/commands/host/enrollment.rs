@@ -11,7 +11,7 @@ use super::super::enroll::{
 use super::super::json_err::{CliError, codes};
 use super::super::remote::{self, RemoteEntry};
 use super::super::satellite as satellite_registry;
-use super::super::service;
+use super::super::{server_target, service};
 
 use super::HostRole;
 use super::add::{add_failure_error, registry_failure, reject_enrollment};
@@ -314,26 +314,29 @@ pub(super) fn report_registered(
     match row.role {
         HostRole::Remote => {
             let name = &row.name;
-            let transport = if row.endpoint.starts_with("ssh://") {
-                "attach (over ssh)"
+            let mut rows = vec![(format!("phux attach {name}"), "attach (over ssh)")];
+            // An ssh:// entry carries only an interactive attach.
+            if let Ok(remote::Endpoint::Ssh(destination)) = remote::Endpoint::parse(&row.endpoint) {
+                let entry = remote::find(name);
+                let phux = entry.as_ref().map_or("phux", RemoteEntry::remote_phux);
+                let over = |verb| server_target::over_ssh(&destination, phux, verb);
+                rows.push((
+                    over("ls"),
+                    "list its sessions (--remote needs a direct route)",
+                ));
+                rows.push((over("doctor"), "what works there"));
             } else {
-                "attach (direct, no ssh in the path)"
-            };
-            let attach_cmd = format!("phux attach {name}");
-            let ls_cmd = format!("phux ls --remote {name}");
-            let doctor_cmd = format!("phux doctor --remote {name}");
-            let host_ls_cmd = "phux host ls";
+                rows[0].1 = "attach (direct, no ssh in the path)";
+                rows.push((format!("phux ls --remote {name}"), "list its sessions"));
+                rows.push((format!("phux doctor --remote {name}"), "what works there"));
+            }
+            rows.push(("phux host ls".to_owned(), "every registered machine"));
             // One column for the rows, sized to the longest command, so a
             // long host name never runs into its description.
-            let col = [attach_cmd.len(), ls_cmd.len(), doctor_cmd.len()]
-                .into_iter()
-                .max()
-                .unwrap_or(0)
-                + 2;
-            outln!("  {attach_cmd:<col$}{transport}");
-            outln!("  {ls_cmd:<col$}list its sessions");
-            outln!("  {doctor_cmd:<col$}what works there");
-            outln!("  {host_ls_cmd:<col$}every registered machine");
+            let col = rows.iter().map(|(cmd, _)| cmd.len()).max().unwrap_or(0) + 2;
+            for (cmd, what) in rows {
+                outln!("  {cmd:<col$}{what}");
+            }
             // An ssh:// entry carries only an interactive attach.
             if !row.endpoint.starts_with("ssh://")
                 && let Some(lines) = crate::commands::doctor::other_host::missing_agents(name)

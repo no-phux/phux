@@ -246,6 +246,36 @@ pub(crate) fn destination_host(destination: &str) -> String {
     host.to_owned()
 }
 
+/// The destination `ssh` takes for `ssh://REST`: the bare `[user@]host`, the
+/// whole URI where only a URI can say it (a port, a `%` escape), and a bare
+/// IPv6 address, which an ssh URI cannot hold.
+pub(crate) fn uri_destination(rest: &str) -> Result<String, String> {
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let (user, host) = match rest.rsplit_once('@') {
+        Some((user, host)) => (Some(user), host),
+        None => (None, rest),
+    };
+    if host.is_empty() {
+        return Err("ssh:// endpoint needs a host (e.g. ssh://mini)".to_owned());
+    }
+    if rest.contains('/') {
+        return Err(format!("ssh://{rest}: an ssh:// endpoint takes no path"));
+    }
+    if let Some(bracketed) = host.strip_prefix('[') {
+        let Some(address) = bracketed.strip_suffix(']') else {
+            return Err(format!(
+                "ssh://{rest}: ssh takes no port beside an IPv6 address; name the machine in \
+                 ~/.ssh/config (HostName, Port) and use ssh://NAME"
+            ));
+        };
+        return Ok(user.map_or_else(|| address.to_owned(), |user| format!("{user}@{address}")));
+    }
+    if rest.contains('%') || host.contains(':') {
+        return Ok(format!("ssh://{rest}"));
+    }
+    Ok(rest.to_owned())
+}
+
 /// `HOST:PORT`, bracketing an IPv6 literal.
 pub(crate) fn authority(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -323,6 +353,23 @@ mod tests {
             "it may prompt"
         );
         assert!(args.ends_with(&["-f", "-N", "--", "me@box"].map(str::to_owned)));
+    }
+
+    #[test]
+    fn an_ssh_endpoint_becomes_a_destination_ssh_takes() {
+        for (rest, destination) in [
+            ("mini", "mini"),
+            ("me@mini/", "me@mini"),
+            ("me@mini:2222", "ssh://me@mini:2222"),
+            ("m%65@mini", "ssh://m%65@mini"),
+            ("me@[::1]", "me@::1"),
+            ("[fe80::1]", "fe80::1"),
+        ] {
+            assert_eq!(uri_destination(rest).as_deref(), Ok(destination), "{rest}");
+        }
+        for rest in ["", "me@", "/", "mini/home", "[::1]:22"] {
+            assert!(uri_destination(rest).is_err(), "{rest}");
+        }
     }
 
     /// A batch run against an unroutable host gives up, never hangs.
