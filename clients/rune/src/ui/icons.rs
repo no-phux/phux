@@ -39,6 +39,22 @@ icon!(
     "phux-chevron-right",
     "M6.5 4.5L10 8l-3.5 3.5"
 );
+// Tree disclosure is a compact solid silhouette, distinct from a menu's chevron.
+pub static DISCLOSURE_RIGHT: Icon = Icon {
+    name: "phux-disclosure-right",
+    view: 16.0,
+    body: r#"<path d="M6 3L11 8L6 13Z" fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round"/>"#,
+};
+pub static DISCLOSURE_DOWN: Icon = Icon {
+    name: "phux-disclosure-down",
+    view: 16.0,
+    body: r#"<path d="M3 6L8 11L13 6Z" fill="currentColor" stroke="currentColor" stroke-width=".6" stroke-linejoin="round"/>"#,
+};
+icon!(
+    BRANCH,
+    "phux-branch",
+    "M5 4.5v7M6.5 8H8a3 3 0 0 0 3-3v-.5M5 1.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M5 11.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M11 1.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3"
+);
 icon!(
     SEARCH,
     "phux-search",

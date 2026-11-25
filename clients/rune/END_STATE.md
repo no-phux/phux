@@ -39,9 +39,14 @@ that reads like a log line.
 - The tile is the agent's colour and initial, or the prompt on an outline
   for a plain terminal; a badge on its corner carries the state's glyph in
   its tone, and only a state worth telling has one.
-- Group headers are small, dim and medium weight, aligned to the row text.
-  Their close button waits under the pointer.
-- Search is an icon beside the inbox; the list starts under the top edge.
+- Group headers are small and restrained, aligned to the rows' identity column.
+  Sessions, parent panes and machines share one leading disclosure gutter.
+  Their close button waits under the pointer; attention summaries are unboxed.
+- On macOS the machine menu has a readable full-width row below the native
+  controls, with search and Inbox beside it. Native control clearance is not
+  traded for a less-truncated label. Windows without that leading reservation
+  keep a single header row.
+- Search is an icon beside the Inbox; the list starts below the machine header.
 
 ## Popovers, menus and the palette
 

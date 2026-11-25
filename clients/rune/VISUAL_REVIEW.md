@@ -149,6 +149,18 @@ agent-led identity, missing members, unplaced/document rows, keyless sessions
 and unchanged terminal input. These are desktop keyboard cases; the core phone
 gallery remains surrounding nonregression evidence, not a phone-sidebar claim.
 
+Sidebar hierarchy cases add actual project/linked-worktree sessions, folded
+and expanded child panes, remote-machine previews and empty inventory. Retain
+the app's macOS traffic-light reservation, standard and 140% interface zoom,
+forced colours, both desktop widths and real 2× backing scale. Zoom changes
+the logical viewport and effective scale; it must not resize a finished PNG or
+loosen the geometry contract. Compare disclosure gutters, section rhythm,
+unboxed attention summaries and the complete machine menu. Check optional
+keep-awake controls, independent disclosure/selection/drag ownership, Left/Right,
+focus, and unchanged terminal input and arrangement. A retained but covered
+sidebar element is not a valid pointer target: open the narrow drawer through
+its handler after initial layout and verify the actual hit path.
+
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled
 bottom and keyboard-focused Retry on both phone widths and native keyboard-reduced

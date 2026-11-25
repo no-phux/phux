@@ -1,19 +1,18 @@
 //! Project groups in the session list (ADR-0168): a project's name over its
-//! sessions, indented, and a linked worktree's name after a `└`. Grouping
+//! sessions, indented, and a linked worktree's name after a branch glyph. Grouping
 //! itself is `project_groups`' job; this paints what it was handed.
 
 use phux_client_runtime::control::SessionDescriptor;
 use phux_client_runtime::project_groups::Block;
 use rune::{El, col, el, memo, row, text};
 
-use super::super::{Paint, Tokens};
+use super::super::{Paint, Tokens, icons};
 use super::{Counts, histogram};
 use crate::palette::project_blocks;
 
-/// The `└` a linked worktree's name follows.
+/// A linked worktree's branch, drawn in the same icon language as its controls.
 pub(super) fn branch_mark(t: &Tokens) -> El {
-    text("└")
-        .font(t.ty.caption)
+    rune::icon(&icons::BRANCH, t.icon.size.sm)
         .color(t.roles.text.dim.paint())
         .a11y_hidden()
 }
