@@ -169,6 +169,12 @@ pub fn activation(a: &phux_core::Activation, pending: bool) -> frame::Activation
     )
     .with_outcome(a.outcome.map(outcome))
     .with_evidence(a.diagnostic.map(launch_diagnostic), pending)
+    // Only reconciliation ends a launch unobserved; a launch that failed
+    // records an exit, though an unknown one reads as unobserved on the wire.
+    .with_launch_interrupted(
+        a.state == phux_core::ExecState::Failed
+            && a.outcome == Some(phux_core::Outcome::Unobserved),
+    )
 }
 
 const fn launch_diagnostic(d: phux_core::LaunchDiagnostic) -> phux_protocol::api::LaunchDiagnostic {

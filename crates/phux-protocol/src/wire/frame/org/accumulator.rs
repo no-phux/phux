@@ -56,6 +56,7 @@ pub(super) struct Fields {
     pub(super) outcome: Option<Outcome>,
     pub(super) diagnostic: Option<crate::api::LaunchDiagnostic>,
     pub(super) persistence_pending: bool,
+    pub(super) launch_interrupted: Option<bool>,
     pub(super) epoch: Option<LeaseEpoch>,
     pub(super) holder: Option<ActorRef>,
     pub(super) awaiting: Option<bool>,
@@ -151,6 +152,9 @@ impl Fields {
             field::org::PERSISTENCE_PENDING => {
                 out.persistence_pending =
                     Decoder::new(value).read_bool("persistence_pending")?;
+            }
+            field::org::LAUNCH_INTERRUPTED => {
+                out.launch_interrupted = Some(Decoder::new(value).read_bool("launch_interrupted")?);
             }
             field::org::EPOCH => out.epoch = Some(LeaseEpoch::new(u64_value(value)?)),
             field::org::HOLDER => out.holder = Some(decode_actor_ref(&mut Decoder::new(value))?),

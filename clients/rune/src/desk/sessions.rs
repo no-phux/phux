@@ -38,7 +38,6 @@ impl Desk {
     /// `phux restore` would relaunch: the keys to relaunch them by.
     pub fn ended_by_restart(&self) -> Vec<phux_protocol::ids::ResourceKey> {
         use phux_protocol::ResourceKind;
-        use phux_protocol::wire::frame::{ExecState, Outcome};
         let Some(client) = &self.connection.client else {
             return Vec::new();
         };
@@ -49,11 +48,7 @@ impl Desk {
             .organization()
             .members(&key)
             .filter(|r| r.kind == ResourceKind::Terminal && r.live.is_none())
-            .filter(|r| {
-                r.activation.as_ref().is_some_and(|a| {
-                    a.state == ExecState::Completed && a.outcome == Some(Outcome::Unobserved)
-                })
-            })
+            .filter(|r| r.ended_by_restart())
             .map(|r| r.key)
             .collect()
     }
