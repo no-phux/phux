@@ -35,6 +35,7 @@ fn fabricated() -> StatusReport {
         server_log: PathBuf::from("/state/phux/server.log"),
         client_log_dir: PathBuf::from("/state/phux"),
         keep_awake: None,
+        remote: None,
     }
 }
 
@@ -81,6 +82,7 @@ fn human_render_is_pinned() {
             "  scratch: 1 window".to_owned(),
             "  work: 3 windows (2 clients attached)".to_owned(),
             "  build-box/@1: satellite terminal".to_owned(),
+            "remote: local socket only".to_owned(),
             "logs: server /state/phux/server.log; clients /state/phux/client-<pid>.log".to_owned(),
         ]
     );
@@ -113,6 +115,7 @@ fn json_render_is_pinned() {
             "satellite_terminals": ["build-box/@1"],
             "unreachable": [],
             "keep_awake": null,
+            "remote_listeners": [],
             "logs": { "server": "/state/phux/server.log", "client_dir": "/state/phux" },
         })
     );
@@ -258,4 +261,25 @@ fn uptime_renders_two_most_significant_units() {
     assert_eq!(format_uptime(5 * 60 + 12), "5m 12s");
     assert_eq!(format_uptime(3 * 3600 + 24 * 60), "3h 24m");
     assert_eq!(format_uptime(2 * 86_400 + 3 * 3600 + 60), "2d 3h");
+}
+
+/// The remote line names each listener and relay tunnel, and why one that
+/// is down is down.
+#[test]
+fn the_remote_line_names_listeners_and_relays() {
+    use phux_protocol::wire::{RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport};
+    let mut report = fabricated();
+    report.remote = Some(RemoteListenersReport::new().with_listeners(vec![
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "0.0.0.0:8788"),
+        RemoteListenerSlot::relay_down("relay.example:4433", Some("timed out".to_owned())),
+    ]));
+    let lines = render_human(&report, 1_754_000_000);
+    assert!(
+        lines.contains(
+            &"remote: quic 0.0.0.0:8788, relay relay.example:4433 redialing (timed out)".to_owned()
+        ),
+        "{lines:#?}"
+    );
+    let doc = status_document(&report);
+    assert_eq!(doc["remote_listeners"][1]["transport"], "relay");
 }
