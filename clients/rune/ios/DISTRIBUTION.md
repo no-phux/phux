@@ -12,6 +12,6 @@ python3 clients/rune/ios/build.py --target device --release --out /absolute/scra
 
 The app accepts pairing links on exactly the schemes its bundle declares.
 `qualify.py` qualifies whichever bundle identifier the app's `Info.plist`
-names. Every bundle carries `PrivacyInfo.xcprivacy` at its root and declares
+names. Every bundle carries its privacy manifest (`Tailnet/PrivacyInfo.xcprivacy`, copied to the root) and declares
 `ITSAppUsesNonExemptEncryption` false (only the OS's TLS/QUIC), so a store
 upload needs no per-build export-compliance answer.
