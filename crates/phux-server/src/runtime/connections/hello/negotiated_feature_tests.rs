@@ -40,7 +40,7 @@ fn larger_history_pages_are_local_and_leave_hub_limits_unchanged() {
     );
     state.with_mut(|s| {
         s.federation_mut()
-            .set_table(crate::hub::HubTable::default())
+            .set_table(crate::hub::HubTable::default());
     });
     assert_eq!(
         limits(&requested, TransportType::UnixSocket),
