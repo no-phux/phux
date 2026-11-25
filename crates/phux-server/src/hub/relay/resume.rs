@@ -16,8 +16,10 @@ use super::{
 };
 use crate::hub::operation_fence::Incarnation;
 
-/// Asks older than this no longer count against a consumer.
-const ASK_WINDOW: Duration = Duration::from_secs(60);
+/// Asks older than this no longer count against a consumer. Longer than the
+/// longest wait in [`ContentAttach::hurry`], or the count would start over
+/// while it waits.
+const ASK_WINDOW: Duration = Duration::from_secs(180);
 
 /// A content subscriber's attach, kept so the hub can repeat it.
 #[derive(Debug)]
@@ -302,5 +304,31 @@ impl RelaySession {
                     .unregister_satellite_proxy_attach(client, &self.host, terminal);
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A consumer whose asks are answered but never draw it runs out of them
+    /// on the real clock, each wait served in full.
+    #[test]
+    fn asks_that_are_answered_but_never_drawn_run_out() {
+        let mut attach = ContentAttach {
+            resource_kind: None,
+            bootstrap_profile: None,
+            bootstrap_limits: None,
+            deadline: None,
+            asks: 0,
+            asked_at: None,
+        };
+        let mut now = Instant::now();
+        for _ in 0..MAX_BOOTSTRAP_ASKS {
+            assert!(attach.spend_ask(now));
+            attach.hurry();
+            now += attach.deadline.expect("hurried") - Instant::now();
+        }
+        assert!(!attach.spend_ask(now), "the last wait outlived ASK_WINDOW");
     }
 }
