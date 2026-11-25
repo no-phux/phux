@@ -1,55 +1,14 @@
-//! View records and scoped installation on the one terminal/dirty reader.
+//! Scoped installation of views on the one terminal/dirty reader.
 
-use super::render::RetiredFrames;
 use super::{
     CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
-    EngineDocumentSelection, EngineError, FrameKey, Owner, PointerGesture, Predictor, ResourceId,
-    Scroll, apply_terminal_selection, engine_error, viewport_scroll,
+    EngineDocumentSelection, EngineError, FrameKey, Owner, Presentation, ResourceId, Scroll, View,
+    apply_terminal_selection, engine_error, viewport_scroll,
 };
 use crate::ViewId;
 use crate::engine::views::ViewCommand;
 use phux_client_core::engine::EngineDocumentAdapter;
 use phux_client_core::history::HistoryCache;
-
-pub(super) struct Presentation {
-    pub(super) predictor: Predictor,
-    pub(super) retired: RetiredFrames,
-    pub(super) viewport: Option<DocumentAnchorId>,
-    pub(super) selection: Option<EngineDocumentSelection>,
-    pub(super) gesture: Option<PointerGesture>,
-    pub(super) search: Vec<u64>,
-    pub(super) gesture_anchors: Vec<u64>,
-    pub(super) unread_rows: u64,
-    tail_distance: Option<u64>,
-    // Closed replicas cannot allocate kernel document anchors. Their content
-    // is immutable, so an offset is sufficient for retained-close scrolling.
-    closed_offset: Option<u64>,
-    /// The screen on which this view's tracked presentation was established.
-    alternate: Option<bool>,
-}
-
-impl Presentation {
-    fn new(geometry: CanonicalGeometry) -> Self {
-        Self {
-            predictor: Predictor::new(geometry.cols, geometry.rows),
-            retired: RetiredFrames::default(),
-            viewport: None,
-            selection: None,
-            gesture: None,
-            search: Vec::new(),
-            gesture_anchors: Vec::new(),
-            unread_rows: 0,
-            tail_distance: None,
-            closed_offset: None,
-            alternate: None,
-        }
-    }
-}
-
-pub(super) struct View {
-    pub(super) terminal: ResourceId,
-    presentation: Presentation,
-}
 
 impl Owner {
     pub(super) fn note_history_damage(

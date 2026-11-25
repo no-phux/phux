@@ -130,9 +130,14 @@ impl Client {
         terminal_id: &ResourceId,
         text: String,
     ) -> Result<bool, crate::engine::EngineError> {
-        self.engine()
+        let predicted = self
+            .engine()
             .ok_or(crate::engine::EngineError::Stopped)?
-            .predict_text(terminal_id, text)
+            .predict_text(terminal_id, text);
+        // The driver's deadline lane erases a guess the program never
+        // echoes; wake it so an idle connection sees this one.
+        self.inner.outbound.notify_one();
+        predicted
     }
 
     /// Clear predictive text and republish authoritative state.

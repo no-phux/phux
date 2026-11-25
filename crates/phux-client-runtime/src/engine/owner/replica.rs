@@ -116,6 +116,14 @@ impl Owner {
                 .replica(id)
                 .and_then(GhosttyReplica::terminal)
                 .ok_or_else(|| engine_error("terminal has no renderable replica"))?;
+            // Scrolled into history the live cursor is off this viewport,
+            // so there is no cell to guess into.
+            if terminal
+                .scrollbar()
+                .is_ok_and(|bar| bar.offset.saturating_add(bar.len) < bar.total)
+            {
+                return Ok(());
+            }
             let cursor = (
                 terminal.cursor_x().unwrap_or(0),
                 terminal.cursor_y().unwrap_or(0),
