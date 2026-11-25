@@ -127,6 +127,7 @@ pub(crate) fn dispatch(
         Some(Command::Skill(args)) => skill::dispatch(args.action, args.scope, socket),
         Some(Command::Mission(args)) => commands::mission::run(args, socket),
         Some(Command::Mail(args)) => commands::coord::mail(args),
+        Some(Command::Chat(args)) => commands::chat::run(args, socket),
         Some(Command::Claim(args)) => commands::coord::claim(args),
         Some(Command::Worktree(args)) => commands::worktree::run(args, socket),
         Some(Command::Project(args)) => commands::project::run_project(&args.action, socket),

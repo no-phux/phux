@@ -482,3 +482,18 @@ fn placed_spawn_refusals_and_unknown_outcomes_never_trigger_cleanup() {
         mock.join().expect("mock server");
     }
 }
+
+#[test]
+fn spawn_parent_reads_a_pane_id_or_none() {
+    assert_eq!(parse_parent(Some("@7"), false), Ok(Some(7)));
+    assert_eq!(parse_parent(Some("7"), false), Ok(Some(7)));
+    assert_eq!(parse_parent(Some("none"), false), Ok(None));
+    assert_eq!(
+        parse_parent(None, true),
+        Ok(None),
+        "a satellite pane is not ours"
+    );
+    for bad in ["@0", "x", "%claude", ""] {
+        assert!(parse_parent(Some(bad), false).is_err(), "{bad}");
+    }
+}

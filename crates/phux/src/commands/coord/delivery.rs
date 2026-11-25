@@ -16,7 +16,7 @@ use phux_work::{Client, Mail, ReleaseMail, WaitMail};
 use serde_json::{Value, json};
 use usage::ValueEnum;
 
-use super::{SCHEMA, emit, store};
+use super::{SCHEMA, emit, mail_store as store};
 
 /// How long `wait` holds when nothing is waiting, in seconds.
 const DEFAULT_WAIT_SECS: u64 = 300;
@@ -216,8 +216,26 @@ fn inbox_text(mail: &[Mail]) -> Option<String> {
 }
 
 fn letter(mail: &Mail) -> String {
+    let record =
+        std::env::var_os(phux_client::conversation::CONTEXT_ENV).map(std::path::PathBuf::from);
+    letter_in(mail, record.as_deref())
+}
+
+fn letter_in(mail: &Mail, record: Option<&std::path::Path>) -> String {
     let id = mail.id.to_hex();
     let (from, thread) = (&mail.from, &mail.thread);
+    if let Some(record) = record {
+        let send = crate::commands::chat::messages::reply_command(record, "send");
+        let read = crate::commands::chat::messages::reply_command(record, "read");
+        let ack = crate::commands::chat::messages::reply_command(record, "ack");
+        return format!(
+            "From {from} in thread {thread} (id {id}, sent {}):\n{}\n\
+             This is an explicitly scoped phux chat, not a terminal-control grant.\n\
+             Reply with `{send} -m '...'`; read history with `{read}`; acknowledge with `{ack} --id {id}`.",
+            mail.created_at,
+            bounded(&mail.body),
+        );
+    }
     let cut = if mail.body.chars().count() > BODY_CHARS {
         format!(
             "\n[cut at {BODY_CHARS} characters; read it whole with `phux mail read --thread {thread} --all`]"

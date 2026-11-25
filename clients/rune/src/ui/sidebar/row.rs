@@ -1,10 +1,10 @@
 //! A sidebar row: one tab, or a terminal no tab holds, on one line.
 
 use phux_protocol::ids::{ResourceId, SessionKey};
-use rune::{Color, El, el, row, text};
+use rune::{Color, El, Key, el, row, text};
 
 use super::super::rows::{Base, State as Forced, forced_face};
-use super::super::{Paint, Tokens, tile};
+use super::super::{Paint, Tokens, icons, tile};
 use super::{drag, face, return_to_terminal_on_click};
 use crate::activity::Mark;
 use crate::desk::Desk;
@@ -33,6 +33,12 @@ pub(super) struct Row<'a> {
     /// How many panes the tab splits into.
     pub(super) panes: usize,
     pub(super) selected: bool,
+    /// How many rows were started from this one, folded under it.
+    pub(super) children: usize,
+    /// Whether those rows show.
+    pub(super) open: bool,
+    /// Whether this row was started from another, and sits under it.
+    pub(super) child: bool,
     /// The terminal's machine and its colour, so a recolour redraws.
     pub(super) host: (&'a str, u32),
     /// The session's colour, for its quiet mark.
@@ -90,6 +96,50 @@ impl Row<'_> {
     }
 }
 
+/// The fold on a parent row: how many child rows it holds, and a chevron
+/// that shows or hides them. Pointer only, as the session disclosure is; the
+/// row's Left and Right fold it from the keyboard.
+fn fold_toggle(pane: &Row, t: &Tokens) -> El {
+    let (id, open) = (pane.id.clone(), pane.open);
+    super::pressable(format!("fold-{}", pane.id), t)
+        .h(t.space.s6)
+        .px(t.space.s1)
+        .gap(t.space.s0_5)
+        .radius(t.radius.xs)
+        .items_center()
+        .focusable(false)
+        .expanded(open)
+        .label(format!(
+            "{} {} child panes of {}",
+            if open { "Hide" } else { "Show" },
+            pane.children,
+            pane.name
+        ))
+        .on_press(move |d: &mut Desk| {
+            if !d.sidebar_unfolded.remove(&id) {
+                d.sidebar_unfolded.insert(id.clone());
+            }
+        })
+        .child(
+            text(pane.children.to_string())
+                .font(t.ty.caption)
+                .color(t.roles.text.faint.paint())
+                .a11y_hidden(),
+        )
+        .child(
+            rune::icon(
+                if open {
+                    &icons::CHEVRON
+                } else {
+                    &icons::CHEVRON_RIGHT
+                },
+                t.icon.size.sm,
+            )
+            .color(t.roles.text.dim.paint())
+            .a11y_hidden(),
+        )
+}
+
 pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     let selected = pane.selected;
     let (target, session) = (pane.target.clone(), pane.session.to_owned());
@@ -140,7 +190,7 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
     let row = base
         .w_full()
         .h(t.space.row_h)
-        .pl(t.space.s4 + t.space.s0_5)
+        .pl(t.space.s4 + t.space.s0_5 + if pane.child { t.space.s4 } else { 0.0 })
         .pr(t.space.s2)
         .gap(t.space.s2)
         .radius(t.radius.md)
@@ -163,6 +213,7 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
                 .a11y_hidden(),
         )
         .children(pane.trailing(quiet.paint(), disabled, t))
+        .children((pane.children > 0).then(|| fold_toggle(pane, t)))
         .children(selected.then(|| host_color::stripe(host, t)));
     if disabled {
         return row;
@@ -171,6 +222,28 @@ pub(super) fn pane_row(pane: &Row, t: &Tokens) -> El {
         d.show(target.clone(), &session);
         return_to_terminal_on_click(tx);
     });
+    let row = if pane.children > 0 {
+        let (id, open) = (pane.id.clone(), pane.open);
+        // A tree's Left folds and Right unfolds.
+        row.expanded(open).on_key(move |d: &mut Desk, event, _| {
+            let fold = match event.key {
+                Key::Left => true,
+                Key::Right => false,
+                _ => return false,
+            };
+            if fold != open {
+                return false;
+            }
+            if fold {
+                d.sidebar_unfolded.remove(&id);
+            } else {
+                d.sidebar_unfolded.insert(id.clone());
+            }
+            true
+        })
+    } else {
+        row
+    };
     // A split moves as its tab, from the tab strip; a lone pane drags here.
     match key {
         Some(key) if pane.panes == 1 => drag::resource(row, pane.id, key),

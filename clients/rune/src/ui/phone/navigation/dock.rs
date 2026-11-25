@@ -27,7 +27,9 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
     .w_full()
     .radius(p.radius.full);
     let footer = if large_text {
-        labelled(footer, title, ink, p).fill(p.roles.layer.raised.paint())
+        labelled(footer, title, ink, p)
+            .radius(p.radius.lg)
+            .fill(p.roles.layer.raised.paint())
     } else if super::super::native_glass(desk, p) {
         let control = crate::mobile::Control {
             key: "phone-session-new".to_owned(),

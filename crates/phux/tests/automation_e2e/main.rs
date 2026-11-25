@@ -10,6 +10,7 @@ mod acp_e2e;
 mod agent_list_e2e;
 mod agent_record_e2e;
 mod agent_session_e2e;
+mod child_pane_e2e;
 mod controller_client_e2e;
 mod examples_e2e;
 mod kind_dispatch_e2e;

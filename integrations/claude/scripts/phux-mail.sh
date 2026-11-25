@@ -11,6 +11,10 @@ set -u
 
 [ "$#" -eq 1 ] || exit 2
 [ "${PHUX_AGENT_REPORTING:-1}" != 0 ] || exit 0
-[ -n "${PHUX_TERMINAL_ID:-}" ] || exit 0
+# The CLI validates a native chat's private record and selects its inbox.
+# An ordinary address is not pane authority; lifecycle still needs a real pane.
+if [ -z "${PHUX_TERMINAL_ID:-}" ]; then
+  [ -n "${PHUX_CHAT_RECORD:-}" ] || exit 0
+fi
 
 "${PHUX_AGENT_PHUX_BIN:-phux}" mail hook-context --event "$1" 2>/dev/null || :

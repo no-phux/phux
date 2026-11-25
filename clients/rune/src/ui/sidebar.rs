@@ -29,7 +29,8 @@ use crate::keys::Shortcut;
 
 mod actions;
 mod items;
-use items::{Item, given_name, items};
+pub(crate) use items::focus_target;
+use items::{Item, fold, given_name, items};
 mod row;
 use row::{Row, pane_row};
 mod chrome;
@@ -291,7 +292,8 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
                 (item, lead, named.unwrap_or_else(|| lead.label.clone()))
             })
             .collect();
-        for (item, lead, name) in &titled {
+        let row_for = |index: usize, children: usize, open: bool, child: bool| {
+            let (item, lead, name) = &titled[index];
             let id = &lead.id;
             let twin = titled.iter().filter(|(.., other)| other == name).count() > 1;
             let mirror = (!lead.kind.is_terminal()).then(|| lead.mirror.to_owned());
@@ -309,13 +311,26 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
                     .unwrap_or_else(|| desk.activities.mark(id)),
                 panes: item.members.len(),
                 selected: item.members.iter().any(|m| shown == Some(&m.id)),
+                children,
+                open,
+                child,
                 host,
                 color,
                 state: Forced::Rest,
             };
-            out.push(memo(format!("pane-{id}"), (&row, version), || {
-                pane_row(&row, t)
-            }));
+            memo(format!("pane-{id}"), (&row, version), || pane_row(&row, t))
+        };
+        let selected =
+            |index: usize| (titled[index].0.members.iter()).any(|m| shown == Some(&m.id));
+        // Child panes fold under the pane they were started from: shut
+        // until unfolded, but never over the pane on screen.
+        for (root, kids) in fold(&items) {
+            let open = desk.sidebar_unfolded.contains(&titled[root].1.id)
+                || kids.iter().any(|&kid| selected(kid));
+            out.push(row_for(root, kids.len(), open, false));
+            if open {
+                out.extend(kids.into_iter().map(|kid| row_for(kid, 0, false, true)));
+            }
         }
         out
     };

@@ -158,6 +158,16 @@ phux kill --yes @7       # end a pane
 phux rm --yes @7         # forget a pane whose process ended
 ```
 
+### Child panes
+
+A pane spawned from inside another pane is its child: `phux spawn` records
+the pane it runs in (`$PHUX_TERMINAL_ID`) as the new pane's parent, and so
+does the MCP `phux_spawn` tool. `--parent @N` names another, `--parent none`
+none. `phux ls --json` lists it as the terminal's `parent`, and Rune's
+sidebar folds children under their parent with a count. The parent is stored
+as `phux.parent/v1` pane metadata; closing the parent closes nothing, and
+its children keep naming it.
+
 **Destructive verbs ask.** `kill`, `rm`, `detach`, `approve` and
 `signal interrupt|terminate|kill` ask on a terminal; without one they exit 2
 (`confirmation_required`) unless you pass `--yes`. Every state-changing verb

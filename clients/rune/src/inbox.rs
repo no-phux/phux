@@ -330,6 +330,7 @@ mod tests {
             exec: None,
             foreground: None,
             icon: None,
+            parent: None,
         }
     }
 

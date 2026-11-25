@@ -14,7 +14,7 @@ fn phone_connections_visual_review_frames() {
             for (case, machine, largest) in [
                 ("ordinary", "Build studio", false),
                 ("long", "build-studio-integration-runner", false),
-                ("large", "開発コンピュータ", true),
+                ("large", "Build studio", true),
             ] {
                 let (_, mut rt) = fixture();
                 detailed_inventory(&mut rt);

@@ -124,14 +124,15 @@ impl PaneDescriptor {
 }
 
 impl Topology {
-    /// Keep the foregrounds and icons `previous` read: a snapshot carries none, and
-    /// the occupant record only arrives again when it changes.
+    /// Keep the foregrounds, icons and parents `previous` read: a snapshot
+    /// carries none, and their metadata only arrives again when it changes.
     pub(in crate::control) fn keep_foregrounds(&mut self, previous: Option<&Self>) {
         let Some(previous) = previous else { return };
         for pane in &mut self.panes {
             let old = previous.pane(&pane.terminal_id);
             pane.foreground = old.and_then(|old| old.foreground.clone());
             pane.icon = old.and_then(|old| old.icon.clone());
+            pane.parent = old.and_then(|old| old.parent.clone());
         }
     }
 }

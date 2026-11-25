@@ -5,6 +5,7 @@ mod fixture;
 mod ime;
 mod input;
 mod motion;
+mod picker;
 mod refit;
 mod touch;
 mod touch_ownership;

@@ -175,6 +175,27 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
+/// Terminal-scoped key naming the pane this one was started from, so a list
+/// can fold children under their parent (`docs/scripting.md#child-panes`).
+///
+/// UTF-8 bare digits, the parent's local pane id (`7` for `@7`). Unlike a
+/// spawn `parent`, it binds no lifecycle: closing the parent leaves the child,
+/// which keeps naming it. The server refuses any other value or a pane naming
+/// itself, and keeps it on the pane's record, so it survives upgrades and
+/// restarts.
+pub const RESOURCE_PARENT_KEY: &str = "phux.parent/v1";
+
+/// Decode a [`RESOURCE_PARENT_KEY`] value: the parent's local pane id, never
+/// the reserved 0.
+#[must_use]
+pub fn decode_pane_parent(value: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(value).ok()?;
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().filter(|id| *id != 0)
+}
+
 /// Terminal-scoped key holding the latest note posted with `phux notify`.
 ///
 /// UTF-8 JSON `{ "level", "title", "body"?, "at" }`, `level` one of `info`,

@@ -1,13 +1,13 @@
-//! One session as a grouped card: a summary heading over its panes.
+//! A session anchor and its indented panes, on the page's continuous ground.
 use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, col, row, text};
 
-use super::{Desk, Look, control, nested, resource_row, row_h, separator};
+use super::{Desk, Look, control, resource_row};
 use crate::addressable::Addressable;
 use crate::ui::tokens::Paint;
 
-pub(super) fn session_card(
+pub(super) fn session_section(
     desk: &Desk,
     session: &phux_client_runtime::control::SessionDescriptor,
     members: &[&Addressable],
@@ -36,7 +36,7 @@ pub(super) fn session_card(
         if current { " · current session" } else { "" },
     );
     // One summary line: where you are, how big it is, what is moving.
-    // Attention has its own badge, so it is not repeated here.
+    // Attention has its own mark and count, so it is not repeated here.
     let mut summary = Vec::new();
     if current {
         summary.push("Current".to_owned());
@@ -52,14 +52,9 @@ pub(super) fn session_card(
         move |d, _| d.phone_session(&name),
     )
     .w_full()
-    .min_h(row_h(p))
+    .min_h(s.touch_min)
     .gap(s.s3)
-    .px(s.s3)
-    .radius(nested(p))
-    .children(
-        crate::session_color::of(&session.name)
-            .map(|rgb| crate::host_color::mark(rgb, s.s2 + s.s0_5, p.roles.layer.raised.paint())),
-    )
+    .px(0.0)
     .child(
         col()
             .grow(1.0)
@@ -67,6 +62,7 @@ pub(super) fn session_card(
             .gap(s.s0_5)
             .child(
                 text(session.name.clone())
+                    .key(format!("phone-session-title-{}", session.id))
                     .font(p.ty.lead.semibold())
                     .color(p.roles.text.text.paint())
                     .truncate()
@@ -86,37 +82,29 @@ pub(super) fn session_card(
                     .a11y_hidden(),
             ),
     )
+    .children(
+        crate::session_color::of(&session.name)
+            .map(|rgb| crate::host_color::mark(rgb, s.s2 + s.s0_5, p.roles.layer.ground.paint())),
+    )
     .children((waiting > 0).then(|| attention_count(waiting, p)));
-    let mut card = col()
+    let mut section = col()
+        .key(format!("phone-session-section-{}", session.id))
         .w_full()
-        .padding(s.s1)
-        .radius(p.radius.xl)
-        .continuous_corners()
-        .fill(p.roles.layer.raised.paint())
         .child(header);
-    for (i, resource) in filtered.iter().enumerate() {
-        // A hairline between rows, from the text column, as grouped lists
-        // draw it; the first row sits under the heading's own space.
-        if i > 0 {
-            card = card.child(separator(p));
-        }
-        card = card.child(resource_row(desk, resource, p));
+    for resource in filtered {
+        section = section.child(resource_row(desk, resource, p));
     }
-    card
+    section
 }
 
-/// The attention count: the needs-you tone's mark and number on its wash,
-/// a capsule with no outline. The header's name says it in words.
+/// Attention is a mark and number, not another surface. The header names it.
 fn attention_count(count: usize, p: &Look) -> El {
     let tone = p.status.state(State::NeedsYou).tone;
     let s = &p.space;
     row()
         .gap(s.s1)
         .min_h(p.icon.size.lg + s.s1)
-        .px(s.s2)
         .items_center()
-        .radius(p.radius.full)
-        .fill(tone.wash)
         .child(
             rune::icon(p.status.state(State::NeedsYou).icon, p.icon.size.xs)
                 .color(tone.ink)
@@ -124,7 +112,7 @@ fn attention_count(count: usize, p: &Look) -> El {
         )
         .child(
             text(count.to_string())
-                .font(p.ty.caption.semibold())
+                .font(p.ty.caption.semibold().figures())
                 .color(tone.ink),
         )
         .a11y_hidden()

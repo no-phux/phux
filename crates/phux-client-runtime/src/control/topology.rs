@@ -90,6 +90,10 @@ pub struct PaneDescriptor {
     /// The icon a program in the terminal set, from the same record's
     /// `icon`; `None` when none did.
     pub icon: Option<String>,
+    /// The pane it was started from (`phux.parent/v1`), which a list folds
+    /// it under; `None` until read, for a root, and for a satellite pane. It
+    /// may name a pane that has closed.
+    pub parent: Option<ResourceId>,
 }
 
 /// One `AgentSession` resource: a record stream bound to a Terminal.
@@ -228,6 +232,7 @@ impl Topology {
                     exec: None,
                     foreground: None,
                     icon: None,
+                    parent: None,
                 }
             })
             .collect();

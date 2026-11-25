@@ -137,7 +137,7 @@ impl Desk {
 
     /// The pointer left a pane: nothing there is under it any more.
     pub fn pointer_left(&mut self, terminal: &ResourceId) {
-        self.forget_mouse_cell();
+        self.forget_mouse_position();
         if self
             .pointer
             .last
@@ -161,6 +161,7 @@ impl Desk {
     }
 
     /// Handlers changed: find the link under a held ⌘ again.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn rehover(&mut self) {
         self.modifiers_changed(self.pointer.cmd);
     }

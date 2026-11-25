@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 
 import type { MailDelivery } from "../../runtime/src/mail.js";
-import { openCodeMail, type SyntheticInput } from "../src/mail.js";
+import { hasChatMailbox, openCodeMail, type SyntheticInput } from "../src/mail.js";
+
+test("an explicit record enables chat mail without changing the generic address", () => {
+  expect(hasChatMailbox({ PHUX_CHAT_RECORD: "/private/chat record" })).toBe(true);
+  expect(hasChatMailbox({ PHUX_CHAT_RECORD: "/private/chat record", PHUX_AGENT_ADDRESS: "claim-holder" })).toBe(true);
+  expect(hasChatMailbox({ PHUX_AGENT_ADDRESS: "ordinary-address" })).toBe(false);
+  expect(hasChatMailbox({ PHUX_CHAT_RECORD: "", PHUX_AGENT_ADDRESS: "ordinary-address" })).toBe(false);
+});
 
 function parkedAfter(script: readonly MailDelivery[]) {
   let calls = 0;

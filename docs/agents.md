@@ -161,6 +161,10 @@ name a pane can write it.
 
 ## Mail and path claims
 
+For a quick, separately scoped conversation with a friend or their agent,
+see [conversations](./chat.md). `phux chat run` selects that process's mail
+without moving ordinary local mail or claims to another hub.
+
 Agents leave each other messages and mark the paths they work on. Both
 persist on this machine across server restarts.
 

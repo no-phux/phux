@@ -89,6 +89,7 @@ pub(crate) fn run_spawn(
     socket: Option<PathBuf>,
     command: SpawnCommand,
     durability: SpawnDurability,
+    parent: Option<u32>,
 ) -> ExitCode {
     let SpawnCommand { app, argv: command } = command;
     let socket_path = socket.unwrap_or_else(default_socket_path);
@@ -129,6 +130,9 @@ pub(crate) fn run_spawn(
         ),
         None => dispatch_spawn(&socket_path, &frame, "spawn", None, json),
     };
+    if let (Ok(SpawnResult::Ok(child)), Some(parent)) = (&result, parent) {
+        record_parent(&socket_path, child, parent);
+    }
     match result {
         Ok(SpawnResult::Ok(terminal_id)) if app => print_app(&socket_path, &terminal_id, json),
         Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, false, json),
@@ -155,6 +159,36 @@ pub(crate) fn run_spawn(
             ExitCode::FAILURE
         }
         Err(code) => code,
+    }
+}
+
+/// Name `parent` as the new pane's `phux.parent/v1`. The pane exists either
+/// way, so a failure only warns.
+fn record_parent(socket_path: &Path, child: &ResourceId, parent: u32) {
+    let recorded = cli_runtime().is_ok_and(|rt| {
+        rt.block_on(phux_client::spawn::record_parent(
+            socket_path,
+            child,
+            parent,
+        ))
+        .unwrap_or(false)
+    });
+    if !recorded {
+        warn!("could not record @{parent} as the parent of the new pane");
+    }
+}
+
+/// `--parent PANE`: `@N` or `N`, or `none`. Omitted, the pane this runs in,
+/// unless the spawn goes to a satellite, whose panes are not this server's.
+fn parse_parent(raw: Option<&str>, satellite: bool) -> Result<Option<u32>, String> {
+    match raw {
+        None if satellite => Ok(None),
+        None => Ok(crate::environment::own_terminal_id()),
+        Some("none") => Ok(None),
+        Some(text) => (text.strip_prefix('@').unwrap_or(text).parse::<u32>().ok())
+            .filter(|id| *id != 0)
+            .map(Some)
+            .ok_or_else(|| format!("`--parent {text}` is not a pane id like @7, or `none`")),
     }
 }
 
@@ -331,6 +365,7 @@ pub(crate) fn run(args: crate::commands::SpawnArgs, socket: Option<PathBuf>) -> 
         cwd,
         retain,
         idempotency_key,
+        parent,
         app,
         browser,
         headless,
@@ -371,6 +406,20 @@ pub(crate) fn run(args: crate::commands::SpawnArgs, socket: Option<PathBuf>) -> 
             crate::exit_codes::EXIT_USAGE,
         );
     }
+    let parent = match parse_parent(parent.as_deref(), satellite.is_some()) {
+        Ok(parent) => parent,
+        Err(message) => {
+            return json_err::emit(
+                json.json,
+                &json_err::CliError::new(
+                    json_err::codes::USAGE_ERROR,
+                    message,
+                    "name the parent as `@N` from `phux ls --json`",
+                ),
+                EXIT_USAGE,
+            );
+        }
+    };
     match parse_key_arg(idempotency_key.as_deref(), json.json) {
         Ok(idempotency_key) => run_spawn(
             satellite,
@@ -389,6 +438,7 @@ pub(crate) fn run(args: crate::commands::SpawnArgs, socket: Option<PathBuf>) -> 
                 retain_secs: retain,
                 idempotency_key,
             },
+            parent,
         ),
         Err(code) => code,
     }
