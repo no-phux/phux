@@ -103,16 +103,20 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<phux_terminal_api::actor::NativeBootstrapReply, AttachResourceFailure> {
-        use crate::runtime::apps::terminal::attach::NativeRequestFailure;
-        crate::runtime::apps::terminal::attach::request_native_checkpoint(&self.terminal, |reply| {
-            phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
-                self.client_id.0,
-                self.terminal_id.clone(),
-                self.stream_id,
-                bootstrap_id,
-                self.bootstrap_limits,
-                reply,
-            )
+        use crate::runtime::apps::terminal::attach::{
+            NativeRequestFailure, past_invalidation, request_native_checkpoint,
+        };
+        past_invalidation(|| {
+            request_native_checkpoint(&self.terminal, |reply| {
+                phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
+                    self.client_id.0,
+                    self.terminal_id.clone(),
+                    self.stream_id,
+                    bootstrap_id,
+                    self.bootstrap_limits,
+                    reply,
+                )
+            })
         })
         .await
         .map_err(|failure| match failure {
@@ -269,3 +273,7 @@ impl AttachResourceSession<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "attach_capture_tests.rs"]
+mod tests;
