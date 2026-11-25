@@ -386,7 +386,7 @@ fn unregistered_remedies(target: &RemoteTarget) -> String {
     let name = target.registry_name();
     format!(
         "to pair without ssh, run `phux pair` on {} and paste the link:\
-         \nphux --remote {name} --code '<https://phux.sh/connect?...>'\
+         \nphux attach --remote {name} --code '<https://phux.sh/connect?...>'\
          \nor, with ssh access, `phux host add {name}` (starts and supervises the server there)",
         target.host
     )

@@ -4,7 +4,7 @@
 //! policies that must compile unchanged for native and wasm frontends:
 //!
 //! - [`engine`] and [`session`] — the generic terminal adapter and synchronous
-//!   protocol-0.7 session kernel.
+//!   session kernel.
 //! - `grid` (feature `native-engine`) — the one plain-old-data cell layout
 //!   and the projector that flattens a libghostty viewport into it
 //!   (ADR-0133); every binding lends or copies this buffer.

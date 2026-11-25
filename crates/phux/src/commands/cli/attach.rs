@@ -124,10 +124,13 @@ pub(crate) struct AttachArgs {
     /// QUIC listener for this attach alone, then dial it directly. ssh
     /// authenticates you (password and 2FA prompts work) and exits once
     /// the session is up; the session itself rides QUIC, so it roams and
-    /// renders locally. Needs no pairing, service, or overlay network on
-    /// the host. When UDP cannot reach it, the local client attaches
-    /// through ssh itself. The host is anything ssh accepts, including
-    /// `ssh://user@host:port` and aliases from `~/.ssh/config`.
+    /// renders locally. Needs no service or overlay network on the host.
+    /// The host opens that listener only under `[policy] mode =
+    /// "paired"`, and admits only an enrolled client certificate
+    /// (`PHUX_WORKLOAD_CERT`). Without both, or when UDP cannot reach
+    /// it, the local client attaches through ssh itself. The host is
+    /// anything ssh accepts, including `ssh://user@host:port` and
+    /// aliases from `~/.ssh/config`.
     #[usage(
         long,
         value_name = "[USER@]HOST",
@@ -169,7 +172,8 @@ pub(crate) struct AttachArgs {
     // ADR-0127: PRIMARY with DELIBERATE takeover, spent on this attach.
     /// Attach and take the wheel: seize the input lease of
     /// every pane this attach opens, in the same step as the attach. The
-    /// previous holder stays attached. `phux give` hands it back.
+    /// previous holder stays attached. The `give-input` key or a detach
+    /// hands it back.
     #[usage(long, conflicts("--viewer"), help_heading = "Attach role")]
     pub(crate) take: bool,
 
