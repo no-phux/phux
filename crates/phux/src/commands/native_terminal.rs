@@ -23,9 +23,9 @@ pub(crate) struct NativeArgs {
 
 #[derive(Debug, Subcommands)]
 enum TerminalAction {
-    /// Create a distinct terminal in a shared persistent session and display it.
+    /// Create a distinct terminal in a shared persistent session and display it
     Create(CreateArgs),
-    /// Reattach an exact local terminal; never selects a focused pane.
+    /// Reattach an exact local terminal; never selects a focused pane
     Attach(AttachArgs),
 }
 

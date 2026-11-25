@@ -43,10 +43,9 @@ const DEFAULT_ROTATION_OVERLAP_SECONDS: i64 = 300;
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum PairAction {
-    /// List credentials in the store (id, minted, last seen, status:
-    /// unused, active, expired, or revoked, with when it stops working).
+    /// List stored credentials: id, minted, last seen, status, and expiry
     Ls,
-    /// Revoke credentials unused for at least DURATION.
+    /// Revoke credentials unused for at least DURATION
     Prune {
         /// How long a credential may sit idle before prune revokes it
         /// (`30d`, `24h`, `90m`, or a bare number of seconds). Idle time is
@@ -54,7 +53,7 @@ pub(crate) enum PairAction {
         #[usage(long = "unused-for", value_name = "DURATION")]
         unused_for: String,
     },
-    /// Replace a credential's bearer secret with a bounded overlap.
+    /// Replace a credential's bearer secret with a bounded overlap
     Rotate {
         /// Stable credential ID printed when the credential was minted.
         #[usage(value_name = "CREDENTIAL_ID")]
@@ -72,7 +71,7 @@ pub(crate) enum PairAction {
         )]
         overlap_seconds: i64,
     },
-    /// Revoke every generation of a credential for new connections.
+    /// Revoke every generation of a credential for new connections
     ///
     /// A `sha256:` id names an enrolled workload client certificate (the id
     /// `phux host add` and `phux workload add-key` print); it is revoked in

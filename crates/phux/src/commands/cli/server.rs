@@ -169,7 +169,7 @@ pub(crate) struct ServerArgs {
 /// `phux server <action>`: questions for the running server.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ServerAction {
-    /// Show the macOS privacy grants the running server holds.
+    /// Show the macOS privacy grants the running server holds
     ///
     /// macOS charges every program in a pane to the server, so Full Disk
     /// Access, Screen Recording and Accessibility are the server's to hold.
@@ -225,7 +225,7 @@ pub(crate) struct ServiceArgs {
 /// `phux service <action>` — manage the per-user service unit.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ServiceAction {
-    /// Write the unit and hand it to the init system.
+    /// Write the unit and hand it to the init system
     ///
     /// Idempotent: rerunning reconciles an existing unit, so changing a
     /// listener address is `install` again with the new flag.
@@ -283,7 +283,7 @@ pub(crate) enum ServiceAction {
         print: bool,
     },
 
-    /// Bring an installed unit's restart policy up to date, in place.
+    /// Bring an installed unit's restart policy up to date, in place
     ///
     /// Rewrites only the keys that carry the restart policy and leaves every
     /// other byte of the unit alone, so the listeners, hub mode and socket
@@ -300,13 +300,13 @@ pub(crate) enum ServiceAction {
         print: bool,
     },
 
-    /// Unload the unit and remove what `install` wrote.
+    /// Unload the unit and remove what `install` wrote
     Uninstall,
 
-    /// Report whether a unit is installed and running.
+    /// Report whether a unit is installed and running
     Status,
 
-    /// Show the supervised server's log.
+    /// Show the supervised server's log
     Logs {
         /// Follow the log as it grows.
         #[usage(short = 'f', long)]
@@ -317,7 +317,7 @@ pub(crate) enum ServiceAction {
         lines: u32,
     },
 
-    /// Delete the accumulated per-pid `client-*.log` files.
+    /// Delete the accumulated per-pid `client-*.log` files
     #[usage(name = "prune-logs")]
     PruneLogs {
         /// Report how many would be removed, and remove nothing.

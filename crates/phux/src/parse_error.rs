@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 
-use crate::help::{help_style, render_help_page};
+use crate::help::{bare_required_flags, help_style, render_help_page};
 use crate::{Cli, commands, json_output_requested, output};
 
 fn flag_exists_on_any_verb(cmd: &usage::Command<'_>, long: &str) -> bool {
@@ -173,8 +173,11 @@ pub(crate) fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_
             // usage-rs owns parse explanations and suggestions. Adapt its fixed
             // error-header contract, never classify an arbitrary message. Keep
             // the usage/context block plain rather than coloring argv values.
-            let rendered =
-                redact_long_base64(&usage::render_failure_plain(Cli::spec(), argv, &err));
+            let rendered = bare_required_flags(&redact_long_base64(&usage::render_failure_plain(
+                Cli::spec(),
+                argv,
+                &err,
+            )));
             let (header, context) = rendered.split_once('\n').unwrap_or((&rendered, ""));
             let message = header.strip_prefix("error: ").unwrap_or(header);
             let hint = misplaced_flag_hint(&err, &words);

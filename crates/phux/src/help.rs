@@ -213,7 +213,7 @@ pub(crate) fn render_help_page(
     long: bool,
     style: usage::help::Style,
 ) -> Option<String> {
-    let mut page = usage::help::render_styled(Cli::spec(), cmd, long, style)?;
+    let mut page = bare_required_flags(&usage::help::render_styled(Cli::spec(), cmd, long, style)?);
     if long && std::ptr::eq(cmd, Cli::spec().root.cmd) {
         page.push('\n');
         // Colour is decided by the style, not the palette: a palette on a
@@ -232,4 +232,71 @@ pub(crate) fn render_help_page(
         }
     }
     Some(page)
+}
+
+/// Rewrite the `Usage:` block of rendered help or a parse failure so a
+/// required flag reads the way it is typed, `--route <NAME>`. usage-rs
+/// angles it like a required argument (`<--route <NAME>>`), which reads as
+/// a positional; a flag listed without brackets is already required, as
+/// `[--json]` beside it says.
+pub(crate) fn bare_required_flags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_usage = false;
+    for line in text.split_inclusive('\n') {
+        in_usage = is_usage_line(line, in_usage);
+        if in_usage {
+            out.push_str(&unangle_flags(line));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Whether `line` opens the `Usage:` block, or continues one: usage-rs
+/// aligns each further synopsis under the first, seven columns in.
+fn is_usage_line(line: &str, in_usage: bool) -> bool {
+    let line = skip_ansi(line);
+    line.starts_with("Usage:") || (in_usage && line.starts_with("       ") && line.trim() != "")
+}
+
+/// Drop the angle brackets around each flag in one synopsis line, keeping
+/// those around values and positionals (`<NAME>`, `<-- COMMAND>`).
+fn unangle_flags(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    // One entry per open `<`: whether it was dropped, so its `>` is too.
+    let mut dropped = Vec::new();
+    for (at, c) in line.char_indices() {
+        match c {
+            '<' => {
+                let flag = opens_flag(&line[at + 1..]);
+                dropped.push(flag);
+                if !flag {
+                    out.push(c);
+                }
+            }
+            '>' if dropped.pop().unwrap_or(false) => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether `text` (what follows a `<`) starts with a flag spelling such as
+/// `--route` or `-r`, colour codes aside.
+fn opens_flag(text: &str) -> bool {
+    let text = skip_ansi(text);
+    let name = text.strip_prefix("--").or_else(|| text.strip_prefix('-'));
+    name.is_some_and(|name| name.starts_with(|c: char| c.is_ascii_alphanumeric()))
+}
+
+/// `text` past any leading SGR colour sequences (`ESC [ ... m`).
+fn skip_ansi(mut text: &str) -> &str {
+    while let Some(rest) = text.strip_prefix("\x1b[") {
+        let Some(end) = rest.find('m') else {
+            return text;
+        };
+        text = &rest[end + 1..];
+    }
+    text
 }

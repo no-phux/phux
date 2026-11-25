@@ -17,7 +17,7 @@ use super::{Sink, run_follow, run_open, run_publish, run_snapshot, surface_mirro
 /// `PixelSurface`, whose documents are PNG or JPEG images and go to files.
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum SurfaceAction {
-    /// Open a surface under the pane its producer runs in.
+    /// Open a surface under the pane its producer runs in
     Open {
         /// The parent pane.
         target: String,
@@ -32,7 +32,7 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
-    /// Replace the surface's image from a PNG or JPEG file, or stdin.
+    /// Replace the surface's image from a PNG or JPEG file, or stdin
     Publish {
         /// The surface.
         target: String,
@@ -42,7 +42,7 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
-    /// Write the surface's newest image to a file.
+    /// Write the surface's newest image to a file
     Snapshot {
         /// The surface.
         target: String,
@@ -53,8 +53,10 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
-    /// Mirror a window or a display into a surface until Ctrl-C: macOS, or
-    /// Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
+    /// Mirror a window or a display into a surface until Ctrl-C
+    ///
+    /// Works on macOS, and on Linux under a wlroots compositor (Hyprland,
+    /// Sway) through `grim`.
     Mirror {
         /// The window as `App` or `App:title` (on Linux, a Hyprland class), or
         /// `display`: the main display on macOS, every output on Linux, where
@@ -83,8 +85,10 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
-    /// Run the `[[mirrors]]` entries as this process's children, each into
-    /// its `mirror-<target>` session, restarting any that exit. Rune runs
+    /// Run the configured `[[mirrors]]` entries, restarting any that exit
+    ///
+    /// Runs each entry as this process's child, into its `mirror-<target>`
+    /// session, restarting any that exit. Rune runs
     /// this on macOS, where the server's own children cannot hold Screen
     /// Recording access; one runs per server.
     Standing {
@@ -92,12 +96,12 @@ pub(crate) enum SurfaceAction {
         #[usage(long, value_name = "PID")]
         parent_pid: Option<u32>,
     },
-    /// List the displays and windows `mirror` can name on this host.
+    /// List the displays and windows `mirror` can name on this host
     Targets {
         #[usage(long)]
         json: bool,
     },
-    /// Write every image as it arrives, each replacing the file.
+    /// Write every image as it arrives, each replacing the file
     Follow {
         /// The surface.
         target: String,

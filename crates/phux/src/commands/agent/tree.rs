@@ -65,7 +65,7 @@ pub(crate) use surface::run_surface;
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum TreeAction {
-    /// Open a tree under the pane its producer runs in.
+    /// Open a tree under the pane its producer runs in
     Open {
         /// The parent pane.
         target: String,
@@ -75,7 +75,7 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Replace the tree's document from a file, or stdin.
+    /// Replace the tree's document from a file, or stdin
     Publish {
         /// The tree.
         target: String,
@@ -85,7 +85,7 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Print the tree's newest document, control characters shown as signs.
+    /// Print the tree's newest document, control characters shown as signs
     Snapshot {
         /// The tree.
         target: String,
@@ -93,7 +93,7 @@ pub(crate) enum TreeAction {
         json: bool,
     },
     /// Mirror a running application into a tree, until Ctrl-C: macOS
-    /// Accessibility, or AT-SPI on Linux.
+    /// Accessibility, or AT-SPI on Linux
     Mirror {
         /// The application: its process name on macOS (`Safari`), its AT-SPI
         /// name on Linux.
@@ -116,12 +116,12 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-    /// Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+    /// Activate one element by node, not pixel: `--node ID` or `--name TEXT`
     Click {
         #[usage(flatten)]
         args: click::ClickArgs,
     },
-    /// Print every document as it arrives.
+    /// Print every document as it arrives
     Follow {
         /// The tree.
         target: String,

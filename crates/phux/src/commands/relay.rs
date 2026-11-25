@@ -10,7 +10,7 @@ use usage::Subcommands;
 /// `phux relay <action>` — serve the relay or enroll a route.
 #[derive(Debug, Subcommands)]
 pub(crate) enum RelayAction {
-    /// Run the relay in the foreground.
+    /// Run the relay in the foreground
     ///
     /// Binds one QUIC endpoint on LISTEN and serves both relay legs on
     /// it: phux servers dial out from behind NAT and register a tunnel
@@ -39,7 +39,7 @@ pub(crate) enum RelayAction {
         max_conns: usize,
     },
 
-    /// Enroll a route and mint (or rotate) its tunnel token.
+    /// Enroll a route and mint (or rotate) its tunnel token
     ///
     /// Writes one entry binding a fresh secret token to NAME in the
     /// relay's route-token store and prints the token once, alongside
