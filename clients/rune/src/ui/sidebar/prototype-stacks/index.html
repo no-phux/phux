@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Throwaway: three arrow-free sidebar compositions in the existing terminal context.
+     Open ?variant=A, B or C. This file is not imported by Rune or a production build. -->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rune · arrow-free pane stacks · visual prototype</title>
+<link rel="stylesheet" href="style.css">
+<body>
+<header class="study">
+  <div><span class="eyebrow">RUNE / SIDEBAR STUDY</span><h1>Show the work. Not the controls.</h1></div>
+  <p>No disclosures. No empty gutters.<br>Depth means panes belong together.</p>
+</header>
+<main class="window" aria-label="Throwaway Rune visual prototype">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><span>Phux Rune</span><span class="read-only">VISUAL PROTOTYPE · NO LIVE SERVER</span></div>
+  <div class="app">
+    <aside aria-label="Sessions">
+      <div class="machine"><span class="online"></span><strong>This Mac</strong><span class="machine-detail">local</span><button title="Search" aria-label="Search prototype sessions" id="search-button"><svg viewBox="0 0 20 20"><circle cx="8.3" cy="8.3" r="5.1"/><path d="m12.1 12.1 4.2 4.2"/></svg></button></div>
+      <input id="search" type="search" placeholder="Find a session or pane" aria-label="Find a prototype session or pane" hidden>
+      <div class="sidebar-heading"><span>WORKSPACE</span><span id="density"></span></div>
+      <div id="groups" class="groups"></div>
+      <footer class="sidebar-footer"><button id="new-session">＋ <span>New session</span></button><span class="shortcut">⌘ N</span></footer>
+    </aside>
+    <section class="workspace" aria-label="Illustrative terminal workspace">
+      <div class="workspace-bar"><div><span class="workspace-session">phux</span><span class="slash">/</span><strong id="workspace-name">Sidebar polish</strong></div><span class="workspace-status"><span class="online"></span>Connected</span></div>
+      <div class="terminals" id="terminals"></div>
+      <div class="workspace-bottom"><span id="focus-label"></span><span>Literal split arrangement · illustrative data</span></div>
+    </section>
+  </div>
+</main>
+<section class="explanation"><div><span class="eyebrow" id="variant-kicker"></span><h2 id="variant-name"></h2></div><p id="variant-description"></p></section>
+<nav class="prototype-switcher" aria-label="Prototype controls">
+  <span class="prototype-tag">PROTOTYPE</span>
+  <div class="variants"><button data-variant="A">A · Inline</button><button data-variant="B">B · Exposed</button><button data-variant="C">C · Spatial</button></div>
+  <label class="width-control">Width <input id="width" type="range" min="220" max="340" value="280"><output id="width-value">280</output></label>
+  <button id="theme" aria-label="Switch prototype colour theme">Light</button>
+  <span id="state" aria-live="polite"></span>
+</nav>
+<script src="prototype.js"></script>
+</body>
+</html>
