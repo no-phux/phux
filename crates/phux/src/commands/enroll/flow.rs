@@ -53,6 +53,9 @@ pub(crate) fn enroll_over_ssh(
             on_event(EnrollEvent::ServerReady(supervision.clone()));
             Some(supervision)
         }
+        Err(error) if error.contains(crate::commands::service::PORT_TAKEN) => {
+            return Err(EnrollFailure::NotListening(error_line(&error)));
+        }
         Err(error) => {
             on_event(EnrollEvent::ServerStartFailed { error });
             None
@@ -65,7 +68,8 @@ pub(crate) fn enroll_over_ssh(
         on_event(EnrollEvent::CredentialReused);
         (report, true)
     } else {
-        let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token)?;
+        let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token)
+            .map_err(|failure| not_listening(failure, supervision.as_ref()))?;
         if req.previous_token.is_some() {
             on_event(EnrollEvent::CredentialReplaced);
         } else {
@@ -110,6 +114,36 @@ pub(crate) fn enroll_over_ssh(
         identity,
         certificate,
     })
+}
+
+/// A pair refused because nothing is listening there, as why nothing is: the
+/// service install's own reason when it failed, else `phux pair`'s.
+fn not_listening(failure: EnrollFailure, supervision: Option<&Supervision>) -> EnrollFailure {
+    let EnrollFailure::Pair(detail) = failure else {
+        return failure;
+    };
+    if !detail.contains(crate::commands::pair::NO_BOUND_LISTENER) {
+        return EnrollFailure::Pair(detail);
+    }
+    let why = match supervision {
+        Some(Supervision::Unsupervised { reason }) => reason.clone(),
+        _ => detail,
+    };
+    EnrollFailure::NotListening(error_line(&why))
+}
+
+/// The error a remote phux printed, without its prefixes or the progress
+/// lines around it.
+fn error_line(stderr: &str) -> String {
+    let error = stderr
+        .lines()
+        .find_map(|line| line.split_once("error: "))
+        .map_or_else(|| stderr.trim(), |(_, error)| error.trim());
+    ["service: ", "pair: "]
+        .iter()
+        .find_map(|prefix| error.strip_prefix(prefix))
+        .unwrap_or(error)
+        .to_owned()
 }
 
 /// Dial each candidate in turn; the first that answers is the endpoint.

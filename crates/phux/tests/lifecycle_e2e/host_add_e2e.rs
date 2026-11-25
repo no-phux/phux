@@ -14,6 +14,7 @@
 use crate::{common, listeners, paired};
 
 mod far_host;
+mod live_server;
 
 use far_host::{FarHost, stderr};
 
