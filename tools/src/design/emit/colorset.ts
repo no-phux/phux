@@ -1,5 +1,5 @@
 /**
- * tokens/ios/{AccentColor,LaunchBackground}.colorset/Contents.json: asset-catalog colours with
+ * tokens/ios/{AccentColor,LaunchBackground,Status*}.colorset/Contents.json: asset-catalog colours with
  * Any, Dark and High Contrast (Any and Dark) appearances, in Xcode's own layout.
  */
 import { parse } from "../derive.ts";
@@ -32,7 +32,21 @@ function colorset(light: string, dark: string, lightHigh: string, darkHigh: stri
 export function emitColorsets(R: Resolved): { path: string; bytes: string }[] {
   const h = R.house,
     cm = R.contrastMore;
+  // What the widgets and the Lock Screen card mark an agent's state with.
+  const status = (["needs_you", "working", "failed", "done"] as const).map((state) => ({
+    path: `ios/Status${state
+      .split("_")
+      .map((w) => w[0]!.toUpperCase() + w.slice(1))
+      .join("")}.colorset/Contents.json`,
+    bytes: colorset(
+      h.light.status[state],
+      h.dark.status[state],
+      cm.light.status[state],
+      cm.dark.status[state],
+    ),
+  }));
   return [
+    ...status,
     // The tint colour reads as text and icons, so high contrast takes the solved accent_text.
     {
       path: "ios/AccentColor.colorset/Contents.json",

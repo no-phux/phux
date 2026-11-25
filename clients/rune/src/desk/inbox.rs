@@ -26,7 +26,6 @@ const UNKNOWN_ANSWER: &str = "The answer may not have landed; read the pane firs
 #[derive(Debug, PartialEq)]
 pub struct AlertInputs {
     marks: u64,
-    /// Panes' identities and labels, and the held actions.
     listed: u64,
     on_screen: Vec<ResourceId>,
     focused: bool,
@@ -384,7 +383,8 @@ impl Desk {
         true
     }
 
-    fn alert_inputs(&self) -> AlertInputs {
+    /// The panes' identities and labels, and the held actions.
+    pub(super) fn listed(&self) -> u64 {
         let mut listed = DefaultHasher::new();
         for pane in self.connection.topology.iter().flat_map(|t| t.panes.iter()) {
             (&pane.terminal_id, &pane.session_name, &pane.title).hash(&mut listed);
@@ -394,9 +394,13 @@ impl Desk {
         for approval in &self.inbox.approvals {
             approval.id.hash(&mut listed);
         }
+        listed.finish()
+    }
+
+    fn alert_inputs(&self) -> AlertInputs {
         AlertInputs {
             marks: self.activities.revision(),
-            listed: listed.finish(),
+            listed: self.listed(),
             on_screen: self.on_screen(),
             focused: self.focused,
             open: self.inbox.open,

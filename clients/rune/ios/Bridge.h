@@ -50,6 +50,9 @@ void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
 // A tap on the frame's native control `id` (its `controls`): runs that
 // control's press, as Rune's accessibility press would. False when none ran.
 bool phux_rune_ios_press(void *host, const char *id);
+// A tapped card, widget or Dynamic Island: `phux://inbox` or
+// `phux://pane/@N`. False when the link is neither.
+bool phux_rune_ios_open_link(void *host, const char *url);
 // Answers a frame's `paste` request with the system pasteboard's text.
 void phux_rune_ios_paste(void *host, const char *text);
 // One picked file for a frame's `attaching` request, borrowed for this call.

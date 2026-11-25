@@ -29,6 +29,10 @@ final class RuneView: UIView {
     private var controls: NativeControls?
     private let attachments = Attachments()
     private let path = NWPathMonitor()
+    /// A tapped card's link, until Rune can take it.
+    private var link: String?
+    /// Rune's link to its computer is up, as of the last drawn frame.
+    private(set) var attached = false
     private var pathSettled = false
     private var pathWork: DispatchWorkItem?
     isolated deinit { close() }
@@ -193,6 +197,8 @@ final class RuneView: UIView {
         drawing = true
         defer { drawing = false }
         do {
+            // A cold tap from the card waits for the computer.
+            if attached, let link { self.link = nil; _ = bridge.openLink(link) }
             let frame = try bridge.frame()
             synchronizeInput(frame)
             // Not on an undrawn frame: the controls stay where it last drew.
@@ -203,6 +209,11 @@ final class RuneView: UIView {
             try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale,
                                        didPresent: frame["drew"] as? Bool == true)
         } catch { fail(error) }
+    }
+
+    func openLink(_ link: String) {
+        self.link = link
+        wake()
     }
 
     private func synchronizeInput(_ frame: [String: Any]) {
@@ -251,6 +262,8 @@ final class RuneView: UIView {
         case "copied": UINotificationFeedbackGenerator().notificationOccurred(.success)
         default: break
         }
+        attached = requests["attached"] as? Bool ?? false
+        if qualification == nil { AgentCard.shared.update(requests["presence"]) }
         if requests["connection"] as? Bool == true { connectionRequested?() }
     }
 
