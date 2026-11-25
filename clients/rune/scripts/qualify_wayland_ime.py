@@ -212,7 +212,10 @@ class Diagnostic:
         self.wait_for("restarted Rune PID has keyboard focus", self.focused)
         self.wait_for("focused Rune Wayland context (DebugInfo)", self.context_ready)
         self.wait_for("fresh IME session prompt", self.prompt_ready)
-        self.command(["fcitx5-remote", "-o"], "wayland-ime-activate.log")
+        # Activation may cold-load Pinyin addons; it is not a readiness probe.
+        # It still shares the original startup deadline and is never replayed.
+        self.command(["fcitx5-remote", "-o"], "wayland-ime-activate.log",
+                     timeout=STARTUP_SECONDS)
         self.wait_for("effective Pinyin engine and active state 2", self.engine_ready)
         self.wait_for("focused Rune Wayland context after activation", self.context_ready)
         self.wait_for("restarted Rune keyboard owner before injection", self.focused)
