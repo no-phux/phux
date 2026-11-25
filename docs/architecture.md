@@ -124,6 +124,17 @@ and a publication table; Rune and the FFI use it. The TUI and the browser run
 the kernel in their own I/O loops. The [consumer contract](./embedding.md)
 owns epochs, delivery and draw-list rules.
 
+The native connection driver owns shared-control locking, resumable engine
+round trips, clocks/backoff and attempt tracing. It releases the control lock
+while an engine batch runs, then folds outcomes only into the connection epoch
+that issued them; a retired completion cannot reset a replacement publication.
+`ControlPlane::new(now, options)` and `observe_time(now)` take explicit monotonic
+observations: input, upload and organization expiry never sample a platform
+clock. Connected and embedded `Client` frame pumps use the same native handoff.
+Direct control-plane drivers must supply fresh observations themselves. Native
+client construction/lifetime and callback retirement live separately from the
+public synchronous handle.
+
 The TUI paints pane interiors from libghostty through a cell-diffed buffer and
 chrome with ratatui in disjoint regions. Rune paints the runtime's draw list
 with the [Rune](https://github.com/anomalyco/rune) framework.
