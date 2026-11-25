@@ -86,11 +86,9 @@ where
 
 mod rotation;
 pub use rotation::run_log_rotation_task;
-#[allow(
-    unused_imports,
-    reason = "the rotation pieces `init` and the tests use"
-)]
-use rotation::*;
+use rotation::{LOG_ROTATE_MAX_GENERATIONS, LOG_ROTATE_THRESHOLD_BYTES, rotate_log};
+#[cfg(test)]
+use rotation::{generation_path, rotate_server_log_if_needed};
 
 /// A non-blocking appender at `path` (parent made), plus its
 /// [`WorkerGuard`]. Rotates at open.
