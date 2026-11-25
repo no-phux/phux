@@ -32,6 +32,10 @@ client certificate and token for this machine, and saves the entry as
 `mini`. Run it again whenever the host stops answering: it checks the setup
 and repairs what broke.
 
+A server already running there opens its listener in place, with its panes
+kept. If it can't (another program has the port), the machine is left as it
+was: pass `--quic-port` to pick another.
+
 SSH signs in once for every step ([SSH](./ssh.md)). If a non-interactive
 shell can't find phux on the host (some Homebrew or Nix installs), pass
 `--remote-phux /opt/homebrew/bin/phux`; the entry remembers it. Every flag is

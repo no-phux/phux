@@ -262,6 +262,9 @@ pub(crate) enum EnrollFailure {
     /// Pairing failed: `phux pair --json` did not run, or its output did
     /// not parse.
     Pair(String),
+    /// phux runs there but accepts no network connections, and could not be
+    /// made to.
+    NotListening(String),
 }
 
 impl EnrollFailure {
@@ -279,7 +282,8 @@ impl EnrollFailure {
             Self::SshUnreachable(detail)
             | Self::MissingPhux(detail)
             | Self::InstallFailed(detail)
-            | Self::Pair(detail) => detail,
+            | Self::Pair(detail)
+            | Self::NotListening(detail) => detail,
         }
     }
 }

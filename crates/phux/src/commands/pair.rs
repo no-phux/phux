@@ -1919,7 +1919,7 @@ mod tests {
             "{refusal}"
         );
         assert!(
-            refusal.contains("--listen HOST:PORT") && refusal.contains("--quic HOST:PORT"),
+            refusal.contains("service install --adopt --quic"),
             "{refusal}"
         );
         assert!(!refusal.contains("phux pair --enable"), "{refusal}");

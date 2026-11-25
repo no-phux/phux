@@ -209,3 +209,38 @@ fn a_second_server_on_one_machine_is_saved_beside_the_first() {
     let hosts = value["hosts"].as_array().expect("hosts");
     assert_eq!(hosts.len(), 2, "{value}");
 }
+
+/// An `ssh://` entry carries only an attach, so every command `host add` and
+/// a refused session verb print is one that works, for any spelling `ssh`
+/// itself takes.
+#[test]
+fn an_ssh_entry_names_only_commands_that_work() {
+    for (endpoint, destination) in [
+        ("ssh://me@mini", "me@mini"),
+        ("ssh://me@mini:2222", "ssh://me@mini:2222"),
+        ("ssh://me@[::1]", "me@::1"),
+    ] {
+        let tmp = TempDir::new().expect("tempdir");
+        let xdg = tmp.path().join("xdg");
+        let (code, stdout, stderr) = run_with_xdg(&["host", "add", "box", endpoint], &xdg);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("phux attach box")
+                && stdout.contains(&format!("ssh {destination} phux ls"))
+                && !stdout.contains("--remote box"),
+            "{stdout}"
+        );
+        let (code, _, stderr) = run_with_xdg(&["ls", "--remote", "box"], &xdg);
+        assert_eq!(code, 1, "{stderr}");
+        assert!(
+            stderr.contains(&format!("ssh {destination} phux ls"))
+                && !stderr.contains("phux host add box"),
+            "{stderr}"
+        );
+    }
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    let (code, _, stderr) = run_with_xdg(&["host", "add", "box", "ssh://mini/home"], &xdg);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("takes no path"), "{stderr}");
+}

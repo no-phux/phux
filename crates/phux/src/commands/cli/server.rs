@@ -270,9 +270,10 @@ pub(crate) enum ServiceAction {
         /// running process itself is never adopted: neither launchd nor
         /// systemd can restart-supervise a process it did not start.
         ///
-        /// When the live server is the one this systemd unit already runs,
-        /// the unit is rewritten, and a listener it gains comes up by
-        /// restarting that server in place, panes kept (`phux upgrade`).
+        /// A listener the unit names and the live server lacks comes up by
+        /// restarting that server in place, panes kept (`phux upgrade`). If
+        /// it cannot open, the config and the unit are put back as they
+        /// were.
         #[usage(long)]
         adopt: bool,
 

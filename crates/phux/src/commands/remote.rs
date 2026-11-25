@@ -151,7 +151,7 @@ pub(crate) enum Endpoint {
     Quic(String),
     /// `ws://` or `wss://`, carrying the URL unchanged.
     Ws(String),
-    /// `ssh://HOST`, carrying the ssh destination.
+    /// `ssh://HOST`, carrying the destination `ssh` takes for it.
     Ssh(String),
 }
 
@@ -173,10 +173,7 @@ impl Endpoint {
             return Ok(Self::Ws(trimmed.to_owned()));
         }
         if let Some(rest) = trimmed.strip_prefix("ssh://") {
-            if rest.is_empty() {
-                return Err("ssh:// endpoint needs a host (e.g. ssh://mini)".to_owned());
-            }
-            return Ok(Self::Ssh(rest.to_owned()));
+            return super::enroll::uri_destination(rest).map(Self::Ssh);
         }
         Err(format!(
             "remote endpoint {trimmed:?} must start with quic://, wss://, ws://, or ssh://"

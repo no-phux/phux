@@ -20,6 +20,7 @@ use super::attach::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, Refusal, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::{self, Bootstrap};
+use super::ssh_bootstrap::shell_quote;
 
 /// The refusal for `--socket` next to `--remote`. One names a local UDS, the
 /// other a network dial, and silently preferring either would run the verb
@@ -194,7 +195,12 @@ fn plan_entry_inner(
         Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, server_name),
         Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, server_name),
         Endpoint::Ssh(destination) => {
-            return Err(ssh_only_refusal(&entry.name, &destination, verb));
+            return Err(ssh_only_refusal(
+                &entry.name,
+                &destination,
+                entry.remote_phux(),
+                verb,
+            ));
         }
     };
     let DialPlan { dial, loopback } = plan
@@ -292,15 +298,35 @@ fn unresolved_remedy(dns_name: bool, re_pair: &str) -> String {
     lines.join("\n")
 }
 
-/// Why an `ssh://` entry cannot carry a headless verb, and the two ways out.
-fn ssh_only_refusal(name: &str, destination: &str, verb: &str) -> CliError {
+/// Why an `ssh://` entry cannot carry a headless verb, and the ways out.
+fn ssh_only_refusal(name: &str, destination: &str, remote_phux: &str, verb: &str) -> CliError {
+    let there = format!(
+        "run the command on the host: `{} ...`",
+        over_ssh(destination, remote_phux, verb)
+    );
+    // `host add` reads a `:PORT` as phux's own, and a URI as it is.
+    let remedy = if destination.contains(':') {
+        there
+    } else {
+        format!(
+            "{there};\nor register a direct QUIC endpoint the session verbs can dial: \
+             `phux host add {} --name {name}`",
+            shell_quote(destination)
+        )
+    };
     CliError::new(
         codes::REMOTE_UNRESOLVED,
         format!("remote {name:?} is an ssh:// entry, which carries an interactive attach only"),
-        format!(
-            "`phux host add {name}` registers a direct QUIC endpoint the session verbs can dial;\n\
-             until then, run the command on the host: `ssh {destination} phux {verb} ...`"
-        ),
+        remedy,
+    )
+}
+
+/// `phux VERB` run on an `ssh://` entry's host, as a command to paste.
+pub(crate) fn over_ssh(destination: &str, remote_phux: &str, verb: &str) -> String {
+    format!(
+        "ssh {} {} {verb}",
+        shell_quote(destination),
+        shell_quote(remote_phux)
     )
 }
 
