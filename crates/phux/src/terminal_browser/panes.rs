@@ -214,37 +214,6 @@ fn decode_process(result: CommandResult) -> Result<Option<TerminalProcessState>,
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn absent_processes_are_not_inventory_failures() {
-        assert_eq!(
-            decode_process(CommandResult::OkWith(CommandValue::Json(
-                r#"{"process":null}"#.into()
-            )))
-            .unwrap(),
-            None
-        );
-        assert_eq!(
-            decode_process(CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "gone".into()
-            })
-            .unwrap(),
-            None
-        );
-        assert!(
-            decode_process(CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "denied".into()
-            })
-            .is_err()
-        );
-    }
-}
-
 pub(super) struct Process {
     pub parent: i32,
     pub tty: Option<String>,
@@ -284,5 +253,36 @@ impl Processes {
                 })
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_processes_are_not_inventory_failures() {
+        assert_eq!(
+            decode_process(CommandResult::OkWith(CommandValue::Json(
+                r#"{"process":null}"#.into()
+            )))
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            decode_process(CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message: "gone".into()
+            })
+            .unwrap(),
+            None
+        );
+        assert!(
+            decode_process(CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                message: "denied".into()
+            })
+            .is_err()
+        );
     }
 }

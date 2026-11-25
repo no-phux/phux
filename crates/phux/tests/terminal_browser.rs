@@ -37,8 +37,9 @@ fn rpc(socket: &Path, method: &str, params: Value, cwd: &Path) -> Value {
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    let request = json!({"id":"test-request", "method":method, "params":params,
+    let mut request = json!({"id":"test-request", "method":method,
         "caller":{"pid":std::process::id(), "cwd":cwd}});
+    request["params"] = params;
     writeln!(stream, "{request}").unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
@@ -93,44 +94,7 @@ fn browser_discovers_splits_and_routes_input_without_an_outer_terminal() {
     assert_eq!(initial["panes"].as_array().unwrap().len(), 1);
     assert_eq!(initial["panes"][0]["tab"], pane["tab"]);
     assert_eq!(initial["panes"][0]["tty"], tty);
-    for (direction, opposite) in [
-        ("right", "left"),
-        ("left", "right"),
-        ("down", "up"),
-        ("up", "down"),
-    ] {
-        let output = dir.path().join(direction);
-        let text = "literal ' quote; $(not-a-command)";
-        result(
-            &endpoint,
-            "split",
-            json!({
-                "from":pane, "direction":direction, "size":0.4, "tty":tty,
-                "command":["/bin/sh","-c","printf '%s\\n%s\\n' \"$PWD\" \"$1\" > \"$2\"; exec /bin/cat",
-                    "browser-test",text,output]
-            }),
-            &cwd,
-        );
-        assert_eq!(read_file(&output), format!("{}\n{text}\n", cwd.display()));
-        let neighbor = result(
-            &endpoint,
-            "neighbor",
-            json!({"from":pane,"direction":direction}),
-            &cwd,
-        )["pane"]
-            .clone();
-        assert!(neighbor.is_object(), "{direction}");
-        assert_eq!(neighbor["tab"], pane["tab"]);
-        assert_eq!(
-            result(
-                &endpoint,
-                "neighbor",
-                json!({"from":neighbor,"direction":opposite}),
-                &cwd
-            )["pane"],
-            pane
-        );
-    }
+    assert_cardinal_splits(&endpoint, &pane, &tty, &cwd);
     let listed = result(&endpoint, "listPanes", json!({}), &cwd);
     assert_eq!(listed["panes"].as_array().unwrap().len(), 5);
     let rejected = rpc(
@@ -202,6 +166,10 @@ fn browser_discovers_splits_and_routes_input_without_an_outer_terminal() {
         bytes, b"\x1b[200~Enter\x1b[201~\x16",
         "literal paste, then real Ctrl+V"
     );
+    assert_shutdown(&server, &endpoint);
+}
+
+fn assert_shutdown(server: &common::ServerGuard, endpoint: &Path) {
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(i32::try_from(server.pid()).unwrap()),
         nix::sys::signal::Signal::SIGTERM,
@@ -214,6 +182,47 @@ fn browser_discovers_splits_and_routes_input_without_an_outer_terminal() {
             "adapter socket survived graceful shutdown"
         );
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn assert_cardinal_splits(endpoint: &Path, pane: &Value, tty: &str, cwd: &Path) {
+    for (direction, opposite) in [
+        ("right", "left"),
+        ("left", "right"),
+        ("down", "up"),
+        ("up", "down"),
+    ] {
+        let output = cwd.join(direction);
+        let text = "literal ' quote; $(not-a-command)";
+        result(
+            endpoint,
+            "split",
+            json!({
+                "from":pane, "direction":direction, "size":0.4, "tty":tty,
+                "command":["/bin/sh","-c","printf '%s\\n%s\\n' \"$PWD\" \"$1\" > \"$2\"; exec /bin/cat",
+                    "browser-test",text,output]
+            }),
+            cwd,
+        );
+        assert_eq!(read_file(&output), format!("{}\n{text}\n", cwd.display()));
+        let neighbor = result(
+            endpoint,
+            "neighbor",
+            json!({"from":pane,"direction":direction}),
+            cwd,
+        )["pane"]
+            .clone();
+        assert!(neighbor.is_object(), "{direction}");
+        assert_eq!(neighbor["tab"], pane["tab"]);
+        assert_eq!(
+            result(
+                endpoint,
+                "neighbor",
+                json!({"from":neighbor,"direction":opposite}),
+                cwd
+            )["pane"],
+            *pane
+        );
     }
 }
 

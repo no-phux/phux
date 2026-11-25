@@ -79,7 +79,10 @@ async fn replies_correlate_ids_and_close_after_one_line() {
 
 #[tokio::test]
 async fn oversized_and_unterminated_requests_have_no_effect() {
-    for bytes in [vec![b'x'; MAX_REQUEST as usize + 1], b"{}".to_vec()] {
+    for bytes in [
+        vec![b'x'; usize::try_from(MAX_REQUEST).unwrap() + 1],
+        b"{}".to_vec(),
+    ] {
         let (mut client, server) = UnixStream::pair().unwrap();
         let task = tokio::spawn(async { answer(server, Path::new("/absent.sock")).await });
         let _ = client.write_all(&bytes).await;

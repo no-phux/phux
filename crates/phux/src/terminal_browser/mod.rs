@@ -47,8 +47,9 @@ struct Caller {
 /// Deterministic across upgrades and distinct for every coordinator socket.
 fn socket_path(server: &Path) -> PathBuf {
     let hash = Sha256::digest(server.as_os_str().as_encoded_bytes());
-    let short: String = hash[..8].iter().map(|byte| format!("{byte:02x}")).collect();
-    server.with_file_name(format!("tb-{short}.sock"))
+    let mut prefix = [0; 8];
+    prefix.copy_from_slice(&hash[..8]);
+    server.with_file_name(format!("tb-{:016x}.sock", u64::from_be_bytes(prefix)))
 }
 
 pub(crate) fn install(server: &Path) {
