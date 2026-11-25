@@ -6,7 +6,7 @@ use rune::{El, col, el, row, text};
 
 use super::overlay::{EXTENTS, pop};
 use super::tokens::{Paint, Tier};
-use super::{PAD, Tokens, icon_press, icons, panes, status};
+use super::{Tokens, icon_press, icons, panes, status, terminal_padding};
 use crate::desk::Desk;
 
 /// A command's popup: its terminal in a box over the window, with the
@@ -16,6 +16,7 @@ pub fn view(desk: &Desk, t: &Tokens) -> Option<El> {
     let s = &t.space;
     let r = &t.roles;
     let command = desk.connection.popup.command()?;
+    let pad = terminal_padding(desk);
     let body = match desk.connection.popup.terminal() {
         Some(id) => panes::pane(desk, id, false, p),
         // Laid out first, so the command starts at the size it will have.
@@ -24,8 +25,8 @@ pub fn view(desk: &Desk, t: &Tokens) -> Option<El> {
             .w_full()
             .h_full()
             .center()
-            .on_layout(|d: &mut Desk, [_, _, w, h]| {
-                d.popup_laid_out([w - 2.0 * PAD, h - 2.0 * PAD]);
+            .on_layout(move |d: &mut Desk, [_, _, w, h]| {
+                d.popup_laid_out([w - 2.0 * pad, h - 2.0 * pad]);
             })
             .child(
                 text("Opening…")

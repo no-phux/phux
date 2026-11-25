@@ -73,8 +73,13 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
 } else {
     "Ctrl+Shift+"
 };
-/// Space between the terminal area's edge and its grid.
+/// Space between a desktop terminal card's edge and its grid.
 pub(crate) use tokens::TERMINAL_PAD as PAD;
+
+/// The phone gives the grid the whole pane viewport inside the system safe area.
+fn terminal_padding(desk: &Desk) -> f32 {
+    if desk.phone.is_some() { 0.0 } else { PAD }
+}
 
 /// The tokens for a theme, or the system appearance with none, as a
 /// window with no machine, glass or accessibility setting has them.

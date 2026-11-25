@@ -222,7 +222,6 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .min_h(0.0)
         .min_w(0.0)
-        .px(if desk.settings_open { 0.0 } else { p.space.s1 })
         .child(if desk.settings_open {
             settings::view(desk, p)
         } else {
