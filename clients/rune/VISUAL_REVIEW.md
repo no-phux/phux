@@ -129,6 +129,15 @@ claims of Tab-driven focus reveal. Long-filter cases use the keyboard-reduced
 320×340 and 393×480 viewports. Ordinary UIKit Glass remains separate
 from the large-text opaque inline action.
 
+Sessions search recovery cases retain matching, no-match, long and blurred
+filters, standard and AX5 text, both phone widths, full and keyboard-reduced
+native-sized viewports, light/dark and true 2×. Compare the complete Clear search
+target and remaining editor width. Exercise touch, accessibility Click and real
+Tab/Enter/Space: clearing restores the first results, cancels composition and
+keeps replacement typing in the editor. A stale native edit cannot restore the
+old query; a covering modal and cancelled press cannot clear it. Preserve the
+terminal's keyboard preference, selected pane and server arrangement.
+
 ## Review behavior as well as pixels
 
 Sidebar keyboard cases start in a non-leading split pane. Compare idle,

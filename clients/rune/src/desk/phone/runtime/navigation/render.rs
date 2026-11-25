@@ -6,6 +6,7 @@ mod canvas;
 mod connections;
 mod header;
 mod reconnect;
+mod search;
 mod states;
 
 #[test]

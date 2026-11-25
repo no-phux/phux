@@ -28,6 +28,7 @@ def navigation_inventory(themes=("dark", "light")):
              (393, 480, 2, "true"), (320, 340, 2, "true")))
     })
     cases.update(connections_inventory(themes))
+    cases.update(session_search_inventory(themes))
     cases.update({
         f"navigation/canvas-{state}-{theme}-{width * 2}.png":
             (width, keyboard_height if state.startswith("query-") else height, 2)
@@ -71,6 +72,18 @@ def navigation_inventory(themes=("dark", "light")):
             ((1100, 720), (640, 360)))
     })
     return cases
+
+
+def session_search_inventory(themes):
+    return {
+        f"navigation/session-search-{state}-{theme}-{text}-native-{native}-"
+        f"{width}x{height}-{width * 2}.png": (width, height, 2)
+        for state, theme, text, (width, height, native) in product(
+            ("matching", "no-match", "long", "blurred"), themes, ("standard", "ax5"),
+            ((320, 568, "false"), (393, 852, "false"),
+             (320, 478, "true"), (393, 759, "true"),
+             (320, 340, "true"), (393, 480, "true")))
+    }
 
 
 def reconnect_inventory(themes):
@@ -126,6 +139,7 @@ def connections_inventory(themes):
 
 def navigation_exporter(stem):
     for prefix, exporter in (
+        ("session-search-", "phone_session_search_visual_review_frames"),
         ("canvas-", "phone_session_canvas_visual_review_frames"),
         ("reconnect-", "reconnect_feedback_visual_review_frames"),
         ("attention-", "attention_contrast_visual_review_frames"),
