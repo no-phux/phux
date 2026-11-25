@@ -6,7 +6,8 @@ INPUT_CONTRACTS = ("field-editing", "rejected-edit", "composition-revision", "ra
                    "raw-replacement", "hardware-routing", "directional-selection", "dismissal",
                    "pairing-import", "pairing-confirmation", "pairing-save-retry", "pairing-cancelled-identity",
                    "tailnet-account", "tailnet-errors", "tailnet-import", "native-control-stability",
-                   "native-control-teardown", "earlier-app-scenes")
+                   "native-control-teardown", "earlier-app-scenes",
+                   "earlier-app-hosts")
 
 
 def validate_report(report, transport="quic", resumed=False):

@@ -77,6 +77,8 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private static let launchGround = UIColor(named: "LaunchGround") ?? .black
     private var ground = RuneController.launchGround
     private let empty = EmptyState()
+    /// What an update could not carry from the app it replaced.
+    private var refusal: String?
     isolated deinit { qualificationTask?.cancel() }
     private var groundIsDark: Bool {
         var (red, green, blue): (CGFloat, CGFloat, CGFloat) = (0, 0, 0)
@@ -108,6 +110,12 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         view.window?.overrideUserInterfaceStyle = groundIsDark ? .dark : .light
     }
     private func showDisconnected() {
+        if let refusal {
+            empty.show(title: "Pair your computer again", detail: refusal, primary: "Pair a computer") {
+                [weak self] in self?.showConnection()
+            }
+            return
+        }
         empty.show(title: "No computer connected",
             detail: "Pair this phone with a computer running Phux to open its terminals here.",
             primary: "Connect a computer") { [weak self] in self?.showConnection() }
@@ -124,6 +132,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private func reopen() {
         do {
             if let configuration = try HostSettings.load() { open(configuration) }
+            else if refusal != nil { showDisconnected() }
             else { showConnection() }
         } catch { showFailure(error.localizedDescription) }
     }
@@ -135,6 +144,10 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         if let probe {
             qualify(probe)
             return
+        }
+        if let outcome = EarlierHosts.carry() {
+            EarlierHosts.notice = outcome.notice
+            refusal = outcome.carried == nil ? outcome.refusal : nil
         }
         if let link = pendingLink {
             pendingLink = nil
@@ -201,6 +214,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         let form = OnboardingController(values: try? HostSettings.load())
         form.closed = { [weak self] in self?.setupClosed() }
         form.connected = { [weak self] configuration in
+            EarlierHosts.notice = nil // Its own pairing replaced what that described.
             self?.dismiss(animated:true) { self?.open(configuration) }
         }
         let nav = UINavigationController(rootViewController: form)
@@ -250,6 +264,18 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             surface.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor),
             surface.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor)])
         self.surface = surface
+        showNotice()
+    }
+
+    private func showNotice() {
+        guard let notice = EarlierHosts.notice, probe == nil, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "One computer was carried over", message: notice, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Change Computer", style: .default) { [weak self] _ in
+            EarlierHosts.notice = nil
+            self?.showConnection()
+        })
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel) { _ in EarlierHosts.notice = nil })
+        present(alert, animated: true)
     }
 }
 
