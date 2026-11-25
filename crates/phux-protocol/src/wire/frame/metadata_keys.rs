@@ -51,6 +51,17 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
 pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
+/// Global key claiming (`true`) or releasing (`false`) the writer's view
+/// size lock.
+///
+/// Applied to the writing attachment, not stored or broadcast. While a view
+/// holds the lock, only its `RESIZE_TERMINAL` and viewport size the panes of
+/// its session it subscribes to; other views see them letterboxed or
+/// cropped. A claim puts back the sizes the view last set, the newest claim
+/// wins, and the lock ends with the attachment, so a client re-claims after
+/// each `ATTACHED`. An older server stores the value and ignores it.
+pub const VIEW_SIZE_LOCK_KEY: &str = "phux.view.size-lock/v1";
+
 /// Global key grouping sessions under a project tag.
 ///
 /// Stored, not intercepted (`docs/organization.md`). Value: `name\0project`,
@@ -163,6 +174,27 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// `{ "target": u32, "kind": str }`; `kind` is an open enum (ADR-0027).
 /// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
+
+/// Terminal-scoped key naming the pane this one was started from, so a list
+/// can fold children under their parent (`docs/scripting.md#child-panes`).
+///
+/// UTF-8 bare digits, the parent's local pane id (`7` for `@7`). Unlike a
+/// spawn `parent`, it binds no lifecycle: closing the parent leaves the child,
+/// which keeps naming it. The server refuses any other value or a pane naming
+/// itself, and keeps it on the pane's record, so it survives upgrades and
+/// restarts.
+pub const RESOURCE_PARENT_KEY: &str = "phux.parent/v1";
+
+/// Decode a [`RESOURCE_PARENT_KEY`] value: the parent's local pane id, never
+/// the reserved 0.
+#[must_use]
+pub fn decode_pane_parent(value: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(value).ok()?;
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().filter(|id| *id != 0)
+}
 
 /// Terminal-scoped key holding the latest note posted with `phux notify`.
 ///
@@ -296,7 +328,7 @@ pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
 pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 
 /// `Global`-scope key family a device registers a background-push grant
-/// under (ADR-0155, `docs/protocol/host-operations.md#background-push`).
+/// under (`docs/protocol-files.md#background-push`).
 ///
 /// `phux.push/v1/<device>` holds a client-owned UTF-8 JSON object naming the
 /// gateway the device trusts, the bearer secret that gateway minted for it,

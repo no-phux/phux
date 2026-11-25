@@ -18,3 +18,7 @@ any other kind with `wrong_resource_kind`, naming the tool that reads it) plus
 agent session stream, puts mail sent to its pane into the conversation as a
 `phux.mail` follow-up (`phux mail wait`, never typing into the pane), and
 refuses input or destructive actions against its own pane. See [coding agents](https://github.com/no-phux/phux/blob/main/docs/agents.md).
+
+With this integration installed, `phux chat run NAME -- omp` also receives
+mail outside a pane. The CLI validates `PHUX_CHAT_RECORD` and selects its
+inbox without changing the generic address or claim holder.

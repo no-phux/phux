@@ -69,6 +69,7 @@ fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     let sidebar = sidebar_reservation(
         viewport_dims.0,
         settings.sidebar.enabled,
+        settings.sidebar.rail,
         settings.sidebar.width,
         settings.sidebar.edge,
         settings.chrome.min_pane_cols,

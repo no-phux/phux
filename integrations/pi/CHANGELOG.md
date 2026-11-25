@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.11.0](https://github.com/no-phux/phux/compare/pi-extension-v0.10.1...pi-extension-v0.11.0) (2026-11-24)
+
+
+### Features
+
+* **chat:** add native scoped buddy and agent conversations ([#2915](https://github.com/no-phux/phux/issues/2915)) ([7ab5109](https://github.com/no-phux/phux/commit/7ab5109b8b1f61a23ef303ca4eede66e47ac8a04))
+
 ## [0.10.1](https://github.com/no-phux/phux/compare/pi-extension-v0.10.0...pi-extension-v0.10.1) (2026-11-23)
 
 

@@ -55,6 +55,10 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
             &F_METADATA_WRITE,
         ),
         (
+            set(Scope::Global, VIEW_SIZE_LOCK_KEY, b"true"),
+            &F_METADATA_WRITE,
+        ),
+        (
             set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &mark),
             &F_KEEP_EMPTY_MARK,
         ),

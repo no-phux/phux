@@ -21,6 +21,7 @@ impl super::SessionLoop {
         sidebar_reservation(
             self.viewport_dims.0,
             self.sidebar_enabled,
+            self.settings.sidebar.rail,
             self.settings.sidebar.width,
             self.settings.sidebar.edge,
             self.settings.chrome.min_pane_cols,
@@ -270,7 +271,25 @@ impl super::SessionLoop {
         if matches!(drained.level, RepaintLevel::Full | RepaintLevel::Panes) {
             self.pacer.clear_pending();
         }
+        self.follow_host_theme(out, sidebar);
         self.repaint_view(out, sidebar, drained.level);
+    }
+
+    /// A focus that crosses to or from a satellite's pane wears that
+    /// machine's theme: the reload rebuilds the chrome around it.
+    fn follow_host_theme<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) {
+        let focus = self.mirror.paint_focus();
+        let host = focus.as_ref().and_then(ResourceId::host);
+        let crossed = crate::attach::hosts::focus_satellite(
+            host.map(phux_protocol::ids::SatelliteHost::as_str),
+        );
+        if crossed && self.settings.host_themes {
+            self.reload_config(out, sidebar);
+        }
     }
 
     /// Paint every pane the pacer withheld, as one composited frame.

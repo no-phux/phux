@@ -16,10 +16,12 @@ pub const SPEC: WidgetKindSpec = WidgetKindSpec {
               one in the `active` style and the rest in `inactive`, joined \
               by `separator`. A window whose focused pane runs an agent \
               shows that agent's badge glyph before its name. A zoomed \
-              active window gets a ` Z` marker, a \
-              window waiting on a human answer a ` !` marker, a window \
-              holding a retained (exited) pane a dim ` x` / ` xN` marker, \
-              and every tab is a click target committing `select-window` \
+              active window gets a ` Z` marker, and the status ladder \
+              marks the rest as the sidebar does: ` ●` for a window waiting \
+              on a human answer (unless its badge already says so), ` ✕N` \
+              for a retained pane that failed and ` –` for one that exited \
+              cleanly (` *`, ` xN` and ` -` in the ASCII column), and every \
+              tab is a click target committing `select-window` \
               for its index (the shown tab's goes back to the last one) \
               — in any slot, top or bottom bar. Overflow \
               arrows select the nearest hidden window; long active labels \

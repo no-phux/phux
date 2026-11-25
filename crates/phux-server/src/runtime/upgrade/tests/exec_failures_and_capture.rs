@@ -16,7 +16,7 @@ async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
         ));
         let (plan, _listener, _) = unexecutable_plan(seal);
         assert_eq!(
-            plan.exec().await.kind(),
+            plan.exec(&state).await.kind(),
             std::io::ErrorKind::PermissionDenied
         );
         let next = append_records(&append, "{\"type\":\"stop\"}").await;

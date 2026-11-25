@@ -91,6 +91,10 @@ impl Desk {
             self.connection.topology.as_ref(),
             &self.activities,
             &self.inbox.approvals,
+            self.machines
+                .current
+                .as_deref()
+                .unwrap_or(crate::machines::LOCAL),
         );
         for item in &mut items {
             if let Item::Terminal(waiting) = item

@@ -3,7 +3,7 @@
 use super::ArgValue::{Int, Str};
 use super::{ActionSpec, Category, Palette};
 use crate::attach::input_dispatch::run_action as run;
-use crate::attach::input_dispatch::{organize, session_management, tab_lock};
+use crate::attach::input_dispatch::{organize, session_management, size_lock, tab_lock};
 mod approvals;
 
 /// The actions with a palette row, in the order the palette lists them.
@@ -170,6 +170,12 @@ pub(super) const PALETTE_ROWS: &[ActionSpec] = &[
     "`label?` (bare chord writes an empty marker)" },
     row! { "getting-started", run::push_getting_started, View, "Getting started", [],
     "Getting started: detach, return, the Agents list, and command discovery",
+    "" },
+    row! { "lock-size", size_lock::lock_size, View, "Lock view size", [],
+    "Keep this client's pane sizes: other clients see them letterboxed or cropped",
+    "" },
+    row! { "unlock-size", size_lock::unlock_size, View, "Unlock view size", [],
+    "Let defaults.window-size size the panes again",
     "" },
     row! { "detach", run::detach, View, "Detach", [],
     "Detach this client from the session",

@@ -3,8 +3,9 @@
 // and icount (docs/ci.md#native-apple-qualification).
 import { expect, test } from "bun:test";
 import { Classifier } from "./classify.ts";
-import { plan, planOutputs } from "./plan.ts";
-import { job, run, steps, workflow } from "../policy/workflows.ts";
+import { LANES, plan, planOutputs } from "./plan.ts";
+import { job, needs, run, steps, workflow } from "../policy/workflows.ts";
+import { table } from "../lib/value.ts";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -29,9 +30,23 @@ function fixture(ref = "topic", headRepo = "no-phux/phux") {
 
 function aggregate(event: string, results: Record<string, unknown>): number | null {
   const script = run(steps(job(workflow("ci.yml"), "ci")).find((step) => run(step) !== "") ?? {});
+  const defaults = Object.fromEntries(
+    [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
+  );
+  const complete = {
+    ...Object.fromEntries(
+      needs(job(workflow("ci.yml"), "ci")).map((id) => [id, { result: "skipped" }]),
+    ),
+    guards: { result: "success" },
+    ...results,
+    plan: {
+      ...table(results["plan"]),
+      outputs: { ...defaults, ...table(table(results["plan"])["outputs"]) },
+    },
+  };
   return Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
     cwd: repoPath("."),
-    env: { ...process.env, EVENT_NAME: event, RESULTS: JSON.stringify(results) },
+    env: { ...process.env, EVENT_NAME: event, RESULTS: JSON.stringify(complete) },
     stdout: "ignore",
     stderr: "ignore",
   }).exitCode;
@@ -110,7 +125,7 @@ test.each([
     for (const lane of ["native", "icount", "queue-apple", "rune"]) {
       for (const state of ["success", "skipped", "failure", "cancelled"]) {
         const result = aggregate("pull_request", { ...baseline, [lane]: { result: state } });
-        const allowed = state === "success" || state === "skipped";
+        const allowed = state === "success" || (state === "skipped" && lane !== "rune");
         expect([lane, state, result]).toEqual([lane, state, allowed ? 0 : 1]);
       }
     }

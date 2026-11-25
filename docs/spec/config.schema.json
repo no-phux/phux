@@ -280,6 +280,11 @@
           "default": "off",
           "description": "Whether the server holds an idle-sleep inhibitor (`caffeinate`,\n`systemd-inhibit`) so a working agent is not put to sleep."
         },
+        "lock-size": {
+          "default": false,
+          "description": "Whether `phux attach` and a bare `phux` lock their view size, as\n`--lock-size` does: other views no longer resize this client's panes.",
+          "type": "boolean"
+        },
         "mouse": {
           "default": true,
           "description": "Whether the client enables outer-terminal mouse tracking on attach\n(ADR-0048). `false` leaves the host's native selection untouched.",
@@ -385,7 +390,7 @@
     },
     "ForwardCfg": {
       "additionalProperties": false,
-      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/forwarding.md`).",
+      "description": "`[forward]` table: TCP port and ssh-agent forwarding\n(`docs/ssh.md#forwarding-a-port`).",
       "properties": {
         "agent": {
           "default": false,
@@ -587,6 +592,13 @@
       "properties": {
         "color": {
           "description": "Palette id overriding this machine's automatic colour; absent or\n`\"auto\"` keeps the hash of its short host name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "description": "Theme a client on this machine wears for its own panes, named as\nthat client lists themes; absent keeps the client's own theme.",
           "type": [
             "string",
             "null"
@@ -1047,6 +1059,13 @@
             "null"
           ]
         },
+        "theme": {
+          "description": "Theme a client wears while it views this host, named as that client\nlists themes (`[theme] name` in the TUI, a theme id in Rune); absent\nkeeps the client's own theme.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tls-server-name": {
           "description": "TLS server name (SNI) a `quic://` or `wss://` dial offers instead of\nthe endpoint's host. Set, it names a relay route: the endpoint is\nthe relay, the pin is the relay's, and the relay splices the dial\nonto the server enrolled under this route (ADR-0052, ADR-0149).",
           "type": [
@@ -1129,6 +1148,14 @@
       "additionalProperties": false,
       "description": "`[rune]` table: settings the Rune app otherwise keeps in its own prefs.\n\nA key set here wins over the app's saved choice and cannot be changed\nfrom Settings; an unset key stays the app's to remember.",
       "properties": {
+        "bold-is-bright": {
+          "default": null,
+          "description": "Bold text in ANSI colours 0 to 7 draws in the bright variant, 8 to\n15, like xterm's `boldColors`. Off when unset; true colour never\nbrightens.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "chief": {
           "default": null,
           "description": "The phux session whose ACP agent a tap of the right Command key\nprompts; `\"chief\"` when unset, `\"none\"` turns the tap off.",
@@ -1305,7 +1332,7 @@
             }
           ],
           "default": null,
-          "description": "Where the terminal tabs go: `\"top\"` in the title bar, `\"bottom\"` under\nthe panes, or `\"hidden\"`."
+          "description": "Where the terminal tabs go: `\"auto\"` in the title bar while the\nsidebar is folded (the sidebar lists them while it shows), `\"top\"`\nalways in the title bar, `\"bottom\"` under the panes, or `\"hidden\"`."
         },
         "theme": {
           "default": null,
@@ -1470,6 +1497,11 @@
           "default": "left",
           "description": "Which edge the sidebar docks to."
         },
+        "rail": {
+          "default": true,
+          "description": "Keep a three-column rail while the sidebar is hidden or does not fit\n(default `true`): an agents-need-you count, one state dot per session\n(the active one marked), and an expand chevron. `false` hides the\nsidebar completely.",
+          "type": "boolean"
+        },
         "recent-first": {
           "default": false,
           "description": "List sessions most recently used first instead of in the arranged\norder.",
@@ -1583,6 +1615,11 @@
     "TabBar": {
       "description": "`[rune] tab-bar`: where the terminal tabs go.",
       "oneOf": [
+        {
+          "const": "auto",
+          "description": "In the title bar while the sidebar is folded; while it shows, its\nrows are the tabs.",
+          "type": "string"
+        },
         {
           "const": "top",
           "description": "In the title bar.",
@@ -1834,6 +1871,7 @@
         "history-bytes": 10485760,
         "history-limit": 50000,
         "keep-awake": "off",
+        "lock-size": false,
         "mouse": true,
         "retain-on-exit": false,
         "retain-on-exit-max": 256,
@@ -2084,6 +2122,7 @@
         }
       ],
       "default": {
+        "bold-is-bright": null,
         "chief": null,
         "confirm-close": null,
         "copy-on-select": null,
@@ -2152,6 +2191,7 @@
         "hosts-provider": [],
         "hosts-refresh-secs": 10,
         "position": "left",
+        "rail": true,
         "recent-first": false,
         "width": 20
       },

@@ -6,8 +6,8 @@
 # recent action and hook runs with their exit status and output tail.
 # The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
 # their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
-# sections; link handlers are still declarative only. The manifest path
-# may be absolute or relative to this config file.
+# sections; Rune runs their `[[links]]` handlers on ⌘-click. The manifest
+# path may be absolute or relative to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
@@ -53,8 +53,9 @@
 #   [[links]]
 #   id = "ticket"
 #   title = "Open ticket"
-#   patterns = ["https://linear.app/*"]
-#   command = ["agent-ticket", "{url}"]
+#   patterns = ["https://linear.app/*"]   # whole-link globs; or schemes = ["https"]
+#   run_on = "client"      # client | pane-host (a split beside the pane)
+#   command = ["agent-ticket", "{url}"]   # url path line pane host cwd
 
 # Federation satellites are remote phux servers a hub can route to. The registry
 # lands before routing so operators can declare stable names and endpoints.
@@ -118,7 +119,7 @@
 # interval-ms = 1000
 
 # Standing producers: any command this server keeps running as a document
-# producer (`docs/applications.md#standing-producers`), in its own session
+# producer (`docs/resource-kinds.md#standing-producers`), in its own session
 # `producer-<name>`, restarted and reloaded like the mirrors above. A first
 # word `phux` is this server's own binary.
 #

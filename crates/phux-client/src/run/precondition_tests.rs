@@ -108,6 +108,32 @@ async fn a_pane_running_vim_is_refused_before_anything_is_typed() {
     );
 }
 
+/// A busy record left by a job that just exited (a `( ... )` subshell's
+/// zsh) clears on the detector's next tick; the run waits that out rather
+/// than refusing a shell that is back at its prompt (phux-ydly9).
+#[tokio::test]
+async fn a_busy_record_one_tick_stale_does_not_refuse() {
+    // The detector's next tick lands 300 ms in, inside one tick period.
+    let next_tick = std::time::Instant::now() + Duration::from_millis(300);
+    let outcome = with_server(
+        move || {
+            ScriptSpec::new()
+                .stored_metadata(
+                    Scope::Resource(pane()),
+                    RESOURCE_PANE_OCCUPANT_KEY,
+                    occupant("zsh", std::time::Instant::now() >= next_tick),
+                )
+                .screen(&at_prompt(&[
+                    &format!("PHUXrun{NONCE}BEGIN"),
+                    &format!("PHUXrun{NONCE}RC=0=END"),
+                ]))
+        },
+        |socket| async move { run_against(&socket, false).await },
+    )
+    .await;
+    assert!(matches!(outcome, RunOutcome::Completed(_)), "{outcome:?}");
+}
+
 /// No occupant record and no OSC-133 marks: fail closed.
 #[tokio::test]
 async fn an_unanswerable_pane_is_refused_rather_than_typed_into() {

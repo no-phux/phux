@@ -1,7 +1,7 @@
 #!/bin/sh
 # Emit one OSC 7501 program-status report, or a short working/blocked/done
 # sequence. No phux library, no socket, no hook. The bytes go to this
-# process's terminal. See docs/any-program-status.md.
+# process's terminal. See docs/program-protocol.md.
 #
 # One report. The second argument is kind (empty except with blocked):
 #   sh examples/agents/report-status.sh blocked permission mytool

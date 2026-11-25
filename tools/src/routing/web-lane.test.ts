@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { list, str, table } from "../lib/value.ts";
-import { action, job, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
-import { LANE_RECIPES } from "./plan.ts";
+import { action, job, needs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
+import { LANES, LANE_RECIPES } from "./plan.ts";
 
 const WEB_CHECKS = [
   'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi',
@@ -102,7 +102,20 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
           ...process.env,
           EVENT_NAME: "pull_request",
           RESULTS: JSON.stringify({
-            plan: { result: "success", outputs: {} },
+            ...Object.fromEntries(
+              needs(job(workflow("ci.yml"), "ci")).map((id) => [id, { result: "skipped" }]),
+            ),
+            plan: {
+              result: "success",
+              outputs: {
+                ...Object.fromEntries(
+                  [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
+                ),
+                web: "true",
+              },
+            },
+            "web-vt": { result: "success" },
+            "web-client": { result: "success" },
             [id]: { result },
           }),
         },

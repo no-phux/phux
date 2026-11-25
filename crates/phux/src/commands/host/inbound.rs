@@ -85,6 +85,9 @@ pub(super) fn mint_code(
     Ok((minted.code.to_link(), minted.ticket.id))
 }
 
+mod chat;
+pub(crate) use chat::{MailInvitation, mint_mail_invitation, withdraw_mail_invitation};
+
 /// Withdraw an unredeemed ticket `mint_code` returned.
 pub(super) fn withdraw_ticket(registry: &Path, id: &str) -> Result<(), String> {
     let tickets_path = tickets::tickets_path(registry);

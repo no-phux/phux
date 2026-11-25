@@ -369,7 +369,7 @@ pub struct WorkloadCredential {
     /// The person or agent the key belongs to, when known.
     pub subject: Option<String>,
     /// The organization that manages this record
-    /// (`docs/remote.md#managed-by-an-organization`): admitted without a
+    /// (`docs/security.md#managed-by-an-organization`): admitted without a
     /// pairing bearer, and replaced only by that organization's sync.
     pub managed: Option<String>,
 }

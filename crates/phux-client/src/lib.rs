@@ -43,6 +43,7 @@ pub mod checkout;
 pub mod conditional_kill;
 // The `--json` error contract every surface reports failures on.
 pub mod contract;
+pub mod conversation;
 pub mod credentials;
 pub mod deadline;
 // Delegated agent credentials (ADR-0163).

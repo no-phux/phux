@@ -82,6 +82,7 @@ fn strict_load_reads_which_key_and_sidebar_knobs() {
         new.sidebar,
         SidebarSettings {
             enabled: true,
+            rail: true,
             width: 33,
             edge: SidebarEdge::Right,
             agents_share: 50,
@@ -241,4 +242,40 @@ fn a_config_that_does_not_load_keeps_the_shipped_keys_and_shows_the_error() {
         assert!(bar.is_error_line(), "the load error takes the bar row");
         assert!(settings.mouse_capture);
     }
+}
+
+#[test]
+fn a_focused_satellite_wears_its_host_theme_and_leaving_reverts() {
+    let cfg = parse(
+        r##"
+[theme]
+accent = "#ff9e64"
+
+[[remote]]
+name = "prod"
+endpoint = "quic://prod:8788"
+theme = "no-such-theme"
+"##,
+    );
+    assert!(cfg.any_host_theme());
+    // Not attached anywhere and nothing focused: the global theme builds.
+    assert_eq!(*viewed_theme(&cfg), cfg.theme);
+    assert!(TuiSettings::strict_from(&cfg).is_ok());
+
+    assert!(crate::attach::hosts::focus_satellite(Some("prod")));
+    let worn = viewed_theme(&cfg);
+    assert_eq!(
+        worn.selection(),
+        phux_config::theme::ThemeSelection::Name("no-such-theme")
+    );
+    assert_eq!(
+        worn.slots.get("accent").map(String::as_str),
+        Some("#ff9e64")
+    );
+    // The build resolves the host's theme, so the missing one refuses.
+    assert!(TuiSettings::strict_from(&cfg).is_err());
+
+    assert!(crate::attach::hosts::focus_satellite(None));
+    assert_eq!(*viewed_theme(&cfg), cfg.theme);
+    assert!(TuiSettings::strict_from(&cfg).is_ok());
 }

@@ -55,6 +55,8 @@ The **Palette** column is the command-palette section the action is offered unde
 | `scroll-half-page-down` | — |  | Scroll the focused pane's history down half a page |
 | `scroll-to-top` | — |  | Scroll the focused pane to the top of its history |
 | `scroll-to-bottom` | — |  | Scroll the focused pane back to the live screen |
+| `lock-size` | phux |  | Keep this client's pane sizes: other clients see them letterboxed or cropped |
+| `unlock-size` | phux |  | Let defaults.window-size size the panes again |
 | `detach` | phux |  | Detach this client from the session |
 | `next-pane` | Pane |  | Cycle focus to the next pane |
 | `previous-pane` | Pane |  | Cycle focus to the previous pane |

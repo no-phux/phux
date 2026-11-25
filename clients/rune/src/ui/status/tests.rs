@@ -67,15 +67,20 @@ fn a_remote_servers_update_happens_on_that_machine() {
     assert!(updates_can_fix(&ahead, true));
 }
 
+/// A terminal named only by its address, as before a topology arrives.
+fn bare(id: &ResourceId) -> String {
+    id.to_string()
+}
+
 #[test]
 fn a_held_tab_close_counts_its_terminals() {
     let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
     assert_eq!(
-        question(&close(1), false).0,
+        question(&close(1), false, &bare).0,
         "Close this tab? Anything running in it ends."
     );
     assert_eq!(
-        question(&close(3), false).0,
+        question(&close(3), false, &bare).0,
         "Close this tab and its 3 terminals? Anything running in them ends."
     );
 }
@@ -105,9 +110,15 @@ fn a_touch_confirmation_names_no_key() {
         (session, "End session"),
     ];
     for (pending, verb) in asks {
-        assert_eq!(question(&pending, true).1, verb);
-        assert_eq!(question(&pending, false).1, format!("{verb} (Return)"));
-        assert_eq!(question(&pending, true).0, question(&pending, false).0);
+        assert_eq!(question(&pending, true, &bare).1, verb);
+        assert_eq!(
+            question(&pending, false, &bare).1,
+            format!("{verb} (Return)")
+        );
+        assert_eq!(
+            question(&pending, true, &bare).0,
+            question(&pending, false, &bare).0
+        );
     }
 }
 
@@ -208,4 +219,25 @@ fn a_missing_cli_is_installed_from_the_window_and_a_failure_says_why() {
     );
     assert!(failed.1.contains("no release"), "{failed:?}");
     assert!(remedy(&Standing::Installing, false).is_none());
+}
+
+/// A prompt that ends a terminal or hands it the clipboard names it the
+/// way the sidebar does, beside its address.
+#[test]
+fn a_held_close_names_the_terminal() {
+    let named = |id: &ResourceId| format!("build ({id})");
+    let close = Pending::Close(ResourceId::local(4));
+    assert_eq!(
+        question(&close, false, &named).0,
+        "Close build (@4)? Anything running in it ends."
+    );
+    let read = Pending::ClipboardRead(
+        ResourceId::local(4),
+        phux_client_core::engine::ClipboardSelection::Clipboard,
+    );
+    assert!(
+        question(&read, true, &named)
+            .0
+            .starts_with("build (@4) wants")
+    );
 }

@@ -365,15 +365,19 @@ pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
     let update = desk.native.is_none()
         && matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
     let repair = matches!(&banner, Banner::Stuck(standing) if phone::repairs(desk, standing));
-    let actions = update
+    let actions: Vec<Act> = update
         .then(|| {
-            action("Check for updates", "banner-update", p, |d| {
+            Act::new("Check for updates", "banner-update", |d| {
                 d.updater.check_now();
             })
         })
         .into_iter()
-        .chain(repair.then(|| phone::pair_again("banner-pair").button(p)))
-        .chain([action("Retry", "banner-retry", p, Desk::reconnect)]);
+        .chain(repair.then(|| phone::pair_again("banner-pair")))
+        .chain([Act::new("Retry", "banner-retry", Desk::reconnect)])
+        .collect();
+    if desk.phone.is_some() {
+        return Some(phone::banner(desk, lost, why, &actions, p));
+    }
     let raised = t.roles.layer.raised.paint();
     let surface = row()
         .key("reconnect-banner")
@@ -411,7 +415,7 @@ pub fn banner(desk: &Desk, p: &Tokens) -> Option<El> {
                         .wrap(),
                 ),
         )
-        .children(actions.map(|button| touchable(desk, button)));
+        .children(actions.into_iter().map(|act| act.button(p)));
     Some(
         col()
             .absolute(0.0, phone::banner_top(desk))

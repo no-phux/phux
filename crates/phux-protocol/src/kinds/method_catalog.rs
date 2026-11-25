@@ -280,12 +280,12 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
         ext(HostServiceHttp);
     "SERVICE_HTTP_CLOSE" => Command(COMMAND_TAG_SERVICE_HTTP_CLOSE) [C_SERVICE_HTTP]
         ext(HostServiceHttp);
-    // TCP port forwarding (`docs/forwarding.md`).
+    // TCP port forwarding (`docs/ssh.md#forwarding-a-port`).
     "FORWARD_OPEN" => Command(COMMAND_TAG_FORWARD_OPEN) [C_FORWARD] ext(ForwardTcp);
     "FORWARD_READ" => Command(COMMAND_TAG_FORWARD_READ) [C_FORWARD] ext(ForwardTcp);
     "FORWARD_WRITE" => Command(COMMAND_TAG_FORWARD_WRITE) [C_FORWARD] ext(ForwardTcp);
     "FORWARD_CLOSE" => Command(COMMAND_TAG_FORWARD_CLOSE) [C_FORWARD] ext(ForwardTcp);
-    // ssh-agent forwarding (`docs/forwarding.md#ssh-agent`).
+    // ssh-agent forwarding (`docs/ssh.md#ssh-agent`).
     "AGENT_OFFER" => Command(COMMAND_TAG_AGENT_OFFER) [C_FORWARD] ext(ForwardAgent);
     "AGENT_REPLY" => Command(COMMAND_TAG_AGENT_REPLY) [C_FORWARD] ext(ForwardAgent);
     "UPGRADE" => Command(COMMAND_TAG_UPGRADE) [C_UPGRADE] dangerous;
@@ -300,6 +300,9 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     // Session rename is server-intercepted, but the scope table gives it no row of its
     // own: a write lands on the ordinary metadata-write row (BIND on Global).
     SESSION_NAME_KEY => Metadata(SESSION_NAME_KEY) [F_METADATA_WRITE];
+    // The writer's view size lock, applied to its attachment and stored nowhere; the
+    // ordinary metadata-write row (BIND on Global) covers it.
+    VIEW_SIZE_LOCK_KEY => Metadata(VIEW_SIZE_LOCK_KEY) [F_METADATA_WRITE];
     SESSION_KEEP_EMPTY_KEY => Metadata(SESSION_KEEP_EMPTY_KEY)
         [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER] feature(KeepEmptySessions);
     // A TUI doorbell: the server stores the nonce like any value, and the scope table

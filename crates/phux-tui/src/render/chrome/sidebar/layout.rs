@@ -207,6 +207,9 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     if local_x >= rect.w || local_y >= rect.h {
         return None;
     }
+    if super::rail::is_rail(rect.w) {
+        return super::rail::rail_hit(counts, rect.h, local_y);
+    }
     let rule_x = counts.rule.column(rect.w);
     // The rule's bottom cell is the collapse chevron whenever the footer
     // renders (same condition the painter uses).
@@ -243,7 +246,7 @@ pub(super) const fn collapse_visible(rect: Rect) -> bool {
     rect.h >= MIN_FOOTER_HEIGHT && rect.w >= 2
 }
 
-const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
+pub(super) const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
     match row {
         SidebarRow::WindowName(i) => Some(SidebarHit::Window(i)),
         SidebarRow::NeedsYou(j) => Some(SidebarHit::NeedsYou(j)),

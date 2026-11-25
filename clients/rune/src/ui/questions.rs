@@ -15,7 +15,7 @@ use super::inbox::{field_shell, touch_input};
 use super::tokens::{Paint, Tokens};
 use crate::activity::Ask;
 use crate::desk::Desk;
-use crate::desk::questions::{CLOSED, Draft, Questions, response};
+use crate::desk::questions::{CLOSED, Draft, Owner, Questions, Widget, response};
 
 /// The agent session's view isn't here: only a streamed pane brings it.
 const UNLOADED: &str = "Show its pane to load this ACP question.";
@@ -24,10 +24,32 @@ const UNSUPPORTED: &str =
 
 /// Where a control's press goes.
 struct At<'a> {
-    terminal: &'a ResourceId,
-    question: &'a str,
+    owner: &'a Owner,
+    retire_to: String,
     held: bool,
     phone: bool,
+}
+
+pub(super) const INBOX_FOCUS: &str = "inbox-question-focus";
+
+pub(super) fn pane_focus(terminal: &ResourceId) -> String {
+    format!("pane-host-{terminal}")
+}
+
+/// A surviving region can receive retired editor focus, never text or an
+/// answer. Negative Tab order preserves normal initial focus/navigation.
+pub(super) fn retirement_target(element: El, key: impl Into<String>) -> El {
+    let key = key.into();
+    element
+        .key(key.clone())
+        .focusable(true)
+        .tab_index(-1)
+        // focus_return prefers a selected descendant; select the target itself
+        // so it cannot resolve through this region to an answer control.
+        .focus_selected(true)
+        .on_key(move |_: &mut Desk, event, tx| {
+            tx.focused() == Some(key.as_str()) && event.key == rune::Key::Enter
+        })
 }
 
 impl At<'_> {
@@ -51,10 +73,17 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
         return note(if known { CLOSED } else { UNLOADED }, t);
     };
     let question = &draft.question;
+    let owner = questions
+        .owner(terminal, &ask.id)
+        .expect("open question owner");
     let at = At {
-        terminal,
-        question: &question.id,
-        held: questions.held(view, &question.id),
+        owner,
+        retire_to: if desk.inbox.open {
+            INBOX_FOCUS.into()
+        } else {
+            pane_focus(terminal)
+        },
+        held: questions.held(owner),
         phone: desk.phone.is_some(),
     };
     let mut panel = col()
@@ -88,7 +117,7 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
     if matches!(question.kind.as_str(), "input" | "editor" | "ask" | "form") {
         actions = actions.child(action(
             &at,
-            "submit",
+            Widget::Action("submit"),
             "Submit response",
             None,
             Kind::Primary,
@@ -98,7 +127,7 @@ pub fn panel(desk: &Desk, terminal: &ResourceId, ask: &Ask, p: &Tokens) -> El {
     let cancel = Some(json!({"cancelled": true}));
     panel = panel.child(actions.child(action(
         &at,
-        "cancel",
+        Widget::Action("cancel"),
         "Cancel request",
         cancel,
         Kind::Quiet,
@@ -114,10 +143,10 @@ fn status(mut panel: El, questions: &Questions, view: &NativeView, at: &At, t: &
     } else if !view.capabilities.questions.is_supported() {
         panel = panel.child(note("This agent takes no answers over ACP.", t));
     }
-    if let Some(status) = questions.status.get(at.question) {
+    if let Some(status) = questions.status.get(at.owner) {
         panel = panel.child(say(status, at.font(t.ty.caption, t), t).role("status"));
     }
-    if let Some(error) = questions.error.get(at.question) {
+    if let Some(error) = questions.error.get(at.owner) {
         // The invalid state's message: the failed tone, caption type.
         let line = text(error.clone())
             .font(at.font(t.ty.caption, t))
@@ -158,7 +187,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
                 .gap(t.space.icon_gap)
                 .child(action(
                     at,
-                    "yes",
+                    Widget::Action("yes"),
                     "Confirm",
                     Some(json!({"confirmed": true})),
                     Kind::Primary,
@@ -166,7 +195,7 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
                 ))
                 .child(action(
                     at,
-                    "no",
+                    Widget::Action("no"),
                     "Decline",
                     Some(json!({"confirmed": false})),
                     Kind::Quiet,
@@ -179,7 +208,14 @@ fn controls(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
             for option in &question.options {
                 let answer = Some(json!({"option_id": option.id}));
                 let label = labelled(option);
-                list = list.child(action(at, &option.id, &label, answer, Kind::Quiet, t));
+                list = list.child(action(
+                    at,
+                    Widget::Option(&option.id),
+                    &label,
+                    answer,
+                    Kind::Quiet,
+                    t,
+                ));
             }
             panel.child(list)
         }
@@ -212,31 +248,49 @@ fn form(mut panel: El, draft: &Draft, at: &At, t: &Tokens) -> El {
             t,
         ));
     };
+    // The panel already leaves s2 before its actions; this margin makes that
+    // action separation s4, without changing the question's heading or message.
+    let mut fields = col().w_full().gap(t.space.s3).mb(t.space.s2);
     for (id, schema) in properties {
-        let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
-        let star = if response::required(question, id) {
-            " *"
+        if at.phone {
+            let group = col().key(at.owner.form_key(id)).w_full().gap(t.space.s1);
+            fields = fields.child(form_field(group, draft, id, schema, at, t));
         } else {
-            ""
-        };
-        panel = panel.child(say(&format!("{title}{star}"), at.font(t.ty.caption, t), t));
-        if let Some(about) = schema.get("description").and_then(Value::as_str) {
-            panel = panel.child(
-                text(about.to_owned())
-                    .font(at.font(t.ty.caption, t))
-                    .color(t.roles.text.dim.paint())
-                    .wrap(),
-            );
+            // Keep the desktop's original flat children and spacing.
+            panel = form_field(panel, draft, id, schema, at, t);
         }
-        panel = match draft.options.get(id) {
-            Some(offered) => {
-                let multi = schema.get("type").and_then(Value::as_str) == Some("array");
-                panel.child(choices(at, draft, id, offered, multi, t))
-            }
-            None => panel.children(field(at, draft, id, title, false, t)),
-        };
     }
-    panel
+    if at.phone && !properties.is_empty() {
+        panel.child(fields)
+    } else {
+        panel
+    }
+}
+
+/// One field's heading, help and control, grouped only by the phone caller.
+fn form_field(mut group: El, draft: &Draft, id: &str, schema: &Value, at: &At, t: &Tokens) -> El {
+    let title = schema.get("title").and_then(Value::as_str).unwrap_or(id);
+    let star = if response::required(&draft.question, id) {
+        " *"
+    } else {
+        ""
+    };
+    group = group.child(say(&format!("{title}{star}"), at.font(t.ty.caption, t), t));
+    if let Some(about) = schema.get("description").and_then(Value::as_str) {
+        group = group.child(
+            text(about.to_owned())
+                .font(at.font(t.ty.caption, t))
+                .color(t.roles.text.dim.paint())
+                .wrap(),
+        );
+    }
+    match draft.options.get(id) {
+        Some(offered) => {
+            let multi = schema.get("type").and_then(Value::as_str) == Some("array");
+            group.child(choices(at, draft, id, offered, multi, t))
+        }
+        None => group.children(field(at, draft, id, title, false, t)),
+    }
 }
 
 fn labelled(option: &NativeOption) -> String {
@@ -255,15 +309,21 @@ enum Kind {
 
 /// A button that answers (`response`) or submits the draft (`None`). While
 /// the question is held, disabled (the kit's look), never hidden.
-fn action(at: &At, id: &str, label: &str, answer: Option<Value>, kind: Kind, t: &Tokens) -> El {
-    let (terminal, question) = (at.terminal.clone(), at.question.to_owned());
-    let press = move |d: &mut Desk| d.answer_question(&terminal, &question, answer.clone());
-    let key = format!("acp-{}-{id}", at.question);
+fn action(
+    at: &At,
+    widget: Widget<'_>,
+    label: &str,
+    answer: Option<Value>,
+    kind: Kind,
+    t: &Tokens,
+) -> El {
+    let owner = at.owner.clone();
+    let press = move |d: &mut Desk| d.answer_question(&owner, answer.clone());
+    let key = at.owner.widget(widget);
     if at.phone {
         let on = matches!(kind, Kind::Primary);
-        return touch_row(at, key, label, on, t)
-            .role("button")
-            .on_press(press);
+        let row = touch_row(at, key, label, on, t).role("button");
+        return if at.held { row } else { row.on_press(press) };
     }
     let variant = match kind {
         Kind::Primary => ButtonVariant::Submit,
@@ -334,10 +394,10 @@ fn choices(
 ) -> El {
     let chosen = draft.choices.get(item).map(Vec::as_slice).unwrap_or(&[]);
     let pick = |option: &NativeOption| {
-        let (question, item, id) = (at.question.to_owned(), item.to_owned(), option.id.clone());
-        move |d: &mut Desk| d.inbox.questions.choose(&question, &item, &id, multi)
+        let (owner, item, id) = (at.owner.clone(), item.to_owned(), option.id.clone());
+        move |d: &mut Desk| d.inbox.questions.choose(&owner, &item, &id, multi)
     };
-    let key = |option: &NativeOption| format!("acp-{}-{item}-{}", at.question, option.id);
+    let key = |option: &NativeOption| at.owner.widget(Widget::Choice(item, &option.id));
     if at.phone {
         return touch_choices(at, chosen, offered, multi, t, pick, key);
     }
@@ -370,7 +430,7 @@ fn choices(
     }
     group
         .build(&t.kit)
-        .key(format!("acp-{}-{item}", at.question))
+        .key(at.owner.widget(Widget::Choices(item)))
 }
 
 /// A phone's options: one wrapping touch row each, a radio or a checkbox.
@@ -411,7 +471,8 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
     let ink = if at.held { r.text.faint } else { r.text.text };
     let font = t.ty.body;
     let mut input = text_input(edit, font)
-        .key(format!("acp-{}-field-{id}", at.question))
+        .key(at.owner.field_key(id))
+        .focus_return(at.retire_to.clone())
         .grow(1.0)
         .color(ink.paint())
         .label(label.to_owned())
@@ -421,15 +482,14 @@ fn field(at: &At, draft: &Draft, id: &str, label: &str, multiline: bool, t: &Tok
         input = input.single_line();
     }
     if !at.held {
-        let (question, id) = (at.question.to_owned(), id.to_owned());
-        let edits = (question.clone(), id.clone());
+        let (owner, id) = (at.owner.clone(), id.to_owned());
+        let edits = (owner.clone(), id.clone());
         input = input.on_edit(move |d: &mut Desk| d.inbox.questions.text_mut(&edits.0, &edits.1));
-        let terminal = at.terminal.clone();
         input = input.on_submit(move |d: &mut Desk, _| {
             if multiline {
-                d.inbox.questions.text_mut(&question, &id).insert("\n");
+                d.inbox.questions.text_mut(&owner, &id).insert("\n");
             } else {
-                d.answer_question(&terminal, &question, None);
+                d.answer_question(&owner, None);
             }
         });
     }

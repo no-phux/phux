@@ -22,7 +22,9 @@ that reads like a log line.
   to the window edge, and the traffic lights and sidebar toggle float over
   it on the terminal's own ground.
 - The titlebar row holds, left to right: lights, sidebar toggle, then the
-  session's title. Everything in that row shares one centre line.
+  session's title. Everything in that row shares one centre line. With the
+  sidebar folded, the session's tabs take the title's place, each led by
+  the same tile its sidebar row has.
 - The terminal's text starts on the same left edge as the title above it.
 - Splits are cards on the window ground. The focused one is raised with a
   stronger edge, with no extra colour, and the rest stay fully legible.
@@ -32,8 +34,14 @@ that reads like a log line.
 - Rows are pills: one radius, one height, one inset from both edges.
 - The selected row is a filled pill; hover is a lighter fill; there are no
   borders on unselected rows.
+- One list of work: each row is a tab (or a terminal no tab holds), one
+  line high, led by its tile and named after its task.
+- The tile is the agent's colour and initial, or the prompt on an outline
+  for a plain terminal; a badge on its corner carries the state's glyph in
+  its tone, and only a state worth telling has one.
 - Group headers are small, dim and medium weight, aligned to the row text.
-- Each row's leading mark is a tinted rounded square at a fixed size.
+  Their close button waits under the pointer.
+- Search is an icon beside the inbox; the list starts under the top edge.
 
 ## Popovers, menus and the palette
 
@@ -69,5 +77,5 @@ that reads like a log line.
 ## Coming from another app
 
 `phux migrate` reads tmux, zellij, Ghostty, herdr and Rex configs and hands
-the result to your agent ([migrate](../../docs/migrate.md)). Onboarding
+the result to your agent ([migrate](../../docs/config.md#coming-from-another-multiplexer)). Onboarding
 offers it on the first run, so "take me from X to phux" is one step.

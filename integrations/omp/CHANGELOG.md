@@ -11,6 +11,13 @@
 * Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
   Pi/OMP transcript mapper.
 
+## [0.7.0](https://github.com/no-phux/phux/compare/omp-extension-v0.6.0...omp-extension-v0.7.0) (2026-11-24)
+
+
+### Features
+
+* **chat:** add native scoped buddy and agent conversations ([#2915](https://github.com/no-phux/phux/issues/2915)) ([7ab5109](https://github.com/no-phux/phux/commit/7ab5109b8b1f61a23ef303ca4eede66e47ac8a04))
+
 ## [0.6.0](https://github.com/no-phux/phux/compare/omp-extension-v0.5.1...omp-extension-v0.6.0) (2026-11-14)
 
 

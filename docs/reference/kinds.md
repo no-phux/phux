@@ -52,6 +52,7 @@ Addressed to the server or the connection rather than to one resource.
 | `PERF_CONTROL` | command `0x39` | OBSERVE, BIND (owner socket only) | yes | `perf_control` (features_ext) | shipped |
 | `phux.session.create/v1` | metadata key | CREATE, BIND | yes | none | shipped |
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
+| `phux.view.size-lock/v1` | metadata key | BIND | yes | none | shipped |
 | `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
 | `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
@@ -192,6 +193,7 @@ The kind's facet.
 - `phux.link/v1`
 - `phux.note/v1`
 - `phux.notify/v1`
+- `phux.parent/v1`
 
 ## Kind `AGENT_SESSION`
 

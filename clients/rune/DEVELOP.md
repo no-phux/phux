@@ -15,17 +15,15 @@ workspace and lock so Rune's graph stays out of the rest of phux. The
 [Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
 twice a day.
 
-Keep all Rune dependencies and the six `[patch.crates-io]` entries on the
-same upstream base: Cargo does not inherit Rune's workspace patches. Normally
-all ten revisions match. The `winit` override temporarily uses an exact
-[owned-fork](https://github.com/no-phux/rune) descendant of that base, containing
-only a Wayland caret-rectangle publication fix; the other nine entries stay
-upstream. A bump must rebase and review this small patch on the new upstream
-head, not drop the fix or retain an older fork base. Reunify all ten when
-upstream supplies equivalent behavior. On every host, `rune-check` compiles the
-actual pinned Wayland cursor helper with `rustc --test` and runs its six
-headless regressions. This does not compile the Linux native integration or
-replace mandatory real-compositor qualification in Linux CI.
+See [upstream dependency policy](UPSTREAM.md) for pin agreement, the `ImeSync`
+adoption and the current phone modal-ownership compatibility hold.
+
+When validating this adoption, run the actual upstream Rune tests
+`ime_sync_skips_unchanged_cursor_area_and_resends_on_change_reset_or_reentry`
+and `ime_sync_skips_unchanged_area_for_app_ime_cursor` in the pinned upstream
+workspace. Cargo cannot run nonmember dependency tests from this client
+workspace. These tests do not replace `rune-check`, client IME regressions,
+packaged/native qualification or mandatory real-compositor Linux CI.
 
 The `tooling`
 feature is required in release builds too: packaged qualification and the
@@ -51,6 +49,11 @@ without a window:
 cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
+
+On Linux, a headless frame still leaves room at the top left for macOS's
+traffic lights (upstream `headless_chrome` reports their inset on every
+platform); a real Linux window has no such gap, so don't read it as a
+layout bug.
 
 `--tree out.json` writes the element tree, with the accessibility tree that
 screen readers and automation tools see under `"accessibility"`. Every window

@@ -165,6 +165,38 @@ impl Roles {
             glow,
         }
     }
+
+    /// The ink focus and emphasis take: `accent.accent_text`, or body text
+    /// when that accent is a grey quieter than dim text ([`Self::recedes`]),
+    /// so emphasis never reads as the quietest thing on screen.
+    #[must_use]
+    pub fn emphasis(&self) -> Rgba8 {
+        if self.recedes(self.accent.accent_text) {
+            self.text.text
+        } else {
+            self.accent.accent_text
+        }
+    }
+
+    /// Whether `ink` is a grey that reads quieter than `text.dim` on the
+    /// sidebar. A grey can only stand out by lightness: in a monochrome
+    /// theme (Omarchy's Vantablack) the accent and every tone solve to mid
+    /// greys, so focus, or a button's verb, would be the dimmest thing on
+    /// screen. Clients paint body text there instead.
+    #[must_use]
+    pub fn recedes(&self, ink: Rgba8) -> bool {
+        /// The widest channel spread (of 255) still read as grey.
+        const GREY: u8 = 8;
+        /// A contrast gap under this is the solver's rounding (the house
+        /// look's increased-contrast accent and dim differ by a hair), not
+        /// an ink that reads quieter.
+        const GAP: f64 = 0.5;
+        let spread = ink.r.max(ink.g).max(ink.b) - ink.r.min(ink.g).min(ink.b);
+        let lut = crate::tokens::DERIVE.srgb_lut;
+        let ground = self.layer.sidebar.rgb();
+        let contrast = |c: Rgba8| crate::solve::contrast(c.rgb(), ground, lut);
+        spread <= GREY && contrast(ink) + GAP < contrast(self.text.dim)
+    }
 }
 
 /// A status tone with its three companions: the alpha lives in each.

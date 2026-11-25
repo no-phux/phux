@@ -98,6 +98,10 @@ pub struct LocalHostCfg {
     /// `"auto"` keeps the hash of its short host name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Theme a client on this machine wears for its own panes, named as
+    /// that client lists themes; absent keeps the client's own theme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 #[cfg(test)]

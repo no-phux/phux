@@ -114,9 +114,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     };
     let fill = edge_fill(desk, &p);
     // Both keyboards sit after every sheet and kit overlay, outside their
-    // measured viewport. Rune treats post-modal controls as part of the
-    // modal: keys remain live while the scrim still blocks the terminal and
-    // navigation behind it.
+    // measured viewport. The compatible Rune pin (DEVELOP.md) treats post-modal
+    // controls as part of the modal: keys remain live while the scrim still
+    // blocks the terminal and navigation behind it.
     let content = overlays(
         el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
         desk,
@@ -147,7 +147,7 @@ pub(super) fn terminal_ground(desk: &Desk) -> Color {
         .and_then(|(client, shown)| client.acquire_view(shown.view?));
     frame.map_or_else(
         || {
-            let theme = desk.settings.theme;
+            let theme = desk.theme();
             theme.map_or(Color::BLACK, |theme| crate::theme::color(theme.background))
         },
         |frame| crate::grid::background(&frame),
@@ -159,7 +159,7 @@ pub(super) fn terminal_ground(desk: &Desk) -> Color {
 /// the system appearance: a light-mode phone would otherwise open white
 /// sheets over a dark terminal. Pages are free of the grid's text cap.
 pub(super) fn page_look(desk: &Desk) -> Look {
-    let theme = desk.settings.theme;
+    let theme = desk.theme();
     let dark = theme.map_or_else(|| Tokens::dark_ground(terminal_ground(desk)), |t| t.dark);
     Look::new(Tokens::for_phone(desk, dark, theme, Scale::Free))
 }
@@ -172,7 +172,7 @@ pub(super) fn ground_look(desk: &Desk) -> Look {
     Look::new(Tokens::for_phone(
         desk,
         dark,
-        desk.settings.theme,
+        desk.theme(),
         Scale::GridCapped,
     ))
 }

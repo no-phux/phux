@@ -36,6 +36,10 @@ expect_fail() {
 # Valid .., root-relative paths, directory links, query stripping, duplicate and
 # explicit anchors; code spans/fences and external links must not be followed.
 cat >"$repo/docs/guide.md" <<'MD'
+---
+group: start
+order: 1
+---
 # Guide
 [relative](./Parent/../Parent/Leaf.md#build-cache-mbx)
 [root](/docs/Parent/Leaf.md?view=1#repeat-1)
@@ -84,6 +88,22 @@ printf '```sh\nphux agent gone\n```\n' >"$repo/docs/guide.md"
 expect_fail '`phux agent gone` is not a command' --only=commands
 printf '```sh\njust retired\n```\n' >"$repo/docs/guide.md"
 expect_fail '`just retired` is not a recipe' --only=commands
+printf 'Run `just retired` in prose.\n' >"$repo/docs/guide.md"
+expect_fail '`just retired` is not a recipe' --only=commands
+printf 'Run `phux gone --json` in prose.\n' >"$repo/docs/guide.md"
+expect_fail '`phux gone` is not a command' --only=commands
+printf '```text\njust retired\n```\n' >"$repo/docs/guide.md"
+expect_pass --only=commands
+printf '# No nav\n' >"$repo/docs/guide.md"
+expect_fail 'docs/guide.md: no frontmatter group:' --only=nav
+printf -- '---\ngroup: nowhere\norder: 1\n---\n# Guide\n' >"$repo/docs/guide.md"
+expect_fail 'group nowhere is not one of' --only=nav
+printf -- '---\ngroup: help\norder: soon\n---\n# Guide\n' >"$repo/docs/guide.md"
+expect_fail 'order: must be a number' --only=nav
+printf -- '---\ngroup: help\norder: -0.5\n---\n# Guide\n' >"$repo/docs/guide.md"
+expect_pass --only=nav
+printf -- '---\npublish: false\n---\n# Internal\n' >"$repo/docs/guide.md"
+expect_pass --only=nav
 mkdir -p "$repo/crates/phux-fixture"
 printf '[package]\n' >"$repo/crates/phux-fixture/Cargo.toml"
 printf '# Architecture\n' >"$repo/docs/architecture.md"

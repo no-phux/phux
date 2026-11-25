@@ -8,13 +8,14 @@
 //! The projector thread is supervised. If it stops or panics, that is logged
 //! and the thread is restarted with backoff. On exit, a short grace lets a
 //! late `done` record land; that terminal's agent record is re-read before
-//! a failure is written.
+//! a failure is written. A level read that finds the exit before its event
+//! does (a busy server, a resubscribe) waits out the same grace.
 //!
 //! `PHUX_MISSION_PROJECTOR_DELAY_MS` and `PHUX_MISSION_SUBSCRIBE_AFTER` are
 //! debug-build test hooks. A release binary does not read them: a stale
 //! subscription cursor drops live agent events and projection stalls.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,7 @@ use phux_work::mission::{
     AgentReport, Projection, ProjectionInput, RunPhase, TerminalFact, observation_operation,
     project,
 };
-use phux_work::{Client, ObjectiveState, OpenRun, RunState, StateEdit};
+use phux_work::{Client, ObjectiveState, OpaqueId, OpenRun, RunState, StateEdit};
 
 const ACTOR: &str = "keeper";
 
@@ -101,6 +102,8 @@ struct ProjectionWatch {
     bound: HashSet<String>,
     missed: HashSet<String>,
     refreshed_at: Option<Instant>,
+    /// When a level read first saw each run's terminal exited.
+    exits_seen: HashMap<OpaqueId, Instant>,
 }
 
 impl ProjectionWatch {
@@ -109,6 +112,7 @@ impl ProjectionWatch {
             bound: HashSet::new(),
             missed: HashSet::new(),
             refreshed_at: None,
+            exits_seen: HashMap::new(),
         }
     }
 
@@ -120,7 +124,18 @@ impl ProjectionWatch {
                 self.missed.remove(id);
             }
         }
+        self.exits_seen
+            .retain(|run_id, _| runs.iter().any(|run| run.run_id == *run_id));
         self.refreshed_at = Some(Instant::now());
+    }
+
+    /// Whether an exit seen outside [`hold_exit`] has had its grace.
+    fn exit_grace_over(&mut self, run_id: OpaqueId) -> bool {
+        self.exits_seen
+            .entry(run_id)
+            .or_insert_with(Instant::now)
+            .elapsed()
+            >= EXIT_GRACE
     }
 
     fn invalidate(&mut self) {
@@ -310,7 +325,7 @@ async fn hold_exit(
             }
         }
     }
-    project_hint(client, socket, watch, &id, exit.seq).await;
+    project_hint(client, socket, watch, &id, Some(exit.seq)).await;
     if matches!(step, WatchStep::Resubscribe) {
         reconcile(client, socket, watch).await;
     }
@@ -322,7 +337,7 @@ async fn project_hint(
     socket: &Path,
     watch: &mut ProjectionWatch,
     id: &str,
-    seq: u64,
+    held_exit: Option<u64>,
 ) {
     let Ok(runs) = client.open_runs() else {
         error!("mission projector could not list open runs");
@@ -344,7 +359,7 @@ async fn project_hint(
         return;
     };
     for run in matching {
-        if let Err(err) = project_bound(client, watch, &mut conn, run, seq).await {
+        if let Err(err) = project_bound(client, watch, &mut conn, run, held_exit).await {
             error!("mission projector exact observation: {err}");
         }
     }
@@ -366,7 +381,7 @@ async fn apply_live(client: &Client, socket: &Path, watch: &mut ProjectionWatch,
     if let Some(id) = agent_update_id(item)
         && watch.tracks(client, &id, false)
     {
-        project_hint(client, socket, watch, &id, 0).await;
+        project_hint(client, socket, watch, &id, None).await;
     }
 }
 
@@ -402,7 +417,7 @@ async fn reconcile_once(
         .map_err(|err| format!("open runs: {err}"))?;
     watch.note_runs(&runs);
     for run in &runs {
-        if let Err(err) = project_bound(client, watch, &mut conn, run, 0).await {
+        if let Err(err) = project_bound(client, watch, &mut conn, run, None).await {
             error!("mission projector reconcile: {err}");
         }
     }
@@ -415,7 +430,7 @@ async fn project_bound(
     watch: &mut ProjectionWatch,
     conn: &mut Connection,
     run: &OpenRun,
-    seq: u64,
+    held_exit: Option<u64>,
 ) -> Result<(), String> {
     let (agent, terminal) = if let Some(pin) = &run.execution {
         let Some(facts) = observe(conn, pin).await? else {
@@ -428,6 +443,14 @@ async fn project_bound(
     } else {
         return Ok(());
     };
+    // An exit this pass found before `hold_exit` did still gets the grace,
+    // or a `done` that lands in it would be recorded as a failure.
+    if held_exit.is_none()
+        && matches!(terminal, TerminalFact::Exited { .. })
+        && !watch.exit_grace_over(run.run_id)
+    {
+        return Ok(());
+    }
     let input = ProjectionInput {
         current: run.state,
         run: phase(run),
@@ -437,7 +460,8 @@ async fn project_bound(
         credential_lost: run.credential_lost,
         launching: false,
     };
-    write_projection(client, watch, run, &project(&input), seq).map_err(|err| err.to_string())
+    write_projection(client, watch, run, &project(&input), held_exit.unwrap_or(0))
+        .map_err(|err| err.to_string())
 }
 
 fn write_projection(

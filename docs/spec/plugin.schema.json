@@ -52,6 +52,21 @@
         }
       ]
     },
+    "PluginLinkRunOn": {
+      "description": "Where a link handler's command runs.",
+      "oneOf": [
+        {
+          "const": "client",
+          "description": "On the machine that clicked, with the pane's host as context.",
+          "type": "string"
+        },
+        {
+          "const": "pane-host",
+          "description": "In a split beside the pane, on the machine that runs it.",
+          "type": "string"
+        }
+      ]
+    },
     "PluginPanePlacement": {
       "description": "Placement requested by a plugin pane entrypoint.",
       "oneOf": [
@@ -420,6 +435,14 @@
             "array",
             "null"
           ]
+        },
+        "run_on": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PluginLinkRunOn"
+            }
+          ],
+          "default": "client"
         },
         "schemes": {
           "default": [],

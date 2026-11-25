@@ -180,3 +180,32 @@ fn host_color_overrides_the_hash_and_ls_reports_it() {
     let (code, _, _) = run_with_xdg(&["host", "color", "mini", "teal"], &xdg);
     assert_eq!(code, 2, "an unknown colour is a usage error");
 }
+
+#[test]
+fn a_second_server_on_one_machine_is_saved_beside_the_first() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    let pin = "ab".repeat(32);
+    let add = |endpoint: &str| {
+        let args = [
+            "host",
+            "add",
+            endpoint,
+            "--cert-fingerprint",
+            &pin,
+            "--json",
+        ];
+        json_ok(&args, &xdg)["host"]["name"]
+            .as_str()
+            .expect("name")
+            .to_owned()
+    };
+    assert_eq!(add("quic://127.0.0.1:8788"), "127.0.0.1");
+    assert_eq!(add("quic://127.0.0.1:9788"), "127.0.0.1-9788");
+    // Re-adding either one updates it in place.
+    assert_eq!(add("quic://127.0.0.1:9788"), "127.0.0.1-9788");
+    assert_eq!(add("quic://127.0.0.1:8788"), "127.0.0.1");
+    let value = json_ok(&["host", "ls", "--json"], &xdg);
+    let hosts = value["hosts"].as_array().expect("hosts");
+    assert_eq!(hosts.len(), 2, "{value}");
+}

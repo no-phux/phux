@@ -22,9 +22,12 @@ impl Group {
         }
     }
 
-    /// The section an action belongs to, from its name: anything that is
-    /// not about a pane, a window, or a session is phux's own chrome.
+    /// The section an action belongs to: the palette's, so `}` (next split
+    /// tab) sits with Pane in both. An action with no palette row goes by
+    /// its name; anything not about a pane, a window, or a session is
+    /// phux's own chrome.
     pub(super) fn of(action: &str) -> Self {
+        use crate::attach::action_registry::{ActionSpec, Category, find};
         const PANE: &[&str] = &[
             "copy-mode",
             "find-path",
@@ -39,11 +42,19 @@ impl Group {
             "display-panes",
             "popup",
         ];
+        if let Some((_, category)) = find(action).and_then(ActionSpec::palette_row) {
+            return match category {
+                Category::Pane => Self::Pane,
+                Category::Window => Self::Window,
+                Category::Session => Self::Session,
+                Category::View => Self::Phux,
+            };
+        }
         if action.ends_with("-pane") || PANE.contains(&action) {
             Self::Pane
         } else if action.contains("window") || action == "go-to-directory" {
             Self::Window
-        } else if action.contains("session") || action == "detach" {
+        } else if action.contains("session") {
             Self::Session
         } else {
             Self::Phux

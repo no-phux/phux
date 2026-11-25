@@ -4,7 +4,7 @@ use super::Check;
 use crate::commands::cli_runtime;
 
 /// Is the audit log being written? A failed write never stops a command,
-/// so the server's failure count is the only sign (`docs/audit.md`).
+/// so the server's failure count is the only sign (`docs/security.md#audit-log`).
 pub(super) fn check_audit(socket_path: &std::path::Path) -> Check {
     let log = phux_server::audit::default_dir().join(phux_server::audit::LOG_FILE);
     match audit_write_failures(socket_path) {

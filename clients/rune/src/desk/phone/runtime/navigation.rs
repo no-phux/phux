@@ -5,6 +5,7 @@ use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
+mod canvas;
 mod layout;
 mod render;
 mod review;

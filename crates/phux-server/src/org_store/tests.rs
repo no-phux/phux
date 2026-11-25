@@ -6,6 +6,8 @@ use rusqlite::Connection;
 
 use super::*;
 
+mod writer_fence;
+
 #[test]
 fn socket_names_escape_to_distinct_file_names() {
     assert_eq!(

@@ -6,65 +6,15 @@ use phux_core::{
     Arrangement, ArrangementOwner, Authority, AuthorityId, Delta, Key16 as _, OperationId, Org,
     Receipt, Resource, Session, SessionKey, Stamp, Transition,
 };
-use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
+use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use super::{
     OrgStore, RECEIPT_CAP, RECEIPT_HORIZON_MS, StoreError, StoredOrg, TOMBSTONE_HORIZON_MS,
     UnreadableReceipt,
 };
 
-/// Schema migrations, in order. `PRAGMA user_version` is the index of the
-/// last one applied.
-const MIGRATIONS: &[&str] = &[r"
-CREATE TABLE meta (
-    k TEXT PRIMARY KEY,
-    v BLOB NOT NULL
-);
-CREATE TABLE sessions (
-    key BLOB PRIMARY KEY,
-    name TEXT NOT NULL,
-    lifetime TEXT NOT NULL,
-    awaiting INTEGER NOT NULL,
-    revision INTEGER NOT NULL,
-    record TEXT NOT NULL
-);
-CREATE INDEX sessions_awaiting ON sessions(awaiting) WHERE awaiting = 1;
-CREATE TABLE resources (
-    key BLOB PRIMARY KEY,
-    session BLOB NOT NULL,
-    kind TEXT NOT NULL,
-    exec_state TEXT,
-    revision INTEGER NOT NULL,
-    record TEXT NOT NULL
-);
-CREATE INDEX resources_session ON resources(session);
-CREATE INDEX resources_exec_state ON resources(exec_state);
-CREATE TABLE arrangements (
-    key BLOB PRIMARY KEY,
-    owner BLOB NOT NULL,
-    revision INTEGER NOT NULL,
-    record TEXT NOT NULL
-);
-CREATE INDEX arrangements_owner ON arrangements(owner);
-CREATE TABLE receipts (
-    operation BLOB PRIMARY KEY,
-    at INTEGER NOT NULL,
-    receipt TEXT NOT NULL
-);
-CREATE INDEX receipts_at ON receipts(at);
-CREATE TABLE tombstones (
-    key BLOB PRIMARY KEY,
-    removed_at INTEGER NOT NULL
-);
-CREATE INDEX tombstones_removed_at ON tombstones(removed_at);
-CREATE TABLE migrations (
-    name TEXT PRIMARY KEY,
-    at INTEGER NOT NULL
-);
-"];
-
-/// The schema version this binary writes.
-pub const SCHEMA_VERSION: i64 = 1;
+mod bootstrap;
+pub use bootstrap::SCHEMA_VERSION;
 
 /// The durable store: one SQLite file in WAL mode with
 /// `synchronous=FULL`.
@@ -75,6 +25,9 @@ pub struct SqliteOrgStore {
     /// Rows in `receipts`, kept beside the table so the cap check is not a
     /// scan per commit.
     receipts: u64,
+    /// SQLite changes this only for commits through another connection. Never
+    /// refresh it: that connection's writes invalidate our owner's in-memory Org.
+    data_version: i64,
 }
 
 impl SqliteOrgStore {
@@ -87,44 +40,13 @@ impl SqliteOrgStore {
     /// [`StoreError`] when the file cannot be opened or migrated, or its
     /// schema is newer than [`SCHEMA_VERSION`].
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let existed = path.exists();
-        let mut conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > SCHEMA_VERSION {
-            return Err(StoreError::UnsupportedVersion {
-                found: version,
-                supported: SCHEMA_VERSION,
-            });
-        }
-        if version < SCHEMA_VERSION {
-            if existed && version > 0 {
-                let backup = path.with_extension(format!("sqlite3.bak-v{version}"));
-                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-                std::fs::copy(path, backup)?;
-            }
-            let tx = conn.transaction()?;
-            for (index, sql) in MIGRATIONS
-                .iter()
-                .enumerate()
-                .skip(usize::try_from(version).unwrap_or(0))
-            {
-                tx.execute_batch(sql)?;
-                let next = i64::try_from(index + 1).unwrap_or(i64::MAX);
-                tx.pragma_update(None, "user_version", next)?;
-            }
-            tx.commit()?;
-        }
+        let conn = bootstrap::open(path)?;
+        let data_version = conn.pragma_query_value(None, "data_version", |row| row.get(0))?;
         let mut store = Self {
             conn,
             path: path.to_path_buf(),
             receipts: 0,
+            data_version,
         };
         store.receipts = store.count("receipts")?;
         Ok(store)
@@ -148,6 +70,17 @@ impl SqliteOrgStore {
         let n: i64 = self.conn.query_row(sql, [], |row| row.get(0))?;
         Ok(u64::try_from(n).unwrap_or(0))
     }
+}
+
+/// Call inside the transaction that reads or writes the organization. An
+/// IMMEDIATE write transaction excludes another writer between this check
+/// and commit, including an older binary that knows nothing about this fence.
+fn check_writer(conn: &Connection, expected: i64, path: &Path) -> Result<(), StoreError> {
+    let actual: i64 = conn.pragma_query_value(None, "data_version", |row| row.get(0))?;
+    if actual != expected {
+        return Err(StoreError::StaleWriter(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 /// Run one statement through the connection's statement cache, so a
@@ -449,6 +382,8 @@ fn decode_receipt(row: &rusqlite::Row<'_>) -> Result<Receipt, String> {
 
 impl OrgStore for SqliteOrgStore {
     fn load(&mut self) -> Result<Option<StoredOrg>, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        check_writer(&tx, self.data_version, &self.path)?;
         let (Some(id), Some(inbox)) = (self.meta("authority")?, self.meta("inbox_session")?) else {
             return Ok(None);
         };
@@ -462,7 +397,7 @@ impl OrgStore for SqliteOrgStore {
             .transpose()?
             .unwrap_or(0);
         let (receipts, unreadable_receipts) = self.receipts()?;
-        Ok(Some(StoredOrg {
+        let stored = StoredOrg {
             authority,
             sessions: self.records("SELECT record FROM sessions")?,
             resources: self.records("SELECT record FROM resources")?,
@@ -470,7 +405,9 @@ impl OrgStore for SqliteOrgStore {
             receipts,
             unreadable_receipts,
             journal_seq,
-        }))
+        };
+        tx.commit()?;
+        Ok(Some(stored))
     }
 
     fn commit(
@@ -479,7 +416,10 @@ impl OrgStore for SqliteOrgStore {
         journal_seq: u64,
         now: Stamp,
     ) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_writer(&tx, self.data_version, &self.path)?;
         for delta in &transition.deltas {
             apply_delta(&tx, delta, now)?;
         }
@@ -497,7 +437,10 @@ impl OrgStore for SqliteOrgStore {
     }
 
     fn import(&mut self, org: &Org, migration: Option<&str>, now: Stamp) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_writer(&tx, self.data_version, &self.path)?;
         put_authority(&tx, org.authority())?;
         for s in org.sessions() {
             put_session(&tx, s)?;

@@ -253,8 +253,7 @@ fn fold_agent_ask<W: crate::attach::RenderSink>(
     };
     // Asks are coalesced server-side; keep early local asks until the layout
     // arrives and forward peers to the foreign cache.
-    let changed = !slot.attention;
-    slot.attention = true;
+    let changed = slot.raise_attention();
     FrameOutcome {
         chrome_dirty: local && changed,
         foreign_attention: (!local).then_some(terminal),

@@ -13,6 +13,13 @@ from test_ios_build import build, qualify, valid_report
 
 
 class QualificationTests(unittest.TestCase):
+    def test_native_report_requires_the_control_stability_contract(self):
+        report = valid_report()
+        self.assertIn("native-control-stability", report["input_contracts"])
+        report["input_contracts"].remove("native-control-stability")
+        with self.assertRaisesRegex(ValueError, "contract groups did not pass"):
+            qualify.validate_report(report)
+
     def test_native_report_proves_the_requested_transport_not_just_any_connection(self):
         report = valid_report()
         with self.assertRaises(ValueError):
@@ -110,8 +117,7 @@ class QualificationTests(unittest.TestCase):
             lane.server = Mock()
             lane.server.poll.return_value = None
             lane.configuration = {"token":"private-never-in-argv"}
-            lane.simctl = Mock(side_effect=["", temporary, f"{qualify.BUNDLE_ID}: 123\n",
-                f"123\t0\tUIKitApplication:{qualify.BUNDLE_ID}[test]\n", "-\t1\tother\n"])
+            lane.simctl = Mock(side_effect=["", temporary, f"{qualify.BUNDLE_ID}: 123\n"])
             self.assertEqual(lane.launch(Path("/tmp/owned/s")), 123)
             lookup = lane.simctl.call_args_list[1]
             self.assertEqual(lookup.args, ("get_app_container", "NEW-UDID", qualify.BUNDLE_ID, "data"))
@@ -125,9 +131,19 @@ class QualificationTests(unittest.TestCase):
             secret = Path(temporary) / "Documents/qualification-connection.json"
             self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
             self.assertEqual(launch[launch.index("--qualification-session") + 1], qualify.SESSION)
-            lane.require_alive(123)
-            with self.assertRaises(ValueError):
+            # Liveness asks the host for the app's process, never the stall-prone simulator.
+            app = ("/Users/runner/Library/Developer/CoreSimulator/Devices/new-udid/data/"
+                   "Containers/Bundle/Application/A/Phux Rune.app/PhuxRune\n")
+            with patch.object(qualify._host.subprocess, "run") as ps:
+                ps.return_value.stdout = app
                 lane.require_alive(123)
+                self.assertEqual(ps.call_args.args[0], ["/bin/ps", "-o", "comm=", "-p", "123"])
+                for other in ("", app.replace("new-udid", "OTHER-UDID"),
+                              "/RuntimeRoot/Applications/Preferences.app/Preferences\n"):
+                    ps.return_value.stdout = other
+                    with self.assertRaisesRegex(ValueError, "PID 123 exited"):
+                        lane.require_alive(123)
+            self.assertEqual(lane.simctl.call_count, 3)
 
     def test_simulator_host_strips_all_inherited_phux_and_child_env(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {

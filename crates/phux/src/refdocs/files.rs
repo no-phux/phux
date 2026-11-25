@@ -87,6 +87,7 @@ pub(crate) fn page() -> Page {
          ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
          ├── workload-org-roots/ # each organization's root certificates (owner-only)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── chats/              # private explicit conversation records and native identity files\n\
          ├── ideas/              # phux idea spool, one file per unsent capture\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
@@ -178,7 +179,7 @@ pub(crate) fn page() -> Page {
            `audit-key` (owner-only, `0600`) and the public half \
            `audit-key.pub`. The server appends one hash-chained, signed \
            record per decision; `phux audit tail` and `phux audit verify` \
-           read it with no server. See [Audit log](../audit.md).\n\
+           read it with no server. See [Audit log](../security.md#audit-log).\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \

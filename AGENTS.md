@@ -34,7 +34,7 @@ Programs that drive phux, or report status into a pane, start at
 [Build on phux](./docs/building.md). That page is the map to the versioned
 `--json` CLI, the MCP server (`phux mcp`), `phux watch --json` and its
 resume cursor, and OSC 7501
-([Any program can report status](./docs/any-program-status.md)).
+([Any program can report status](./docs/program-protocol.md)).
 Agent state is evidence-ranked; screen is the floor.
 
 ## Build and validate
@@ -52,12 +52,10 @@ the schema regenerated ([protocol](./docs/protocol.md#changing-the-wire)).
 
 ## Pull requests
 
-CI shares a small macOS pool, and every push to a ready PR cancels and
-requeues its lanes. Open PRs with `gh pr create --draft` (drafts skip the
-lanes and fail `ci`), run `just check` until it passes, then `gh pr ready`
-once. Fix review or CI findings in one push, not one push per fix. Flows
-that validate before the first push and use `gh pr merge --auto` may open
-ready.
+Open PRs draft or ready, whichever fits. Drafts skip the CI lanes; each push
+to a ready PR requeues them on a small shared macOS pool, so batch fixes
+into one push when you can. How CI gates and auto-merge work is in
+[CI](./docs/ci.md).
 
 ## Worktree isolation
 

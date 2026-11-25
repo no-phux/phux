@@ -3,7 +3,7 @@
 //!
 //! - Shift keeps local selection even while a program tracks the mouse.
 //! - A press the program took always gets its release, wherever it lands.
-//! - Motion is sent once per cell, and only to programs that asked for it.
+//! - Motion is sent once per cell (device pixel under DEC 1016), only on request.
 //! - Rune reports the secondary button once, at its release, so a tracking
 //!   program hears its press and release together; elsewhere it opens a menu.
 //! - The wheel is buttons 4 and 5 to a tracking program, arrow keys in the
@@ -47,6 +47,31 @@ const fn wire_button(button: PointerButton) -> MouseButton {
 
 /// The most wheel steps one event sends, so a fling can't flood a program.
 const MAX_WHEEL_STEPS: i64 = 100;
+
+/// Match the application's coordinate precision, not the local selection grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Cell(u16, u16),
+    Pixel(u32, u32),
+}
+
+impl Position {
+    fn surface(self, metrics: &crate::grid::Metrics) -> (f64, f64) {
+        match self {
+            Self::Cell(col, row) => cell_center(metrics, col, row),
+            Self::Pixel(x, y) => (f64::from(x), f64::from(y)),
+        }
+    }
+}
+
+/// Motion in another pane, coordinate mode, or modifier/button state is new.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReportedPosition {
+    terminal: ResourceId,
+    position: Position,
+    mods: ModSet,
+    button: MouseButton,
+}
 
 impl Desk {
     pub(super) fn mouse_mode(&self, terminal: &ResourceId) -> MouseMode {
@@ -127,48 +152,60 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return;
         };
-        let Some(view) = self.view_of(terminal) else {
+        let Some(position) = self.surface_point(terminal, x, y) else {
             return;
         };
-        let Some(frame) = client.acquire_view(view) else {
-            return;
-        };
-        let metrics = self.metrics();
-        let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
+        let button = wire_button(press.button);
+        let mods = keys::mods(press.mods);
         let action = match phase {
             Phase::Down => {
                 self.connection.mouse_capture = Some((terminal.clone(), *press));
-                self.connection.mouse_cell = Some((col, row));
+                self.remember_position(terminal, position, mods, button);
                 MouseAction::Press
             }
             Phase::Move => {
                 self.connection.mouse_capture = Some((terminal.clone(), *press));
-                // Only motion-tracking programs hear drags, once per cell.
                 let mode = self.mouse_mode(terminal);
                 if !matches!(mode, MouseMode::Button | MouseMode::Any)
-                    || self.connection.mouse_cell == Some((col, row))
+                    || !self.remember_position(terminal, position, mods, button)
                 {
                     return;
                 }
-                self.connection.mouse_cell = Some((col, row));
                 MouseAction::Motion
             }
             Phase::Up => {
                 self.connection.mouse_capture = None;
-                self.connection.mouse_cell = None;
+                self.connection.mouse_position = None;
                 MouseAction::Release
             }
         };
-        // Surface pixels inside the cell the point is in, clamped to the grid.
-        let (x, y) = cell_center(&metrics, col, row);
+        let (x, y) = position.surface(&self.metrics());
         let event = MouseEvent {
             action,
-            button: wire_button(press.button),
-            mods: keys::mods(press.mods),
+            button,
+            mods,
             x,
             y,
         };
         send_mouse(&client, terminal, event);
+    }
+
+    fn remember_position(
+        &mut self,
+        terminal: &ResourceId,
+        position: Position,
+        mods: ModSet,
+        button: MouseButton,
+    ) -> bool {
+        let next = ReportedPosition {
+            terminal: terminal.clone(),
+            position,
+            mods,
+            button,
+        };
+        let changed = self.connection.mouse_position.as_ref() != Some(&next);
+        self.connection.mouse_position = Some(next);
+        changed
     }
 
     /// The pane whose program holds a press.
@@ -185,7 +222,7 @@ impl Desk {
         if let Some((terminal, press)) = self.connection.mouse_capture.take() {
             let phase = Phase::Up;
             self.report(&terminal, &Press { phase, ..press });
-            self.connection.mouse_cell = None;
+            self.connection.mouse_position = None;
         }
     }
 
@@ -197,20 +234,23 @@ impl Desk {
         if self.mouse_mode(terminal) != MouseMode::None && !at.mods.shift {
             let held = (
                 self.connection.mouse_capture.clone(),
-                self.connection.mouse_cell,
+                self.connection.mouse_position.clone(),
             );
             let phase = Phase::Down;
             self.report(terminal, &Press { phase, ..at });
             let phase = Phase::Up;
             self.report(terminal, &Press { phase, ..at });
-            (self.connection.mouse_capture, self.connection.mouse_cell) = held;
+            (
+                self.connection.mouse_capture,
+                self.connection.mouse_position,
+            ) = held;
             return;
         }
         self.pointer.menu = Some(window);
     }
 
     /// The pointer moved with nothing pressed: `MouseMode::Any` programs hear
-    /// it, once per cell, while the grid is under it.
+    /// it at the precision they requested, while the grid is under it.
     pub(super) fn report_motion(&mut self, terminal: &ResourceId, x: f32, y: f32, mods: Mods) {
         if mods.shift || self.connection.mouse_capture.is_some() || self.connection.gesture != 0 {
             return;
@@ -218,89 +258,70 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return;
         };
-        let Some(frame) = self.view_of(terminal).and_then(|v| client.acquire_view(v)) else {
+        if self.mouse_mode(terminal) != MouseMode::Any {
+            return;
+        }
+        let Some(position) = self.hover_position(terminal, x, y) else {
             return;
         };
-        let metrics = self.metrics();
-        let cell = metrics.cell_at(x, y, frame.cols, frame.rows);
-        if self.connection.mouse_cell == Some(cell) {
+        let mods = keys::mods(mods);
+        if !self.remember_position(terminal, position, mods, MouseButton::Unknown) {
             return;
         }
-        self.connection.mouse_cell = Some(cell);
-        let inside = x >= 0.0
-            && y >= 0.0
-            && x < f32::from(frame.cols) * metrics.cell_w
-            && y < f32::from(frame.rows) * metrics.cell_h;
-        if !inside || self.mouse_mode(terminal) != MouseMode::Any {
-            return;
-        }
-        let (x, y) = cell_center(&metrics, cell.0, cell.1);
+        let (x, y) = position.surface(&self.metrics());
         let event = MouseEvent {
             action: MouseAction::Motion,
             button: MouseButton::Unknown,
-            mods: keys::mods(mods),
+            mods,
             x,
             y,
         };
         send_mouse(&client, terminal, event);
     }
 
+    fn hover_position(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Position> {
+        let client = self.connection.client.as_ref()?;
+        let frame = client.acquire_view(self.view_of(terminal)?)?;
+        let metrics = self.metrics();
+        let inside = x >= 0.0
+            && y >= 0.0
+            && x < f32::from(frame.cols) * metrics.cell_w
+            && y < f32::from(frame.rows) * metrics.cell_h;
+        inside.then(|| self.surface_point(terminal, x, y)).flatten()
+    }
+
     /// Nothing is under the pointer any more.
-    pub(super) fn forget_mouse_cell(&mut self) {
+    pub(super) fn forget_mouse_position(&mut self) {
         if self.connection.mouse_capture.is_none() {
-            self.connection.mouse_cell = None;
+            self.connection.mouse_position = None;
         }
     }
 
-    /// The surface pixels of the cell under a point in a pane's grid.
-    fn surface_point(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<(f64, f64)> {
-        let frame = self
-            .connection
-            .client
-            .as_ref()?
-            .acquire_view(self.view_of(terminal)?)?;
-        let metrics = self.metrics();
-        let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
-        Some(cell_center(&metrics, col, row))
+    /// A point in the application's requested coordinate space, clamped to its grid.
+    fn surface_point(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<Position> {
+        let client = self.connection.client.as_ref()?;
+        let frame = client.acquire_view(self.view_of(terminal)?)?;
+        let pixels = client.engine()?.pixel_mouse(terminal).unwrap_or(false);
+        Some(tracking_position(
+            &self.metrics(),
+            (frame.cols, frame.rows),
+            (x, y),
+            pixels,
+        ))
     }
 
     /// Wheel over a pane at `x, y` in its grid's points: `dy` points,
     /// positive revealing older rows.
     pub fn wheel(&mut self, terminal: &ResourceId, x: f32, y: f32, dy: f32, mods: Mods) {
-        // Leftover fractions belong to the pane they came from.
-        if self.connection.wheel_pane.as_ref() != Some(terminal) {
-            self.connection.wheel_pane = Some(terminal.clone());
-            self.connection.wheel_rows = 0.0;
-        }
-        let cell_h = self.metrics().cell_h;
-        self.connection.wheel_rows += dy / cell_h;
-        let rows = self.connection.wheel_rows.trunc();
-        if rows == 0.0 {
+        let steps = self.wheel_steps(terminal, dy);
+        if steps == 0 {
             return;
         }
-        self.connection.wheel_rows -= rows;
-        let steps = (rows as i64).clamp(-MAX_WHEEL_STEPS, MAX_WHEEL_STEPS);
         let Some(client) = self.connection.client.clone() else {
             return;
         };
         if self.mouse_mode(terminal) != MouseMode::None && !mods.shift {
-            let button = if steps > 0 {
-                MouseButton::Four
-            } else {
-                MouseButton::Five
-            };
-            // Programs route the wheel by position (vim splits, tmux panes).
-            let (x, y) = self.surface_point(terminal, x, y).unwrap_or((0.0, 0.0));
-            for _ in 0..steps.abs() {
-                let event = MouseEvent {
-                    action: MouseAction::Press,
-                    button,
-                    mods: keys::mods(mods),
-                    x,
-                    y,
-                };
-                send_mouse(&client, terminal, event);
-            }
+            self.report_wheel(&client, terminal, (x, y), steps, mods);
             return;
         }
         if client.is_alt_screen(terminal) {
@@ -329,6 +350,70 @@ impl Desk {
         let _ = client.with_control(|control| control.scroll_view(view, Scroll::Delta(-steps)));
         self.generation += 1;
     }
+
+    fn report_wheel(
+        &self,
+        client: &Client,
+        terminal: &ResourceId,
+        (x, y): (f32, f32),
+        steps: i64,
+        mods: Mods,
+    ) {
+        let button = if steps > 0 {
+            MouseButton::Four
+        } else {
+            MouseButton::Five
+        };
+        // Programs route the wheel by position (vim splits, browser widgets).
+        let (x, y) = self
+            .surface_point(terminal, x, y)
+            .map(|position| position.surface(&self.metrics()))
+            .unwrap_or((0.0, 0.0));
+        let event = MouseEvent {
+            action: MouseAction::Press,
+            button,
+            mods: keys::mods(mods),
+            x,
+            y,
+        };
+        for _ in 0..steps.abs() {
+            send_mouse(client, terminal, event);
+        }
+    }
+
+    fn wheel_steps(&mut self, terminal: &ResourceId, dy: f32) -> i64 {
+        // Leftover fractions belong to the pane they came from.
+        if self.connection.wheel_pane.as_ref() != Some(terminal) {
+            self.connection.wheel_pane = Some(terminal.clone());
+            self.connection.wheel_rows = 0.0;
+        }
+        self.connection.wheel_rows += dy / self.metrics().cell_h;
+        let rows = self.connection.wheel_rows.trunc();
+        self.connection.wheel_rows -= rows;
+        (rows as i64).clamp(-MAX_WHEEL_STEPS, MAX_WHEEL_STEPS)
+    }
+}
+
+fn tracking_position(
+    metrics: &crate::grid::Metrics,
+    (cols, rows): (u16, u16),
+    (x, y): (f32, f32),
+    pixels: bool,
+) -> Position {
+    if !pixels {
+        let (col, row) = metrics.cell_at(x, y, cols, rows);
+        return Position::Cell(col, row);
+    }
+    let (cw, ch) = metrics.cell_px();
+    let axis = |point: f32, cell: f32, px: u16, cells: u16| {
+        (f64::from(point) / f64::from(cell) * f64::from(px))
+            .floor()
+            .clamp(0.0, f64::from(u32::from(px) * u32::from(cells)) - 1.0) as u32
+    };
+    Position::Pixel(
+        axis(x, metrics.cell_w, cw, cols),
+        axis(y, metrics.cell_h, ch, rows),
+    )
 }
 
 /// An unmodified press of `key`.
@@ -372,6 +457,9 @@ fn cell_center(metrics: &crate::grid::Metrics, col: u16, row: u16) -> (f64, f64)
         f64::from(row) * f64::from(cell_h) + f64::from(cell_h) / 2.0,
     )
 }
+
+#[cfg(test)]
+mod tracking_tests;
 
 #[cfg(test)]
 mod tests {

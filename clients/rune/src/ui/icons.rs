@@ -85,6 +85,11 @@ icon!(
 icon!(CHECK, "phux-check", "M3.5 8.5l3 3 6-7");
 icon!(ARROW_UP, "phux-arrow-up", "M8 13V3M4 7l4-4 4 4");
 icon!(ARROW_DOWN, "phux-arrow-down", "M8 3v10M4 9l4 4 4-4");
+icon!(
+    AWAKE,
+    "phux-awake",
+    "M3 6.5h8V10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3zM11 7.5h1a1.5 1.5 0 0 1 0 3h-1M6 2.5v2M8.5 2.5v2"
+);
 icon!(BOLT, "phux-bolt", "M9 2L3.5 9h4L7 14l5.5-7h-4z");
 icon!(
     WINDOW,

@@ -47,6 +47,7 @@ final class QualificationProbe {
         }
         if !captured { NSLog("Qualification connection diagnostics could not start.") }
         inputContracts = try InputContractTests.run()
+        inputContracts += try NativeControlsContractTests.run()
         inputContracts += try await PairingContractTests.run()
         #endif
     }

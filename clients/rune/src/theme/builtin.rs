@@ -20,6 +20,7 @@ fn of(t: &'static CatalogTheme) -> Theme {
         // The solver's own fallback, spelled out so every theme has one.
         accent: t.accent.unwrap_or(t.ansi[6]).to_u32(),
         selection: t.selection_bg.map(Rgb8::to_u32),
+        bold: None,
     }
 }
 

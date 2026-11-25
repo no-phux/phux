@@ -186,7 +186,10 @@ impl Lit {
 
 /// A floating card around `content`: `radius.lg`, on the raised
 /// tier at rest and lifted to floating when it has the keyboard, edged
-/// with a top-lit hairline rim that is firmer on the lifted card.
+/// with a top-lit hairline rim. The lifted card's rim opens at
+/// `border.control`, the 3:1 edge a control draws: its shadow vanishes on
+/// a black ground (Omarchy's Vantablack, Matte Black), and the resting and
+/// lifted rims alone differ by too little to say which pane has the keys.
 /// `content` is clipped to the corners; the rim draws over it and never
 /// takes the pointer.
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
@@ -195,7 +198,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let b = &t.roles.border;
     let (top, bottom, tier) = match lit {
         Lit::Resting => (b.base.paint(), b.muted.paint(), Tier::Raised),
-        Lit::Focused => (b.strong.paint(), b.base.paint(), Tier::Floating),
+        Lit::Focused => (b.control.paint(), b.strong.paint(), Tier::Floating),
         Lit::Flush => (Color::TRANSPARENT, Color::TRANSPARENT, Tier::Flat),
     };
     let lifted = el()
@@ -259,8 +262,7 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
     perf::ACQUIRE.record_elapsed(acquiring);
     let laid = id.clone();
-    let host = el()
-        .key(format!("pane-host-{id}"))
+    let host = super::questions::retirement_target(el(), super::questions::pane_focus(id))
         .w_full()
         .h_full()
         .padding(PAD)
@@ -361,6 +363,10 @@ fn terminal_layer(
             desk.blink_on,
             &metrics,
             ink.selection(),
+            grid::Bold {
+                bright: desk.file.bold_is_bright == Some(true),
+                color: desk.theme().and_then(|theme| theme.bold),
+            },
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && desk.modal().is_none() && !editing {
@@ -418,6 +424,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
             mods: tx.mods(),
             button: PointerButton::Secondary,
         };
+        tx.blur();
         d.secondary_press(&menu, at, event.window());
     })
     .on_hover_change(move |d: &mut Desk, inside, _| {
@@ -432,43 +439,50 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
     // The terminal owns the entire gesture, including stationary word holds.
     // Rune must neither add touch slop nor turn its lift into a context menu.
     .touch_drags_at_once()
-    .on_drag(move |d: &mut Desk, drag, tx| {
-        // Drag points include the padding; the grid starts inside it.
-        let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
-        // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
-        if d.phone.is_some() && tx.button() == PointerButton::Primary {
-            let step = Press {
-                phase: drag.phase,
-                x,
-                y,
-                clicks: drag.clicks,
-                mods,
-                button: PointerButton::Primary,
-            };
-            let travel = [drag.dx, drag.dy];
-            return d.phone_touch(&press, &step, travel, drag.cancelled(), tx);
+    .on_drag(move |d: &mut Desk, drag, tx| terminal_drag(d, &press, drag, tx))
+}
+
+fn terminal_drag(d: &mut Desk, terminal: &ResourceId, drag: &rune::Drag, tx: &mut rune::Tx) {
+    // An explicit terminal gesture returns keyboard ownership to the pane,
+    // including after a question retired focus to its non-editing host.
+    if drag.phase == Phase::Down {
+        tx.blur();
+    }
+    // Drag points include the padding; the grid starts inside it.
+    let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+    // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
+    if d.phone.is_some() && tx.button() == PointerButton::Primary {
+        let step = Press {
+            phase: drag.phase,
+            x,
+            y,
+            clicks: drag.clicks,
+            mods,
+            button: PointerButton::Primary,
+        };
+        let travel = [drag.dx, drag.dy];
+        return d.phone_touch(terminal, &step, travel, drag.cancelled(), tx);
+    }
+    // Only the primary button opens links; the rest are the program's.
+    let cmd = mods.cmd && tx.button() == PointerButton::Primary;
+    // A phone opens links by its finger's tap alone: any other button
+    // there is the program's, press and release both.
+    if d.phone.is_some() || !d.press_link(terminal, drag.phase, x, y, cmd, tx) {
+        let step = Press {
+            phase: drag.phase,
+            x,
+            y,
+            clicks: drag.clicks,
+            mods,
+            button: tx.button(),
+        };
+        // A cancelled gesture still releases the program's mouse, but
+        // copies nothing.
+        d.pointer(terminal, &step, tx);
+        if drag.phase == Phase::Up && !drag.cancelled() {
+            d.selection_done(tx);
         }
-        // Only the primary button opens links; the rest are the program's.
-        let cmd = mods.cmd && tx.button() == PointerButton::Primary;
-        // A phone opens links by its finger's tap alone: any other button
-        // there is the program's, press and release both.
-        if d.phone.is_some() || !d.press_link(&press, drag.phase, x, y, cmd, tx) {
-            let step = Press {
-                phase: drag.phase,
-                x,
-                y,
-                clicks: drag.clicks,
-                mods,
-                button: tx.button(),
-            };
-            // A cancelled gesture still releases the program's mouse, but
-            // copies nothing.
-            d.pointer(&press, &step, tx);
-            if drag.phase == Phase::Up && !drag.cancelled() {
-                d.selection_done(tx);
-            }
-        }
-    })
+    }
 }
 
 #[cfg(test)]

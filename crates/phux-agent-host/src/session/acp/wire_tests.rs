@@ -6,6 +6,8 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
+mod evolution;
+
 struct Peer {
     io: BufReader<DuplexStream>,
     callback: Arc<Callback>,

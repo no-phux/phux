@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { repoPath } from "../lib/repo.ts";
 import { job, jobs, run, steps, workflow } from "../policy/workflows.ts";
-import { NATIVE_SETUP_PATHS, plan, planOutputs, reused, triggerFor } from "./plan.ts";
+import { LANES, NATIVE_SETUP_PATHS, plan, planOutputs, reused, triggerFor } from "./plan.ts";
 import { classifyDetection } from "./detect.ts";
 
 const CI = workflow("ci.yml");
@@ -15,13 +15,18 @@ const script = run(
 const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {
   ...Object.fromEntries(lanes.map((id) => [id, { result: "skipped" }])),
-  plan: { result: "success", outputs: {} },
+  plan: {
+    result: "success",
+    outputs: Object.fromEntries(
+      [...LANES, "rune_qualify", "release_qualify"].map((key) => [key, "false"]),
+    ),
+  },
   "queue-apple": { result: "success" },
 };
-const aggregate = (results: unknown, event: string): number =>
+const aggregate = (results: unknown, event: string, draft = ""): number =>
   Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
     cwd: repoPath("."),
-    env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event },
+    env: { ...process.env, RESULTS: JSON.stringify(results), EVENT_NAME: event, DRAFT: draft },
     stdout: "ignore",
   }).exitCode;
 
@@ -89,36 +94,29 @@ test.each(["pull_request", "push", "merge_group"])(
       for (const result of ["success", "failure", "cancelled", "skipped"]) {
         const results = {
           ...baseline,
+          plan: { result: "success", outputs: { ...baseline.plan.outputs, web: "true" } },
           native: { result: "success" },
           icount: { result: "success" },
           "web-vt": { result: "success" },
           "web-client": { result: "success" },
           [id]: { result },
         };
-        const expected = ["success", "skipped"].includes(result) ? 0 : 1;
+        const expected = result === "success" ? 0 : 1;
         expect([id, result, aggregate(results, event)]).toEqual([id, result, expected]);
       }
     }
   },
 );
 
-test("a skipped docs catalog passes on main and a failure does not", () => {
-  const ready = {
-    ...baseline,
-    native: { result: "success" },
-    icount: { result: "success" },
-  };
-  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "push")).toBe(0);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "skipped" } }, "merge_group")).toBe(0);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "pull_request")).toBe(1);
-  expect(aggregate({ ...ready, "docs-catalog": { result: "failure" } }, "push")).toBe(1);
-});
-
-test("a draft's skipped plan fails ci, so it cannot satisfy a readied PR", () => {
-  // GitHub counts a skipped required check as passing.
+test("a skipped plan passes only as a draft, which never reports the required ci", () => {
+  // GitHub counts a skipped required check as passing, so the job always runs
+  // and a draft reports under another name.
   expect(String(job(CI, "ci")["if"])).not.toContain("draft");
+  expect(String(job(CI, "ci")["name"])).toContain("'ci (draft)' || 'ci'");
   const draft = { ...baseline, plan: { result: "skipped" }, "queue-apple": { result: "skipped" } };
   expect(aggregate(draft, "pull_request")).toBe(1);
+  expect(aggregate(draft, "pull_request", "false")).toBe(1);
+  expect(aggregate(draft, "pull_request", "true")).toBe(0);
 });
 
 test("native setup's path list covers every script that job runs", () => {

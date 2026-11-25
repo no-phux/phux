@@ -289,7 +289,7 @@ fn bindings_render_under_group_headers() {
         &cfg_with(
             "C-a",
             &[
-                ("d", "detach"),
+                ("s", "session-picker"),
                 ("x", "kill-pane"),
                 ("c", "new-window"),
                 ("S", "settings"),
@@ -312,14 +312,17 @@ fn bindings_render_under_group_headers() {
     );
 }
 
-/// The shipped prefix table lays out one group per column on a roomy
-/// screen, shows every binding on a modest one, and stays inside a
-/// classic 80x24.
+/// The shipped prefix table keeps every group whole, each column opening
+/// on a header, on a roomy screen; shows every binding on a modest one;
+/// and stays inside a classic 80x24.
 #[test]
 fn shipped_table_fits_roomy_and_classic_screens() {
     let overlay = shipped_overlay();
     let roomy = overlay.grid(Rect::new(0, 0, 160, 45));
-    assert_eq!(roomy.columns.len(), 4, "{roomy:?}");
+    let headers = (roomy.columns.iter().flatten())
+        .filter(|cell| matches!(cell, Cell::Header(_)))
+        .count();
+    assert_eq!(headers, 4, "{roomy:?}");
     for (column, cells) in roomy.columns.iter().enumerate() {
         assert!(
             matches!(cells.first(), Some(Cell::Header(_))),
@@ -348,4 +351,16 @@ fn a_cramped_popup_keeps_every_group_and_points_at_the_palette() {
     }
     assert!(text.contains("Detach"), "{text}");
     assert!(text.contains(": lists all"), "{text}");
+}
+
+/// A binding sits under the palette's section for its action, not a guess
+/// from its name: `}` is a pane's next tab, `T` a new worktree's session.
+#[test]
+fn a_binding_takes_the_palette_section() {
+    assert_eq!(Group::of("next-slot-tab"), Group::Pane);
+    assert_eq!(Group::of("previous-slot-tab"), Group::Pane);
+    assert_eq!(Group::of("new-worktree"), Group::Session);
+    assert_eq!(Group::of("settings"), Group::Phux);
+    // Detach is phux's own chrome in the palette, so here too.
+    assert_eq!(Group::of("detach"), Group::Phux);
 }

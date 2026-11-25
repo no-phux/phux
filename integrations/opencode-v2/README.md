@@ -28,7 +28,7 @@ pane's sessions to phux: working and idle, each tool call, and every
 permission or question OpenCode asks, so `phux agent list` shows the pane
 `blocked` with the question until you answer it. It also registers `phux mcp`
 as an MCP server for the phux tools, unless your `opencode.json` already
-names one `phux`; `opencode mcp list` shows `phux connected`. The terminal
+names one `phux`; `opencode mcp list` shows it as connected. The terminal
 companion and the desktop UI need 2.2 or newer; on 1.x the server part does
 the companion's reporting.
 
@@ -126,7 +126,17 @@ synthetic `phux mail` message (`delivery: "queue"`, `resume: true`): queued
 behind a running turn, or starting one when the session is idle. Nothing is
 typed into the pane.
 
-The CLI companion does nothing outside a phux pane. The server plugin may
+With OpenCode 2.2+ and this integration installed,
+`phux chat run NAME -- opencode` also enables mail delivery outside a phux pane.
+The launcher supplies a nonempty `PHUX_CHAT_RECORD` and the pinned `PHUX_BIN`.
+The TUI forwards them to `phux mail wait` and `release`; the CLI validates the
+record and selects its inbox. `PHUX_AGENT_ADDRESS` stays unchanged for claims.
+This mode does not register pane lifecycle, permission, or sidebar reporting.
+Mail remains colleague data, not authoritative user instructions. Delivery
+belongs to this TUI's visible session even when the service is shared.
+
+Without a pane or that explicit chat mailbox the CLI companion does nothing.
+The server plugin may
 still supply tools globally, but **do not assume its `PHUX_TERMINAL_ID` names
 the active TUI pane** when the service is shared. Server-side lifecycle is off
 by default to avoid competing claims; `serverLifecycle: true` is only for a

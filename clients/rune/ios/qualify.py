@@ -47,6 +47,7 @@ print_input_order_lines = _input.print_input_order_lines
 _host = _sibling("rune_qualify_host", "qualify_host")
 simulator_pair = _host.simulator_pair
 server_environment = _host.server_environment
+app_running = _host.app_running
 
 BUNDLE_ID = "sh.phux.rune.ios"
 MARKER = "RUNE_IOS_INPUT_OK"
@@ -54,7 +55,7 @@ XCRUN = "/usr/bin/xcrun"
 # The data-container lookup: tries, and seconds each.
 CONTAINER_ATTEMPTS = 3
 CONTAINER_TIMEOUT = 60
-# Other read-only simulator queries: tries of the default 30s each.
+# Read-only or idempotent simulator calls: tries of the default 30s each.
 QUERY_ATTEMPTS = 3
 
 
@@ -222,9 +223,7 @@ class Qualification:
         return self.diagnostic_pid
 
     def require_alive(self, pid):
-        listing = self.simctl("spawn", self.udid, "launchctl", "list", attempts=QUERY_ATTEMPTS)
-        pattern = rf"^\s*{pid}\s+-?\d+\s+.*{re.escape(BUNDLE_ID)}"
-        if not re.search(pattern, listing, re.MULTILINE):
+        if not app_running(pid, self.udid):
             raise ValueError(f"native app PID {pid} exited")
         if self.server.poll() is not None:
             raise ValueError("isolated server exited during qualification")
@@ -237,9 +236,9 @@ class Qualification:
         source = documents / "rune-qualification.json"
         deadline = time.monotonic() + 90
         while not source.is_file():
-            self.require_alive(pid)
             if time.monotonic() >= deadline:
                 raise TimeoutError("native qualification report not written within 90s" + input_gate_reason(documents))
+            self.require_alive(pid)
             time.sleep(0.5)
         shutil.copy2(source, self.out / (prefix + source.name))
         report = json.loads((self.out / (prefix + source.name)).read_text())
@@ -249,11 +248,13 @@ class Qualification:
         marker = MARKER + "_RESUMED" if resumed else MARKER
         validate_tree(json.loads((self.out / (prefix + tree.name)).read_text()), report, marker)
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"))
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-system-keyboard.png"),
+                    attempts=QUERY_ATTEMPTS)
         self.cycle_scene(documents, pid, prefix)
         time.sleep(3)
         self.require_alive(pid)
-        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"))
+        self.simctl("io", self.udid, "screenshot", self.out / (prefix + "ios-native.png"),
+                    attempts=QUERY_ATTEMPTS)
         if not (self.out / (prefix + "ios-native.png")).stat().st_size:
             raise ValueError("empty simulator screenshot")
         self.diagnostic_reports.add(prefix)
@@ -265,9 +266,9 @@ class Qualification:
     def await_scene_report(self, source, pid, message):
         deadline = time.monotonic() + 30
         while not source.is_file():
-            self.require_alive(pid)
             if time.monotonic() >= deadline:
                 raise TimeoutError(message)
+            self.require_alive(pid)
             time.sleep(0.5)
         return json.loads(source.read_text())
 
@@ -277,7 +278,8 @@ class Qualification:
         background = documents / "rune-background.json"
         background.unlink(missing_ok=True)
         # Home is already running; cold Settings startup can stall its launch RPC.
-        self.simctl("launch", self.udid, "com.apple.springboard")
+        # Home twice is still Home: a stalled call may be retried.
+        self.simctl("launch", self.udid, "com.apple.springboard", attempts=QUERY_ATTEMPTS)
         self.await_scene_report(background, pid, "native scene did not acknowledge OS backgrounding")
         shutil.copy2(background, self.out / (prefix + background.name))
         self.require_alive(pid)
@@ -400,5 +402,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except subprocess.TimeoutExpired as error:
+        sys.exit(f"iOS qualification failed: simulator stalled on `{' '.join(error.cmd[2:5:2])}`"
+                 f" past {error.timeout:g}s; see command-*.timing.json")
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         sys.exit(f"iOS qualification failed: {error}")

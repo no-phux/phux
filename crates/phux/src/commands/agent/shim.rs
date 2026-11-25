@@ -38,7 +38,7 @@ const MANIFEST: &str = "claude-install.json";
 /// `report-state`; 5 reads the hook payload and, when the server serves
 /// `AgentSession` resources, feeds a session stream with `agent emit`; 6 adds
 /// the `phux.transcript/v1` entries for prompts, tool results, and replies.
-pub(crate) const SHIM_SCHEMA: u32 = 6;
+pub(crate) const SHIM_SCHEMA: u32 = 7;
 
 /// Prefix of the wrapper's schema stamp line. A `#` comment, so it is inert
 /// to `/bin/sh` and greppable without executing anything.

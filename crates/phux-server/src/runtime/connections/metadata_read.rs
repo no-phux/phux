@@ -104,4 +104,5 @@ fn is_server_owned_key(key: &str) -> bool {
         || key.starts_with(phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_RECORD_PREFIX)
         || key == WHOAMI_KEY
         || key.starts_with(APPROVAL_KEY_PREFIX)
+        || key == phux_config::KeepAwake::STATUS_KEY
 }

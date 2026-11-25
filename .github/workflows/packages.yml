@@ -4,7 +4,7 @@
 # would serve the same tree, but the org has Pages creation turned off.
 # release.yml calls this after a CLI release is public; a dispatch rebuilds
 # both from what is published.
-# docs/runbooks/linux-packages.md is the runbook.
+# docs/releasing.md#linux-packages is the runbook.
 name: packages
 
 on:

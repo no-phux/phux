@@ -1,6 +1,6 @@
 /// Write an executable named `name` that emits one OSC 7501 report and holds.
 /// Nothing else is painted, so the agent record it projects comes from the
-/// report alone (docs/any-program-status.md).
+/// report alone (docs/program-protocol.md).
 fn write_reporter(dir: &std::path::Path, name: &str, report: &str) -> PathBuf {
     let path = dir.join(name);
     let script = format!("#!/bin/sh\nprintf '\\033]7501;{report}\\033\\\\'\nsleep 120\n");

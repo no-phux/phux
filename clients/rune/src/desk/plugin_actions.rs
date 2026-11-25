@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use phux_client_core::layout::wire::unique_entry_for_target;
 use phux_client_runtime::control::{ControlPlane, Status};
-use phux_plugin::{ActionContext, ActionSource, ActionTarget, ConfiguredAction};
+use phux_plugin::{ActionContext, ActionSource, ActionTarget, ConfiguredAction, ConfiguredLink};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{ArrangementOwner, EntryTarget, ResourceRecord};
 
@@ -15,13 +15,15 @@ use crate::palette::{Item, Target};
 
 use super::{Desk, NoticeKind};
 
-type Catalog = Result<Vec<ConfiguredAction>, String>;
+type Catalog = Result<(Vec<ConfiguredAction>, Vec<ConfiguredLink>), String>;
 type Finished = Result<(), String>;
 
 pub(super) struct Actions {
     config: PathBuf,
     log: PathBuf,
     catalog: Vec<ConfiguredAction>,
+    /// The `[[links]]` handlers a ⌘-click consults first.
+    pub(super) links: Vec<ConfiguredLink>,
     loading: Option<Receiver<Catalog>>,
     running: Option<Receiver<Finished>>,
 }
@@ -32,6 +34,7 @@ impl Default for Actions {
             config: phux_config_core::loader::config_path(),
             log: phux_plugin::run_log::default_path(),
             catalog: Vec::new(),
+            links: Vec::new(),
             loading: None,
             running: None,
         }
@@ -56,7 +59,11 @@ impl Desk {
         }
         let path = self.plugin_actions.config.clone();
         match worker(self.waker.clone(), move || {
-            phux_plugin::configured_actions(&path).map_err(|error| error.to_string())
+            let actions = phux_plugin::configured_actions(&path);
+            let links = phux_plugin::configured_links(&path);
+            actions
+                .and_then(|a| Ok((a, links?)))
+                .map_err(|error| error.to_string())
         }) {
             Ok(receiver) => self.plugin_actions.loading = Some(receiver),
             Err(why) => self.say(NoticeKind::Error, why),
@@ -121,13 +128,17 @@ impl Desk {
                     .map(|hit| hit.item.target.clone())
             })
             .flatten();
-        self.plugin_actions.catalog = match result {
-            Ok(actions) => actions,
+        (self.plugin_actions.catalog, self.plugin_actions.links) = match result {
+            Ok(catalog) => catalog,
+            // Every ⌘ press reloads; only the palette reports a bad config.
             Err(why) => {
-                self.say(NoticeKind::Error, why);
-                Vec::new()
+                if self.palette_open {
+                    self.say(NoticeKind::Error, why);
+                }
+                Default::default()
             }
         };
+        self.rehover();
         if let Some(picked) = picked {
             self.palette_picked = self
                 .palette_hits()

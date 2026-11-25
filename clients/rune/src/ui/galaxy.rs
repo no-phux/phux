@@ -8,6 +8,8 @@
 //! shows its terminal; one on a planet flies to it.
 
 mod sky;
+#[cfg(test)]
+mod tests;
 
 use crate::ui::Paint;
 use rune::{Color, Cx, El, LineCap, Shape, TextStyle, canvas, col, el, row, text};

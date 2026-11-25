@@ -41,14 +41,8 @@ Check an archive against its `.sha256` before opening it.
 It needs macOS 14 on Apple silicon, or x86_64 or arm64 Linux with glibc 2.39
 (Ubuntu 24.04 or newer), Vulkan and `libxkbcommon-x11`.
 
-**Wayland is checked on one compositor.** Every build is opened on a headless
-sway and used there: typing (non-ASCII included), paste and copy through the
-Wayland clipboard, Chinese composed through an input method (fcitx5 pinyin),
-and fractional scaling (1.25 and 1.5). Not checked: other input methods and
-dead keys, GNOME and KDE. There is no middle-click paste: a selection does not
-set the primary selection. The clipboard uses the data-control
-protocol that wlroots compositors, Hyprland and KDE offer. On a compositor
-with XWayland, unsetting `WAYLAND_DISPLAY` for the app runs it on X11.
+**Wayland is checked on one compositor.** See [Linux qualification](LINUX.md)
+for the tested input methods, compositor limits and temporary cursor fix.
 
 The app needs the phux CLI. When none is found it offers **Install phux**, which runs the
 same installer as `curl -fsSL https://phux.sh/install | sh` (CLI in `~/.local/bin`, phux
@@ -80,7 +74,9 @@ session (or `--session NAME`). It never creates a session on its own.
   or Settings reopens it; runs aimed at a server never open it on their own.
 - **Machines.** The switcher under the sidebar's title moves the window to
   any machine in the CLI's registry; the choice is remembered, and sessions
-  keep running wherever they are. **Add a machine** takes `me@host`, a
+  keep running wherever they are. On desktop, automatic refreshes of expanded
+  machines pause while the window is offscreen and resume when it returns;
+  connections and completed responses still drain. **Add a machine** takes `me@host`, a
   machine from your tailnet or a host from `~/.ssh/config`, and runs
   `phux host add --install` over the ssh access you already have.
   Onboarding offers the same hosts to tick and sets them up one by one. A window shows one machine at a time. On a new
@@ -202,7 +198,7 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Paths to files that exist count too, absolute, `~/` or
   relative to the pane's directory, with or without a `:line:col` suffix;
   ⌘-click opens the file with its default app. A pane on another machine
-  never links paths, so a click can't open a local file that shares one.
+  links paths only for a [handler](../../docs/plugins.md#link-handlers).
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
 - **Settings.** The sliders button at the right of the desktop title bar
@@ -295,12 +291,15 @@ each line; the window asks first (Return pastes, Esc cancels).
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
+- The ACP host supports permission requests and Cursor's explicit ask/plan
+  extensions, not optional form elicitation. The generic structured-form
+  renderer and its controlled captures do not advertise that provider capability.
 - Screen readers get Settings, the buttons and notices, but terminal text,
   the palette's results, tabs and sidebar rows don't read well yet.
 - A GIF with no loop extension loops in a typed document instead of
   playing once: `image` reads it as an infinite loop, and Rune trusts it.
 - On Wayland there is no middle-click paste, and only sway is checked; see
-  [Install](#install).
+  [Linux qualification](LINUX.md).
 - The update check draws off-screen, so a build that only fails when opening a
   real window can still install.
 - On macOS, while a server update is due, quitting leaves the app as it was

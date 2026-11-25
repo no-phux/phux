@@ -4,7 +4,9 @@ use std::path::Path;
 
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::UnreadableResult;
-use phux_protocol::wire::frame::{ErrorCode, FrameKind, SpawnError, SpawnResult};
+use phux_protocol::wire::frame::{
+    ErrorCode, FrameKind, RESOURCE_PARENT_KEY, Scope, SpawnError, SpawnResult,
+};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::attach::AttachError;
@@ -56,6 +58,35 @@ pub async fn spawn_on(
     let outcome = spawn(&mut conn, frame).await?;
     drop(conn);
     Ok(outcome)
+}
+
+/// Record local pane `parent` as the `phux.parent/v1` of the pane `child`
+/// just spawned, and confirm it with a read-back: `SET_METADATA` has no
+/// reply. `Ok(false)` when the server refused or kept another value.
+///
+/// # Errors
+///
+/// Transport failures from [`Connection::connect`] or the read.
+pub async fn record_parent(
+    socket_path: &Path,
+    child: &ResourceId,
+    parent: u32,
+) -> Result<bool, AttachError> {
+    let scope = Scope::Resource(child.clone());
+    let value = parent.to_string().into_bytes();
+    let mut conn = Connection::connect(socket_path).await?;
+    conn.send(&FrameKind::SetMetadata {
+        request_id: 1,
+        scope: scope.clone(),
+        key: RESOURCE_PARENT_KEY.to_owned(),
+        value: value.clone(),
+    })
+    .await?;
+    let (answer, _) = conn
+        .request_metadata(2, scope, RESOURCE_PARENT_KEY.to_owned())
+        .await?
+        .into_parts();
+    Ok(answer.is_ok_and(|held| held == Some(value)))
 }
 
 /// Why a string is not an idempotency key.

@@ -58,6 +58,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)
 ├── workload-org-roots/ # each organization's root certificates (owner-only)
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
+├── chats/              # private explicit conversation records and native identity files
 ├── ideas/              # phux idea spool, one file per unsent capture
 ├── service-wrapper.sh  # `phux service install --restore` wrapper
 └── workspace.json      # `--restore` archive, kept current by `--autosave`
@@ -74,7 +75,7 @@ $XDG_STATE_HOME/<profile-dir>/
 - `enrollment-tickets` holds the SHA-256 of each single-use ticket `phux pair --enroll` minted (never the ticket), with the scope and lifetime the credential it enrolls gets; the first redemption consumes it. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
 - `workload-org-roots/` holds `<org>.pem`, the root certificates `phux workload sync-managed` was handed for that organization, mode `0600` in a `0700` directory. A paired listener trusts them beside the workload CA and re-reads them when they change. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
 - `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per idea that does not yet have a 2xx). The file keeps the idempotency key. A network failure leaves it; the next `phux idea` sends those same bytes. A 2xx removes it.
-- `audit/` holds the `phux.audit/v1` log (`audit.jsonl`, rotated at 64 MiB to `audit.jsonl.1`..`.4`), its ed25519 signing key `audit-key` (owner-only, `0600`) and the public half `audit-key.pub`. The server appends one hash-chained, signed record per decision; `phux audit tail` and `phux audit verify` read it with no server. See [Audit log](../audit.md).
+- `audit/` holds the `phux.audit/v1` log (`audit.jsonl`, rotated at 64 MiB to `audit.jsonl.1`..`.4`), its ed25519 signing key `audit-key` (owner-only, `0600`) and the public half `audit-key.pub`. The server appends one hash-chained, signed record per decision; `phux audit tail` and `phux audit verify` read it with no server. See [Audit log](../security.md#audit-log).
 - `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
 - `service-wrapper.sh` and `workspace.json` exist only under `phux service install --restore`. The wrapper starts `phux server --autosave workspace.json` and saves once more on stop. The server restores the archive on a fresh start and rewrites it (owner-only, `0600`) through a synced `workspace.json.autosave.tmp` and an atomic rename a few seconds after the workspace changes, so a crash or power loss leaves the latest layout. An archive that fails to restore is copied to `workspace.json.unrestored` first.
 

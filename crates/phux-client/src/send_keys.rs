@@ -234,7 +234,7 @@ async fn first_arranged_leaf(conn: &mut Connection, session: SessionId) -> Optio
         .groups
         .iter()
         .find_map(|group| group.state.tree.as_ref())
-        .and_then(|tree| crate::layout::leaves(tree).into_iter().next())
+        .map(|tree| tree.first_leaf().clone())
 }
 
 /// Send `keys` to a pre-resolved `pane` via `ROUTE_INPUT`.

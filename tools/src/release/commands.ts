@@ -6,10 +6,12 @@ import { main as nextPlan } from "./next-plan.ts";
 import { ciGreen, main as publishPlan } from "./publish-plan.ts";
 import { releaseDrift } from "./release-drift.ts";
 import { releaseManifest } from "./release-manifest.ts";
+import { prReadyCommand } from "./pr-ready-ci.ts";
 
 const text = { type: "string" } as const;
 
 export const commands: Record<string, Command> = {
+  "pr-ready-ci": prReadyCommand,
   "publish-plan": {
     summary:
       "Choose the drafts release.yml ships and delete superseded ones (env in, outputs out).",

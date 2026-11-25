@@ -350,6 +350,7 @@ fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
             FrameKind::SubscribeMetadata { .. },
             FrameKind::SubscribeMetadata { .. },
             FrameKind::SubscribeMetadata { .. },
+            FrameKind::SubscribeMetadata { .. },
             FrameKind::SubscribeMetadata { .. }
         ]
     ));
@@ -395,7 +396,7 @@ fn refresh_after_settling(plane: &mut ControlPlane, snapshot: SessionSnapshot) -
 fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
     let mut plane = settled();
     let frames = refresh_after_settling(&mut plane, with_second_pane());
-    assert_eq!(frames.len(), 10, "{frames:?}");
+    assert_eq!(frames.len(), 12, "{frames:?}");
     for pair in frames.chunks(2) {
         assert!(
             matches!(
@@ -430,9 +431,10 @@ fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
                 FrameKind::SubscribeMetadata { .. },
                 FrameKind::SubscribeMetadata { .. },
                 FrameKind::SubscribeMetadata { .. },
+                FrameKind::SubscribeMetadata { .. },
             ]
         ),
-        "the asked, occupant, note and notify reads from before the detach are still in flight: {frames:?}"
+        "the asked, occupant, note, notify and parent reads from before the detach are still in flight: {frames:?}"
     );
 }
 

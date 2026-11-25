@@ -94,17 +94,23 @@ pub fn form_value(schema: &Value, raw: &str, selected: Option<&str>) -> Result<V
     if let Some(selected) = selected {
         return serde_json::from_str(selected).map_err(|_| "Invalid selected value".into());
     }
-    let kind = schema.get("type").and_then(Value::as_str);
-    match kind.unwrap_or("string") {
+    let kind = match schema.get("type") {
+        None => "string",
+        Some(Value::String(kind)) => kind.as_str(),
+        Some(_) => {
+            return Err("This provider field type is not supported. Nothing was submitted.".into());
+        }
+    };
+    match kind {
         "string" => Ok(Value::String(raw.to_owned())),
         "number" | "integer" | "boolean" | "object" | "array" => {
             let value: Value = serde_json::from_str(raw)
                 .map_err(|_| "Enter a valid JSON value of the requested type".to_owned())?;
             let matches = match kind {
-                Some("number") => value.is_number(),
-                Some("integer") => value.is_i64() || value.is_u64(),
-                Some("boolean") => value.is_boolean(),
-                Some("object") => value.is_object(),
+                "number" => value.is_number(),
+                "integer" => value.is_i64() || value.is_u64(),
+                "boolean" => value.is_boolean(),
+                "object" => value.is_object(),
                 _ => value.is_array(),
             };
             if matches {

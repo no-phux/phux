@@ -154,7 +154,7 @@ pub(crate) enum Mode {
     Remove,
 }
 
-/// One state for a skill or a hook. See docs/agent-skill.md for which verb
+/// One state for a skill or a hook. See docs/agents.md#skill-setup for which verb
 /// reports which.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -327,6 +327,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::NextSpawn,
     },
     SettingSpec {
+        key: "defaults.lock-size",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Bool,
+        summary: "Lock the terminal UI's view size on attach",
+        detail: "true makes phux attach and a bare phux claim the view size lock, as \
+                 --lock-size does: while the client is attached, only its own sizes apply \
+                 to the panes it shows, and other views see them letterboxed or cropped. \
+                 The lock-size and unlock-size actions switch it live.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
         key: "defaults.keep-awake",
         section: SettingSection::Defaults,
         kind: SettingKind::Choice(KEEP_AWAKE),
@@ -335,7 +346,8 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  systemd-inhibit on Linux) while any agent's state is working and drops it \
                  within about 15 seconds of the last one stopping; always holds it for as \
                  long as the server runs. The display may still sleep, and closing a laptop \
-                 lid still sleeps it. phux status shows the current state.",
+                 lid still sleeps it. phux status shows the current state, and Rune can \
+                 switch the mode until the server restarts.",
         applies: Applies::NextSpawn,
     },
 ];

@@ -50,9 +50,11 @@ mod reef;
 pub(crate) mod rows;
 mod settings;
 mod sidebar;
+pub(crate) use sidebar::focus_target as sidebar_focus_target;
 mod spatial;
 mod status;
 mod tabs;
+mod tile;
 #[allow(clippy::disallowed_methods)] // owner path: the tokens' own raw values
 pub(crate) mod tokens;
 mod updates;
