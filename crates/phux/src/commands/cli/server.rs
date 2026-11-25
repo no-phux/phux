@@ -191,7 +191,7 @@ pub(crate) enum ServerAction {
     },
 }
 
-/// Run a relay, enroll a route with it, or connect a server to one
+/// Run a relay, enroll routes, or connect a server to one
 ///
 /// The relay is a separate rendezvous process for reaching a phux
 /// server that cannot accept inbound connections: the server dials

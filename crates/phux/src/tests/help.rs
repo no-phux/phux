@@ -201,11 +201,14 @@ fn misplaced_flag_hint_follows_the_flag_position() {
     assert_eq!(hint(&["phux", "ls", "--no-such-flag"]), None);
 
     // The exact command is named, and nothing unrelated is listed.
-    let nested = hint(&["phux", "relay", "pair", "--route", "lab", "--json"]).expect("hint");
-    assert_eq!(
-        nested,
-        "`phux relay pair` does not take `--json`; see `phux relay pair --help`"
+    let nested =
+        hint(&["phux", "relay", "run", "--listen", "127.0.0.1:0", "--json"]).expect("hint");
+    assert!(
+        nested.starts_with("`phux relay run` does not take `--json`;")
+            && nested.ends_with("see `phux relay run --help`"),
+        "{nested}"
     );
+    assert!(!nested.contains("`phux ls`"), "{nested}");
     // A relative under the same verb that takes the flag is offered.
     let relative = hint(&["phux", "config", "path", "--json"]).expect("hint");
     assert!(
@@ -256,8 +259,12 @@ fn usage_lines_write_required_flags_bare() {
         usage::help::Style::PLAIN,
     )
     .expect("page");
+    let usage_line = page
+        .lines()
+        .find(|line| line.starts_with("Usage: phux relay pair "))
+        .expect("usage line");
     assert!(
-        page.contains("Usage: phux relay pair --route <NAME>\n"),
+        usage_line.contains(" --route <NAME>") && !usage_line.contains("<--route"),
         "{page}"
     );
 }

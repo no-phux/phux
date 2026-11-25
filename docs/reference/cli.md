@@ -79,7 +79,7 @@ Machines:
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
   pair          Mint, rotate, revoke, list, or prune remote credentials
-  relay         Run a relay, enroll a route with it, or connect a server to one
+  relay         Run a relay, enroll routes, or connect a server to one
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
   forward       Forward a port or your ssh-agent to the server's machine
@@ -6493,7 +6493,7 @@ Global flags:
 ## `phux relay`
 
 ```text
-Run a relay, enroll a route with it, or connect a server to one
+Run a relay, enroll routes, or connect a server to one
 
 The relay is a separate rendezvous process for reaching a phux server that
 cannot accept inbound connections: the server dials OUT to the relay and
