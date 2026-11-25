@@ -171,6 +171,7 @@ mod retention;
 mod routing;
 mod snapshots;
 mod stream;
+mod supersede;
 mod withdrawal;
 
 use bootstrap::*;

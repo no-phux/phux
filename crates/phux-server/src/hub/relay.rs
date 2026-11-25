@@ -56,6 +56,14 @@ const RELAY_RETIREMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// this catches quiet partitions and satellites that never answer.
 pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long a content subscriber waits for its next bootstrap frame before
+/// the hub asks the satellite for a fresh one; doubles per ask, up to 8x.
+const BOOTSTRAP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Least time between the asks one overflowing consumer causes.
+const OVERFLOW_SPACING: std::time::Duration = std::time::Duration::from_secs(2);
+/// Asks without a whole generation delivered before the hub gives up.
+const MAX_BOOTSTRAP_ASKS: u32 = 8;
+
 /// Upper bound on one relayed `LIST_DIRECTORY`: the satellite's own 5 s walk
 /// bound plus link time. Shorter than [`RELAY_COMMAND_TIMEOUT`] because a
 /// person is waiting on the picker.
@@ -90,14 +98,37 @@ pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryE
 }
 
 /// Only identity/kind facts and the selected Terminal profile survive between
-/// routing calls; they are cleared at every link incarnation boundary.
-#[derive(Debug, Default)]
+/// routing calls; they are cleared at every link incarnation boundary. The
+/// generation counter is not: it must outlive the link.
+#[derive(Debug)]
 pub(crate) struct RelayCatalog {
     kinds: HashMap<u32, phux_protocol::ids::ResourceKind>,
     /// Each enumerated resource's control class, which the hub judges a
     /// watch by (`docs/authority.md`); learned only from inventory.
     controls: HashMap<u32, Option<phux_protocol::wire::frame::ControlClass>>,
     terminal_profile: Option<BootstrapProfile>,
+    /// [`RelaySession::generations`], for every session of this link.
+    generations: Arc<AtomicU64>,
+}
+
+impl Default for RelayCatalog {
+    fn default() -> Self {
+        Self {
+            kinds: HashMap::new(),
+            controls: HashMap::new(),
+            terminal_profile: None,
+            generations: first_generation(),
+        }
+    }
+}
+
+/// Where a link's outward generations start: microseconds since the epoch,
+/// so a restarted hub is past every id its predecessor handed out.
+fn first_generation() -> Arc<AtomicU64> {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |since| u64::try_from(since.as_micros()).unwrap_or(1));
+    Arc::new(AtomicU64::new(micros.max(1)))
 }
 
 pub(crate) type ResourceKindCatalog = Arc<Mutex<RelayCatalog>>;
@@ -365,6 +396,7 @@ mod mirror;
 pub mod relays;
 mod replies;
 mod requests;
+pub mod resume;
 mod retention;
 pub mod routing;
 pub mod state;
@@ -372,8 +404,11 @@ mod stream;
 mod withdrawal;
 
 pub(crate) use relays::*;
+pub(crate) use resume::RelayResume;
 pub(crate) use routing::*;
 pub(crate) use state::*;
+
+use resume::ContentAttach;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]

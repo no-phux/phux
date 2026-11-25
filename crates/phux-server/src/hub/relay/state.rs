@@ -1,11 +1,13 @@
 //! A relay session's state: subscribers, pending requests, bootstrap flows, and their budgets.
 
 use super::{
-    BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, BytesMut,
-    CancellationToken, ClientId, CommandResult, DirectoryListingResult, FrameKind, HashMap,
-    HashSet, Outbound, PathQueryResult, ResourceId, ResourceKindCatalog, SatelliteHost,
-    ServerFeatureExtSet, ServerFeatureSet, SpawnResult, StreamId, VecDeque, mpsc, oneshot,
+    Arc, AtomicU64, BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
+    BytesMut, CancellationToken, ClientId, CommandResult, ContentAttach, DirectoryListingResult,
+    FrameKind, HashMap, HashSet, Outbound, PathQueryResult, ResourceId, ResourceKindCatalog,
+    SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, SpawnResult, StreamId, VecDeque, mpsc,
+    oneshot,
 };
+use futures_util::FutureExt;
 
 /// One proxy subscriber on the return leg.
 #[derive(Debug)]
@@ -22,6 +24,80 @@ pub(super) struct ProxySubscriber {
     /// Latest generation identity, so overflow can emit a terminal-scoped
     /// tombstone.
     pub(super) current_generation: Option<(StreamId, BootstrapId, u64)>,
+    /// Its place in line for a mailbox slot, while delivery is blocked.
+    pub(super) turn: DeliveryTurn,
+    /// The content attach to repeat; `None` for an event-only subscription.
+    pub(super) content: Option<ContentAttach>,
+}
+
+impl ProxySubscriber {
+    /// Deliver one frame, waiting in line behind a full mailbox.
+    pub(super) fn deliver(
+        &mut self,
+        frame: &FrameKind,
+    ) -> Result<(), mpsc::error::TrySendError<()>> {
+        self.turn.send(&self.out_tx, frame)?;
+        if let Some(content) = &mut self.content {
+            content.note_delivered(frame);
+        }
+        Ok(())
+    }
+}
+
+/// A place in a consumer mailbox's waiting line. A bare `try_send` never wins
+/// a slot while the consumer's other producers wait for one, so a few busy
+/// panes could keep a relayed bootstrap out for as long as they stayed busy.
+/// Polled, never awaited: the link must not stall on one consumer.
+// ponytail: one slot per turn; reserve the whole retained run if a slow
+// consumer's bootstrap ever takes visibly long.
+#[derive(Default)]
+pub(super) struct DeliveryTurn(Option<PendingSlot>);
+
+type PendingSlot = std::pin::Pin<
+    Box<
+        dyn Future<Output = Result<mpsc::OwnedPermit<Outbound>, mpsc::error::SendError<()>>> + Send,
+    >,
+>;
+
+impl std::fmt::Debug for DeliveryTurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DeliveryTurn")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+impl DeliveryTurn {
+    fn send(
+        &mut self,
+        out_tx: &mpsc::Sender<Outbound>,
+        frame: &FrameKind,
+    ) -> Result<(), mpsc::error::TrySendError<()>> {
+        if self.0.is_none() {
+            match out_tx.try_reserve() {
+                Ok(permit) => {
+                    permit.send(Outbound::Frame(frame.clone()));
+                    return Ok(());
+                }
+                Err(mpsc::error::TrySendError::Closed(())) => {
+                    return Err(mpsc::error::TrySendError::Closed(()));
+                }
+                Err(mpsc::error::TrySendError::Full(())) => {}
+            }
+        }
+        let slot = self
+            .0
+            .get_or_insert_with(|| Box::pin(out_tx.clone().reserve_owned()));
+        match slot.now_or_never() {
+            None => Err(mpsc::error::TrySendError::Full(())),
+            Some(reserved) => {
+                self.0 = None;
+                let permit = reserved.map_err(|_| mpsc::error::TrySendError::Closed(()))?;
+                let _ = permit.send(Outbound::Frame(frame.clone()));
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Per-subscriber return-leg gate: content deltas flow only after the
@@ -71,6 +147,8 @@ pub(super) struct FanOutFrame<'a> {
     pub(super) terminal: u32,
     pub(super) frame: &'a FrameKind,
     pub(super) kind: FanOutKind,
+    /// Deliver a generation's frames only to subscribers that got its BEGIN.
+    pub(super) begun_only: bool,
 }
 
 /// One in-flight relayed command, plus what to roll back on an error reply.
@@ -98,7 +176,12 @@ pub(super) enum Registration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RelayBootstrapFlow {
     pub(super) stream_id: StreamId,
+    /// The id the satellite gave this generation.
     pub(super) bootstrap_id: BootstrapId,
+    /// The id consumers see it under; see [`RelaySession::generations`].
+    pub(super) outward: BootstrapId,
+    /// Last sequence the satellite sent under it.
+    pub(super) last_seq: u64,
     pub(super) profile: BootstrapStreamProfile,
     pub(super) next_chunk_seq: u32,
     pub(super) generation_bytes: u64,
@@ -193,6 +276,73 @@ pub(super) const fn stream_frame_scope(frame: &FrameKind) -> Option<&ResourceId>
 pub(super) const fn stream_frame_scope_mut(frame: &mut FrameKind) -> Option<&mut ResourceId> {
     stream_frame_scope_of!(frame, as_mut)
 }
+
+/// The generation a return-leg stream frame names; by reference
+/// or for rewriting, as `$frame` is borrowed.
+macro_rules! stream_frame_generation_of {
+    ($frame:expr) => {
+        match $frame {
+            FrameKind::ResourceOutput {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapBegin {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapChunk {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapReady {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryPage {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapTombstone {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryTombstone {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryRejected {
+                stream_id,
+                bootstrap_id,
+                ..
+            } => Some((stream_id, bootstrap_id)),
+            _ => None,
+        }
+    };
+}
+
+/// The generation a return-leg stream frame names, if it names one.
+pub(super) const fn stream_frame_generation(frame: &FrameKind) -> Option<(StreamId, BootstrapId)> {
+    match stream_frame_generation_of!(frame) {
+        Some((stream_id, bootstrap_id)) => Some((*stream_id, *bootstrap_id)),
+        None => None,
+    }
+}
+
+/// The bootstrap id a return-leg stream frame names, borrowed for rewriting.
+pub(super) const fn stream_frame_bootstrap_mut(frame: &mut FrameKind) -> Option<&mut BootstrapId> {
+    match stream_frame_generation_of!(frame) {
+        Some((_, bootstrap_id)) => Some(bootstrap_id),
+        None => None,
+    }
+}
+
 /// A relayed `LIST_DIRECTORY` awaiting its `DIRECTORY_LISTING`.
 #[derive(Debug)]
 pub(super) struct PendingListing {
@@ -255,6 +405,12 @@ pub(crate) struct RelaySession {
     /// detaches (which remove them upstream).
     pub(super) legacy_events: HashSet<u32>,
     pub(super) bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
+    /// Next bootstrap id consumers see. The link's `stream_id` is the same for
+    /// every consumer and outlives their connections, and a satellite that
+    /// restarts (or predates id blocks) repeats its ids; a consumer draws no
+    /// generation it retired, so the hub names each one itself. Shared with
+    /// the link's other sessions.
+    pub(super) generations: Arc<AtomicU64>,
     pub(super) retained_bytes: usize,
     pub(super) retained_frames: usize,
     /// Terminals whose last subscriber was removed by delivery failure,

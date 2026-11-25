@@ -1,8 +1,9 @@
 //! Bootstrap flow per relayed generation: profile checks, chunk acceptance, and identity validation.
 
 use super::{
-    BootstrapId, BootstrapStreamProfile, MAX_RELAY_GENERATION_BYTES, MAX_RELAY_GENERATION_FRAMES,
-    RelayBootstrapFlow, RelaySession, StreamId, charge_bytes, charge_frame, ensure_chunk_identity,
+    BootstrapId, BootstrapStreamProfile, FrameKind, MAX_RELAY_GENERATION_BYTES,
+    MAX_RELAY_GENERATION_FRAMES, Ordering, RelayBootstrapFlow, RelaySession, ResourceId, StreamId,
+    TombstoneReason, charge_bytes, charge_frame, debug, ensure_chunk_identity,
     ensure_chunk_sequence,
 };
 
@@ -26,12 +27,20 @@ impl RelaySession {
         )
     }
 
+    /// Open `terminal`'s flow. A BEGIN over a live flow supersedes it, exactly
+    /// as a tombstone followed by that BEGIN would: the old flow's budget is
+    /// returned, its consumers are told, and any later frame that names it
+    /// (or skips this one's chunk order) still ends the link. The satellite
+    /// gains nothing it could not do by sending the tombstone, and only to its
+    /// own Terminal; satellites whose reattach tombstone names an id the pump
+    /// had moved past send no other form.
     pub(super) fn begin_bootstrap_flow(
         &mut self,
         terminal: u32,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         profile: BootstrapStreamProfile,
+        base_seq: u64,
     ) -> Result<(), String> {
         if !self.accepts_stream_profile(profile) {
             return Err(format!(
@@ -39,24 +48,23 @@ impl RelaySession {
                 self.host, self.bootstrap_profile
             ));
         }
-        if self.bootstrap_flows.contains_key(&terminal) {
-            return Err(format!(
-                "satellite {} sent overlapping BOOTSTRAP_BEGIN for terminal {terminal}",
-                self.host
-            ));
-        }
+        self.supersede_bootstrap_flow(terminal);
         if self.inflight_generation_frames >= MAX_RELAY_GENERATION_FRAMES * 2 {
             return Err(format!(
                 "satellite {} exceeded the connection-wide in-flight bootstrap frame budget",
                 self.host
             ));
         }
+        let outward = BootstrapId::new(self.generations.fetch_add(1, Ordering::Relaxed))
+            .ok_or_else(|| format!("satellite {} exhausted generation ids", self.host))?;
         self.inflight_generation_frames += 1;
         self.bootstrap_flows.insert(
             terminal,
             RelayBootstrapFlow {
                 stream_id,
                 bootstrap_id,
+                outward,
+                last_seq: base_seq,
                 profile,
                 next_chunk_seq: 0,
                 generation_bytes: 0,
@@ -65,6 +73,25 @@ impl RelaySession {
             },
         );
         Ok(())
+    }
+
+    /// Retire a live flow a newer BEGIN replaces, tombstoning it downstream.
+    fn supersede_bootstrap_flow(&mut self, terminal: u32) {
+        let Some(replaced) = self.bootstrap_flows.get(&terminal).copied() else {
+            return;
+        };
+        debug!(satellite = %self.host, terminal, "newer generation superseded a live one");
+        self.retire_bootstrap_flow(terminal);
+        self.fan_out(
+            terminal,
+            &FrameKind::BootstrapTombstone {
+                terminal_id: ResourceId::satellite(self.host.clone(), terminal),
+                stream_id: replaced.stream_id,
+                bootstrap_id: replaced.outward,
+                reason: TombstoneReason::ExplicitReattach,
+                last_valid_seq: replaced.last_seq,
+            },
+        );
     }
 
     pub(super) fn accept_bootstrap_chunk(

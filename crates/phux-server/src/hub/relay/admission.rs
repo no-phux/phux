@@ -3,10 +3,11 @@
 #[cfg(test)]
 use super::RelayRequest;
 use super::{
-    ClientId, Command, CommandResult, DirectoryListingResult, ErrorCode, FrameKind, Outbound,
-    PathQueryResult, PendingListing, PendingPathQuery, ProxySubscriber, ProxySubscription,
-    Registration, RelaySession, ResourceId, SatelliteSpawn, ServerFeature, SnapshotGate,
-    SpawnError, listing_refusal, oneshot, path_refusal, stream_needs_terminal_profile,
+    ClientId, Command, CommandResult, ContentAttach, DeliveryTurn, DirectoryListingResult,
+    ErrorCode, FrameKind, Outbound, PathQueryResult, PendingListing, PendingPathQuery,
+    ProxySubscriber, ProxySubscription, Registration, RelaySession, ResourceId, SatelliteSpawn,
+    ServerFeature, SnapshotGate, SpawnError, listing_refusal, oneshot, path_refusal,
+    stream_needs_terminal_profile,
 };
 
 impl RelaySession {
@@ -289,6 +290,7 @@ impl RelaySession {
     /// Register one proxy subscriber idempotently, returning the
     /// [`Registration`] effect for rollback.
     pub(super) fn register_subscriber(&mut self, subscription: ProxySubscription) -> Registration {
+        let content = ContentAttach::of(&subscription);
         let ProxySubscription {
             terminal,
             client,
@@ -304,9 +306,11 @@ impl RelaySession {
         let subs = self.subscribers.entry(terminal).or_default();
         if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
             existing.out_tx = out_tx;
+            existing.turn = DeliveryTurn::default();
             existing.consumer_cancel = consumer_cancel;
             // Keep the freshest token.
             existing.seq = existing.seq.max(seq);
+            existing.content = content.or_else(|| existing.content.take());
             // An upgrade from an `Open` stream to a snapshot attach re-gates
             // until this attach's snapshot lands. Other gates
             // already suppress deltas; event-only re-subscribes leave it.
@@ -330,6 +334,8 @@ impl RelaySession {
                 },
                 retire_after_flush: false,
                 current_generation: None,
+                turn: DeliveryTurn::default(),
+                content,
             });
             Registration::New
         }

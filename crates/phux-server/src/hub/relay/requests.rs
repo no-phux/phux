@@ -79,7 +79,12 @@ impl RelaySession {
                     command,
                 }))
             }
-            RelayRequest::Forward { frame } => Some(self.encode(&frame)),
+            RelayRequest::Forward { mut frame } => {
+                if !self.retag_frame_ack(&mut frame) {
+                    return None;
+                }
+                Some(self.encode(&frame))
+            }
             RelayRequest::Spawn { spawn, reply } => {
                 if let Some(refusal) = self.spawn_capability_rejection(&spawn) {
                     let _ = reply.send(SpawnResult::Err(refusal));
@@ -122,6 +127,31 @@ impl RelaySession {
             // Frames were produced by [`Self::prepare_request`].
             RelayRequest::MirrorTerminal { .. } => None,
         }
+    }
+
+    /// Name a consumer's `FRAME_ACK` by the satellite's own generation id;
+    /// `false` for one that acknowledges a generation no longer live.
+    fn retag_frame_ack(&self, frame: &mut FrameKind) -> bool {
+        let FrameKind::FrameAck {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        } = frame
+        else {
+            return true;
+        };
+        if !self.enforce_bootstrap_flow {
+            return true;
+        }
+        let live = terminal_id
+            .local_id()
+            .and_then(|id| self.bootstrap_flows.get(&id))
+            .filter(|flow| flow.stream_id == *stream_id && flow.outward == *bootstrap_id);
+        if let Some(flow) = live {
+            *bootstrap_id = flow.bootstrap_id;
+        }
+        live.is_some()
     }
 
     pub(super) fn enqueue_command(
