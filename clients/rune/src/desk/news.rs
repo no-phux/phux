@@ -3,83 +3,22 @@
 
 use super::Desk;
 
+use std::sync::LazyLock;
+
 /// One note: when, a headline, and a sentence or two.
+#[derive(serde::Deserialize)]
 pub struct Note {
-    pub date: &'static str,
-    pub title: &'static str,
-    pub body: &'static str,
+    pub date: String,
+    pub title: String,
+    pub body: String,
 }
 
-/// Newest first. A new note goes on top, and
-/// the bell lights until the person opens the panel after it ships.
-pub const NOTES: &[Note] = &[
-    Note {
-        date: "2026-11-12",
-        title: "A Windows 98 theme, previewed as you browse",
-        body: "Windows 98 joins the themes: silver, navy and the old VGA \
-               colours. In the palette, a highlighted theme shows live as \
-               you move through the results; Return keeps it and Escape \
-               puts yours back.",
-    },
-    Note {
-        date: "2026-11-10",
-        title: "Tabs that make room",
-        body: "Tabs share the title bar instead of running under its \
-               buttons: a crowd narrows the resting ones and the active tab \
-               keeps its name. Hover a tab to close it, or rest on any \
-               button to see what it does and its keys.",
-    },
-    Note {
-        date: "2026-11-10",
-        title: "Pair your phone by scanning",
-        body: "Pairing the phone client starts with the camera: scan the code \
-               and you're in, no typing an address.",
-    },
-    Note {
-        date: "2026-11-09",
-        title: "Kitchen, pit lane, pitch and hive",
-        body: "Four new playground views from the palette. Every agent is a \
-               chef, a car, a player or a bee; one that needs you says so, \
-               and a press shows its terminal. Escape or the esc chip closes \
-               any of them.",
-    },
-    Note {
-        date: "2026-11-09",
-        title: "Screen mirrors on demand",
-        body: "List a machine's screens and start a mirror when you want one, \
-               and trade clipboards between a viewer and the mirrored host.",
-    },
-    Note {
-        date: "2026-11-09",
-        title: "Release channels in Settings",
-        body: "About & Updates picks Stable or Next for the local phux, and \
-               Linux gets the same settings as macOS.",
-    },
-    Note {
-        date: "2026-11-08",
-        title: "A signed Mac app and Linux arm64",
-        body: "Rune ships as a signed DMG, and Linux builds now cover arm64 \
-               as well as x86_64.",
-    },
-    Note {
-        date: "2026-11-08",
-        title: "Satellite sessions in the sidebar",
-        body: "A hub lists its satellites' sessions and mirrors alongside its \
-               own, so another machine's work is one click away.",
-    },
-    Note {
-        date: "2026-11-07",
-        title: "Reef, galaxy and creatures",
-        body: "The fleet as a reef or a galaxy, with creatures that grow as \
-               your agents get work done.",
-    },
-    Note {
-        date: "2026-11-07",
-        title: "Answer agents from the inbox",
-        body: "ACP agent questions show up in the inbox, even ones asked \
-               before Rune connected, and you answer them right there.",
-    },
-];
+/// Newest first, from `news.json`. The release train puts each release's
+/// changes on top (`scripts/release.py`); a hand-written note can go there
+/// too. The bell lights until the person opens the panel after it ships.
+pub static NOTES: LazyLock<Vec<Note>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../news.json")).expect("news.json is a list of notes")
+});
 
 const SEEN: &str = "news_seen";
 

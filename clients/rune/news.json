@@ -1,0 +1,137 @@
+[
+  {
+    "date": "2026-11-25",
+    "title": "Attach photos and files on iPhone",
+    "body": "The paperclip on the iOS key bar sends photos, files and pasted images to the pane you're in."
+  },
+  {
+    "date": "2026-11-25",
+    "title": "Every paired computer on your phone",
+    "body": "Rune on iPhone keeps every computer you've paired; tap one to switch between them."
+  },
+  {
+    "date": "2026-11-25",
+    "title": "A tidier sidebar",
+    "body": "Your work sits in compact rows, local first. Only real splits get layered edges, with their panes listed inline."
+  },
+  {
+    "date": "2026-11-25",
+    "title": "Links open where you are",
+    "body": "Click a link in a remote pane and it opens on the computer in front of you, not the one running the pane."
+  },
+  {
+    "date": "2026-11-25",
+    "title": "Scrollback survives a restart",
+    "body": "Restart the phux server and your panes come back with their history."
+  },
+  {
+    "date": "2026-11-24",
+    "title": "Rune is the iPhone app",
+    "body": "The phone app now runs Rune: a continuous navigator replaces session cards, and the terminal runs edge to edge."
+  },
+  {
+    "date": "2026-11-24",
+    "title": "A theme per machine",
+    "body": "Give a host its own theme and Rune wears it while you're on that host, so you always know where you're typing."
+  },
+  {
+    "date": "2026-11-24",
+    "title": "Child panes fold under their parent",
+    "body": "Panes an agent spawns remember who started them and tuck under it in the sidebar."
+  },
+  {
+    "date": "2026-11-24",
+    "title": "phux:// links and keep-awake",
+    "body": "phux:// links open sessions, tabs, folders and exact panes. Keep-awake shows in the sidebar and switches from the palette."
+  },
+  {
+    "date": "2026-11-23",
+    "title": "One list of work",
+    "body": "The sidebar and the tab strip show the same list, in the same order."
+  },
+  {
+    "date": "2026-11-21",
+    "title": "Pane numbers, synced typing, copy-mode search",
+    "body": "Jump to a pane by number, type into several at once, search in copy mode, and option-click to place the cursor."
+  },
+  {
+    "date": "2026-11-21",
+    "title": "Liquid glass on the phone",
+    "body": "The phone layout gets native liquid glass and a careful pass over every bar and sheet."
+  },
+  {
+    "date": "2026-11-17",
+    "title": "Tabs inside a split",
+    "body": "⌘⇧←/→ moves between tabs in a split, a 2/3 badge shows where you are, and dropping a terminal on a pane makes it a tab there."
+  },
+  {
+    "date": "2026-11-17",
+    "title": "Kitty images and region screenshots",
+    "body": "Rune draws Kitty graphics, and you can screenshot a region of the screen straight into the focused agent's pane."
+  },
+  {
+    "date": "2026-11-16",
+    "title": "Interface size and clickable paths",
+    "body": "Scale the chrome without touching the terminal font, and ⌘-click a file path printed in a pane to open it."
+  },
+  {
+    "date": "2026-11-14",
+    "title": "Quick Look, Finder and Handoff",
+    "body": "Quick Look files from a pane, open folders in Rune from Finder, and hand the pane in front to your iPhone."
+  },
+  {
+    "date": "2026-11-13",
+    "title": "Set up from the window",
+    "body": "Rune installs phux when it's missing, pairs your phone from Settings, and adds your other machines from ssh config."
+  },
+  {
+    "date": "2026-11-12",
+    "title": "A Windows 98 theme, previewed as you browse",
+    "body": "Windows 98 joins the themes: silver, navy and the old VGA colours. In the palette, a highlighted theme shows live as you move through the results; Return keeps it and Escape puts yours back."
+  },
+  {
+    "date": "2026-11-10",
+    "title": "Tabs that make room",
+    "body": "Tabs share the title bar instead of running under its buttons: a crowd narrows the resting ones and the active tab keeps its name. Hover a tab to close it, or rest on any button to see what it does and its keys."
+  },
+  {
+    "date": "2026-11-10",
+    "title": "Pair your phone by scanning",
+    "body": "Pairing the phone client starts with the camera: scan the code and you're in, no typing an address."
+  },
+  {
+    "date": "2026-11-09",
+    "title": "Kitchen, pit lane, pitch and hive",
+    "body": "Four new playground views from the palette. Every agent is a chef, a car, a player or a bee; one that needs you says so, and a press shows its terminal. Escape or the esc chip closes any of them."
+  },
+  {
+    "date": "2026-11-09",
+    "title": "Screen mirrors on demand",
+    "body": "List a machine's screens and start a mirror when you want one, and trade clipboards between a viewer and the mirrored host."
+  },
+  {
+    "date": "2026-11-09",
+    "title": "Release channels in Settings",
+    "body": "About & Updates picks Stable or Next for the local phux, and Linux gets the same settings as macOS."
+  },
+  {
+    "date": "2026-11-08",
+    "title": "A signed Mac app and Linux arm64",
+    "body": "Rune ships as a signed DMG, and Linux builds now cover arm64 as well as x86_64."
+  },
+  {
+    "date": "2026-11-08",
+    "title": "Satellite sessions in the sidebar",
+    "body": "A hub lists its satellites' sessions and mirrors alongside its own, so another machine's work is one click away."
+  },
+  {
+    "date": "2026-11-07",
+    "title": "Reef, galaxy and creatures",
+    "body": "The fleet as a reef or a galaxy, with creatures that grow as your agents get work done."
+  },
+  {
+    "date": "2026-11-07",
+    "title": "Answer agents from the inbox",
+    "body": "ACP agent questions show up in the inbox, even ones asked before Rune connected, and you answer them right there."
+  }
+]
