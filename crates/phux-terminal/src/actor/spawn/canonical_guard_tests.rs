@@ -166,6 +166,23 @@ async fn pane_children_never_inherit_claude_code_nested_session_markers() {
     );
 }
 
+/// A pane child never inherits Rex's nested-terminal resume token. A server
+/// started inside a Rex pane carries `OSC7577_TOKEN`, and OSC 7577 says a
+/// nested terminal must not pass that token on.
+#[tokio::test(flavor = "current_thread")]
+async fn pane_children_never_inherit_osc7577_token() {
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.arg("-c");
+    cmd.arg("printf '[%s|%s]' \"${OSC7577_TOKEN-unset}\" \"${PHUX_SOCKET-unset}\"");
+    cmd.env("OSC7577_TOKEN", "leaked-by-a-rex-pane");
+    cmd.env("PHUX_SOCKET", "/tmp/kept.sock");
+    let out = spawn_and_capture(cmd).await;
+    assert!(
+        out.contains("[unset|/tmp/kept.sock]"),
+        "a pane child must see PHUX_SOCKET but no OSC7577_TOKEN; got {out:?}"
+    );
+}
+
 /// `cat` under a real PTY: its reader channel, writer mailbox, and PTY.
 fn spawn_cat() -> (
     tokio::sync::mpsc::Receiver<PtyEvent>,
