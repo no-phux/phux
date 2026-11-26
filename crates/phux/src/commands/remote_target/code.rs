@@ -50,6 +50,9 @@ pub(crate) fn pair_from_code(
     let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
     let name = registered_name(target);
     let new = validated(&name, &link)?;
+    if cannot_enroll(&link, held_identity(&name).is_some()) {
+        return Err(format!("--code: {RELAY_LINK_NEEDS_TICKET}"));
+    }
     let identity = redeem_ticket(&name, &link, hardware_key).map_err(|err| {
         format!(
             "--code: could not enroll with the link's single-use ticket ({err}); \
@@ -69,6 +72,28 @@ pub(crate) fn pair_from_code(
         }
     })?;
     Ok((registered_entry(target, &new), status))
+}
+
+/// Why a relay link with no enrollment ticket registers nothing here.
+pub(super) const RELAY_LINK_NEEDS_TICKET: &str = "this relay link carries no enrollment \
+     ticket and this machine holds no client certificate for the server, which admits a \
+     relayed device only with one (ADR-0179), so nothing was registered. On the server, mint \
+     the link with `phux pair --relay-route ROUTE` (its printed link carries a ticket), or add \
+     `--enroll` to a `--json` mint";
+
+/// A relay link a machine cannot use: it carries no ticket to enroll a
+/// client certificate with, and none is held for the entry already. A
+/// direct link says nothing of the server's mode, so it is not judged here.
+pub(super) const fn cannot_enroll(link: &pair::ConnectLink, holds_identity: bool) -> bool {
+    link.tls_server_name.is_some() && link.enrollment_ticket.is_none() && !holds_identity
+}
+
+/// The client certificate and key the entry `name` already records: what a
+/// link minted without a ticket (`phux pair --no-enroll`, for a device
+/// already enrolled) keeps instead of dropping.
+fn held_identity(name: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let entry = remote::find(name)?;
+    entry.client_cert.zip(entry.client_key)
 }
 
 /// The entry the link describes, validated before anything is enrolled or
@@ -112,10 +137,19 @@ fn save(
     link: &pair::ConnectLink,
     identity: Option<&ClientIdentityFiles>,
 ) -> Result<remote::NewRemote, String> {
+    // A ticketless link keeps the identity the entry already holds.
+    let held = identity
+        .is_none()
+        .then(|| held_identity(&new.name))
+        .flatten();
+    let paths = identity
+        .map(|files| (files.certificate.as_path(), files.private_key.as_path()))
+        .or_else(|| {
+            held.as_ref()
+                .map(|(cert, key)| (cert.as_path(), key.as_path()))
+        });
     let new = new
-        .with_client_identity(
-            identity.map(|files| (files.certificate.as_path(), files.private_key.as_path())),
-        )
+        .with_client_identity(paths)
         .map_err(|err| format!("--code: {err}"))?;
     let token_file = new
         .token_file

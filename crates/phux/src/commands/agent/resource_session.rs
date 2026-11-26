@@ -45,7 +45,7 @@ use report::{read_data, report_session_error};
 /// `phux agent session <open|close>`.
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum SessionAction {
-    /// Open an agent session bound to a pane.
+    /// Open an agent session bound to a pane
     ///
     /// Spawns an `AgentSession` resource whose parent is the Terminal
     /// TARGET resolves to: the server-side, producer-fed event log the
@@ -74,7 +74,7 @@ pub(crate) enum SessionAction {
         #[usage(long)]
         json: bool,
     },
-    /// Close a pane's agent session; the pane is untouched.
+    /// Close a pane's agent session; the pane is untouched
     ///
     /// TARGET is the session (`@N`), the pane hosting it, or `%name`.
     /// Prints `@N<TAB>closed`.

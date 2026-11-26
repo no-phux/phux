@@ -326,7 +326,13 @@ pub(super) fn report_registered(
                 ));
                 rows.push((over("doctor"), "what works there"));
             } else {
-                rows[0].1 = "attach (direct, no ssh in the path)";
+                let relayed =
+                    remote::find(name).is_some_and(|entry| entry.tls_server_name.is_some());
+                rows[0].1 = if relayed {
+                    "attach (through the relay, no ssh in the path)"
+                } else {
+                    "attach (direct, no ssh in the path)"
+                };
                 rows.push((format!("phux ls --remote {name}"), "list its sessions"));
                 rows.push((format!("phux doctor --remote {name}"), "what works there"));
             }

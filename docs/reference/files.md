@@ -64,6 +64,7 @@ $XDG_STATE_HOME/<profile-dir>/
 │                       # org/v1.scrollback/ keeps `[restore] scrollback` (0700)
 ├── remotes/            # credentials for each `[[remote]]` host
 ├── satellites/         # credentials for each `[[satellites]]` host
+├── connectors/         # tunnel tokens for each `[[connector]]` relay
 ├── relay-cert.pem, relay-key.pem, relay-tokens  # `phux relay`
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
 ├── chats/              # private explicit conversation records and native identity files
@@ -83,7 +84,7 @@ $XDG_STATE_HOME/<profile-dir>/
 - `enrollment-tickets` holds the SHA-256 of each single-use ticket `phux pair --enroll` minted (never the ticket), with the scope and lifetime the credential it enrolls gets; the first redemption consumes it. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
 - `workload-ca.pem` / `workload-ca.key` are the authority that issues client certificates and the auto-provisioned server leaf; `workload-keys` is the registry of client keys it admits. `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY` and `PHUX_WORKLOAD_KEYS` move them.
 - `org/` is what the server keeps across a restart. The profile's own socket uses `org/v1.sqlite3`; any other socket uses `org/sockets/<escaped socket path>.v1.sqlite3`. SQLite keeps `-wal` and `-shm` files beside each.
-- `remotes/` holds, per host, the bearer token `<name>.token` and the enrolled client identity `<name>.client.<digest>.pem` and `.key`. `satellites/` holds a hub's `<name>.token` files.
+- `remotes/` holds, per host, the bearer token `<name>.token` and the enrolled client identity `<name>.client.<digest>.pem` and `.key`. `satellites/` holds a hub's `<name>.token` files. `connectors/` holds the owner-only tunnel token `phux relay connect` wrote for each relay, `<host>-<port>.token`.
 - `relay-cert.pem`, `relay-key.pem` and `relay-tokens` (the route-token store) belong to `phux relay`. They are not profile-scoped: always `$XDG_STATE_HOME/phux`.
 - `workload-org-roots/` holds `<org>.pem`, the root certificates `phux workload sync-managed` was handed for that organization, mode `0600` in a `0700` directory. A paired listener trusts them beside the workload CA and re-reads them when they change. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
 - `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per idea that does not yet have a 2xx). The file keeps the idempotency key. A network failure leaves it; the next `phux idea` sends those same bytes. A 2xx removes it.

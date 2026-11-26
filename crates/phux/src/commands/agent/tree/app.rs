@@ -31,8 +31,10 @@ static LAUNCHED: Mutex<Option<Launched>> = Mutex::new(None);
 /// `phux agent app run`: an application as resources.
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AppAction {
-    /// Launch an application and mirror it into this pane until it quits;
-    /// killing the pane quits the app. `phux spawn --app` runs this in a new pane.
+    /// Launch an application and mirror it into this pane until it quits
+    ///
+    /// Killing the pane quits the app. `phux spawn --app` runs this in a new
+    /// pane.
     Run {
         /// The application: its name on macOS (`TextEdit`), a command or a
         /// `.desktop` id on Linux; with `--browser`, the browser (`chrome`,

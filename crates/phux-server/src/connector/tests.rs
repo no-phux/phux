@@ -1,5 +1,8 @@
 use super::*;
 use std::io::Write as _;
+use std::path::PathBuf;
+
+use phux_dial::CertTrust;
 
 fn entry(
     relay: &str,

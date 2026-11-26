@@ -298,6 +298,38 @@ fn a_remote_failure_names_the_host_and_uses_the_transport_codes() {
     assert!(matches!(target.dial(), Dial::Quic(_)));
 }
 
+/// A session the server ended mid-handshake reads as a refused machine,
+/// never as a raw TLS error, and names the way back in for an entry with
+/// no enrolled certificate.
+#[test]
+fn a_session_ended_in_the_handshake_reads_as_a_refused_machine() {
+    let remote = dial_entry(
+        &runtime(),
+        &entry("quic://127.0.0.1:8788", None),
+        "ls",
+        false,
+    )
+    .expect("dials");
+    let eof = std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "peer closed connection without sending TLS close_notify",
+    );
+    let refused = remote.failure(&AttachError::Io(eof), "ls");
+    assert_eq!(refused.code, codes::TRANSPORT);
+    assert!(
+        !refused.message.contains("close_notify"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.message.contains("ended the encrypted session"));
+    assert!(
+        refused.remedy.contains("no enrolled client certificate")
+            && refused.remedy.contains("phux host add mini --code LINK"),
+        "{}",
+        refused.remedy
+    );
+}
+
 /// Reading from a machine nobody added must not set it up; a verb that changes
 /// something there still may, unless it was asked for JSON.
 #[test]

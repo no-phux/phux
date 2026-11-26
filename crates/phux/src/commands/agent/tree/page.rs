@@ -12,7 +12,7 @@ use super::{page_input, page_mirror};
 /// `phux agent page mirror`: drive a browser page over the Chrome debugging protocol (CDP).
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum PageAction {
-    /// Mirror a browser page into a tree and a surface until Ctrl-C.
+    /// Mirror a browser page into a tree and a surface until Ctrl-C
     Mirror {
         /// A fragment of the page's title or URL, or `first`.
         page: String,
@@ -33,7 +33,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Load a URL in a mirrored page.
+    /// Load a URL in a mirrored page
     Navigate {
         /// The page's surface or tree.
         target: String,
@@ -42,7 +42,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Click a mirrored page at a point of its surface image, in image pixels.
+    /// Click a mirrored page at a point of its surface image, in image pixels
     Click {
         /// The page's surface or tree.
         target: String,
@@ -55,7 +55,10 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Drag across a mirrored page or screen with the left button, from one point of its surface image to another: selects text.
+    /// Drag across a mirrored page or screen with the left button
+    ///
+    /// Drags from one point of its surface image to another, which selects
+    /// text.
     Drag {
         /// The document's surface or tree.
         target: String,
@@ -74,7 +77,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Type text into a mirrored page's focused field.
+    /// Type text into a mirrored page's focused field
     Type {
         /// The page's surface or tree.
         target: String,
@@ -83,7 +86,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow.
+    /// Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow
     Key {
         /// The page's surface or tree.
         target: String,
@@ -92,7 +95,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Scroll a mirrored page or screen by a delta in surface image pixels.
+    /// Scroll a mirrored page or screen by a delta in surface image pixels
     Scroll {
         /// The document's surface or tree.
         target: String,
@@ -105,7 +108,10 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Paste text into a mirrored page or screen: a window or display puts it on the host clipboard and presses the paste chord.
+    /// Paste text into a mirrored page or screen
+    ///
+    /// A window or display puts the text on the host clipboard and presses
+    /// the paste chord.
     Paste {
         /// The document's surface or tree.
         target: String,
@@ -114,7 +120,7 @@ pub(crate) enum PageAction {
         #[usage(long)]
         json: bool,
     },
-    /// Print the host clipboard's text, read by a mirrored page's or screen's producer.
+    /// Print the host clipboard's text, read by a mirrored page's or screen's producer
     Copy {
         /// The document's surface or tree.
         target: String,

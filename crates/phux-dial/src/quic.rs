@@ -45,6 +45,10 @@ pub const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// `docs/protocol.md#transports`), shared with the server listener and relay.
 pub const AUTH_FAILED_CODE: u32 = quictun::tunnel::AUTH_FAILED_CODE;
 
+/// QUIC application close code a relay sends a tunnel whose route another
+/// tunnel claimed.
+pub const RECLAIMED_CODE: u32 = quictun::tunnel::RECLAIMED_CODE;
+
 /// The tag phux tunnel dials put on their initial destination connection ID:
 /// `phxT`.
 pub const TUNNEL_CID_TAG: quictun::CidTag = quictun::CidTag(*b"phxT");

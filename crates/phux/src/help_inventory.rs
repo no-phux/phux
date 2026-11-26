@@ -152,29 +152,67 @@ fn root_long_help_fits_eighty_columns() {
     }
 }
 
-/// Every verb's one-line summary fits its column: at most 58 characters
-/// so the widest verb name still leaves the row on one line at 80 columns,
-/// and no trailing period, so the inventory reads as one table.
-#[test]
-fn verb_summaries_are_short_and_unpunctuated() {
-    for sub in Cli::spec().root.subcommands {
-        if sub.hide {
+/// What is wrong with one command's summary: the first paragraph of its
+/// doc comment, shown in its parent's command list and atop its own page.
+fn summary_problems(path: &str, about: &str, max_chars: usize) -> Vec<String> {
+    let summary = about.split("\n\n").next().unwrap_or(about).trim();
+    let mut problems = Vec::new();
+    let chars = summary.chars().count();
+    if chars > max_chars {
+        problems.push(format!(
+            "`{path}` summary is {chars} chars (max {max_chars}): {summary:?}"
+        ));
+    }
+    if summary.ends_with('.') {
+        problems.push(format!("`{path}` summary ends with a period: {summary:?}"));
+    }
+    if summary.contains(". ") || summary.contains(".\n") {
+        problems.push(format!(
+            "`{path}` summary is more than one sentence: {summary:?}"
+        ));
+    }
+    if summary.starts_with(char::is_lowercase) {
+        problems.push(format!("`{path}` summary starts lowercase: {summary:?}"));
+    }
+    problems
+}
+
+/// Walk every visible command below `meta`, collecting summary problems.
+fn collect_summary_problems(
+    meta: &usage::spec::CommandMeta<'_>,
+    path: &str,
+    out: &mut Vec<String>,
+) {
+    for sub in meta.subcommands {
+        if sub.hide || sub.cmd.name == "help" {
             continue;
         }
-        let about = sub.about.unwrap_or_default();
-        let summary = about.split("\n\n").next().unwrap_or(about).trim();
-        assert!(
-            summary.chars().count() <= 58,
-            "`phux {}` summary is {} chars: {summary:?}",
-            sub.cmd.name,
-            summary.chars().count()
-        );
-        assert!(
-            !summary.ends_with('.'),
-            "`phux {}` summary ends with a period: {summary:?}",
-            sub.cmd.name
-        );
+        let sub_path = format!("{path} {}", sub.cmd.name);
+        // A root verb's row fits one 80-column line beside the widest verb
+        // name; a nested row may wrap once, never into a paragraph.
+        let max_chars = if path == "phux" { 58 } else { 100 };
+        out.extend(summary_problems(
+            &sub_path,
+            sub.about.unwrap_or_default(),
+            max_chars,
+        ));
+        collect_summary_problems(sub, &sub_path, out);
     }
+}
+
+/// Every command's summary, at every level, is one short sentence with no
+/// trailing period, so each command list reads as one table. The summary
+/// is the first paragraph of the doc comment; the rest is the long page.
+#[test]
+fn command_summaries_are_short_and_unpunctuated() {
+    let mut problems = Vec::new();
+    collect_summary_problems(Cli::spec().root, "phux", &mut problems);
+    assert!(
+        problems.is_empty(),
+        "{} summary problem(s):\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
 }
 
 #[test]

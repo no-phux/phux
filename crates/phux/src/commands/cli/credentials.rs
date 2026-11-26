@@ -17,7 +17,7 @@ pub(crate) struct CredentialsArgs {
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum CredentialsAction {
-    /// Serve approved requests using the local 1Password desktop integration.
+    /// Serve approved requests using the local 1Password desktop integration
     Serve {
         /// Provider name requesters select.
         #[usage(long, value_name = "NAME")]
@@ -28,7 +28,7 @@ pub(crate) enum CredentialsAction {
         #[usage(flatten)]
         remote: RemoteOpt,
     },
-    /// Execute a LOCAL command with approved secrets injected into its environment.
+    /// Execute a LOCAL command with approved secrets injected into its environment
     Run {
         /// Provider name on the connected broker.
         #[usage(long, value_name = "NAME")]

@@ -1,6 +1,8 @@
 //! Running commands on the far host over ssh, and reading its address.
 
 use std::ffi::OsString;
+
+use phux_client_runtime::pairing::redact_uri;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -259,13 +261,17 @@ pub(crate) fn uri_destination(rest: &str) -> Result<String, String> {
         return Err("ssh:// endpoint needs a host (e.g. ssh://mini)".to_owned());
     }
     if rest.contains('/') {
-        return Err(format!("ssh://{rest}: an ssh:// endpoint takes no path"));
+        return Err(format!(
+            "{}: an ssh:// endpoint takes no path",
+            redact_uri(&format!("ssh://{rest}"))
+        ));
     }
     if let Some(bracketed) = host.strip_prefix('[') {
         let Some(address) = bracketed.strip_suffix(']') else {
             return Err(format!(
-                "ssh://{rest}: ssh takes no port beside an IPv6 address; name the machine in \
-                 ~/.ssh/config (HostName, Port) and use ssh://NAME"
+                "{}: ssh takes no port beside an IPv6 address; name the machine in \
+                 ~/.ssh/config (HostName, Port) and use ssh://NAME",
+                redact_uri(&format!("ssh://{rest}"))
             ));
         };
         return Ok(user.map_or_else(|| address.to_owned(), |user| format!("{user}@{address}")));

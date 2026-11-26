@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use crate::{guard, instance};
 
+mod path_len;
+pub use path_len::{MAX_SOCKET_PATH_LEN, path_too_long, path_too_long_message};
+
 /// Resolve the default Unix-domain-socket path.
 ///
 /// Precedence (the daemon binds this; every consumer connects to it):
@@ -110,7 +113,8 @@ const fn is_login_runtime_socket(_socket: &Path) -> bool {
 ///
 /// # Errors
 ///
-/// The refusal, as a message for the caller to surface.
+/// The refusal, as a message for the caller to surface: the failure on
+/// its first line, then one `hint: ` line per remedy ([`guard::split_hints`]).
 pub fn refuse_dev_on_production(socket: &Path) -> Result<(), String> {
     if instance::build_kind() != instance::BuildKind::Dev {
         return Ok(());
@@ -131,12 +135,14 @@ fn refuse_if_same_socket(socket: &Path, production: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// The refusal: a short failure line, then one `hint: ` line per remedy
+/// ([`guard::HINT_PREFIX`]).
 fn refusal(production: &Path) -> String {
     format!(
-        "refusing to use the production phux socket {} from a development build; \
-         dev builds run their own server under the `{}` profile. Use `phux` from \
-         the installed release for the production server, and never copy a dev \
-         build over the installed binary",
+        "refusing to use the production phux socket {} from a development build\n\
+         hint: dev builds run their own server under the `{}` profile\n\
+         hint: use `phux` from the installed release for the production server, and \
+         never copy a dev build over the installed binary",
         production.display(),
         instance::DEV_PROFILE,
     )

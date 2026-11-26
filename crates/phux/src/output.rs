@@ -182,19 +182,31 @@ pub(crate) fn diagnostic(severity: Severity, args: fmt::Arguments<'_>) {
     // Legacy prose errors can still be reached under --json. Keep those
     // machine-mode exceptions unstyled without changing their shape/status.
     let color = !crate::json_output_requested() && color_enabled(io::stderr().is_terminal());
-    let line = human_line(severity, args, color);
+    // A refusal carries its remedies as trailing `hint: ` lines
+    // (`phux_config::production::split_hints`); they print as hints.
+    let text = args.to_string();
+    let (message, hints) = phux_config::production::split_hints(&text);
+    let line = human_line(severity, format_args!("{message}"), color);
     // A `switch-host` successor that has not attached yet is still on the
     // previous process's alt screen; the message belongs on the shell's.
     phux_tui::attach::leave_inherited_alt_screen();
     let _ = writeln!(io::stderr().lock(), "{line}");
+    for remedy in hints {
+        hint(format_args!("{remedy}"));
+    }
 }
 
-/// Remedies may span lines, but every line is an unstyled hint.
+/// Remedies may span lines, but every line is an unstyled hint. A line
+/// that already carries the `hint: ` marker is not marked twice.
 pub(crate) fn hint(args: fmt::Arguments<'_>) {
     phux_tui::attach::leave_inherited_alt_screen();
     let mut stderr = io::stderr().lock();
     for line in args.to_string().lines() {
-        let _ = writeln!(stderr, "  hint: {}", line.trim_start());
+        let line = line.trim_start();
+        let line = line
+            .strip_prefix(phux_config::production::HINT_PREFIX)
+            .unwrap_or(line);
+        let _ = writeln!(stderr, "  hint: {line}");
     }
 }
 

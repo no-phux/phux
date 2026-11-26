@@ -13,12 +13,13 @@
 //! exponential backoff as federation hub links.
 
 use std::io;
-use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
-use phux_dial::{CertTrust, QuicDial, SendWindow, TrackedSend};
+use phux_dial::{QuicDial, SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, QUIC_RELAY_ALPN, TransportType};
+use phux_protocol::wire::RemoteListenerSlot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -33,123 +34,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use crate::hub::link::{BACKOFF_BASE, BACKOFF_CAP};
 use crate::transport::quic::{AUTH_FAILED_CODE, MAX_TOKEN_PREAMBLE};
 
-/// A validated outbound relay dial plan. Credential contents remain on disk
-/// and are re-read for every attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectorSpec {
-    host: String,
-    port: u16,
-    trust: CertTrust,
-    token_file: Option<PathBuf>,
-}
-
-impl core::fmt::Display for ConnectorSpec {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}", self.host, self.port)
-    }
-}
-
-/// Fail-closed connector configuration errors detected before server bind.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum ConnectorError {
-    /// The relay was not a valid `HOST:PORT` endpoint.
-    #[error("connector relay {relay:?} is malformed: {reason}")]
-    Malformed {
-        /// Original endpoint.
-        relay: String,
-        /// Parse failure.
-        reason: String,
-    },
-    /// A routable relay had no certificate pin.
-    #[error("connector relay {relay} is routable and requires cert-fingerprint")]
-    MissingFingerprint {
-        /// Unsafe routable endpoint.
-        relay: String,
-    },
-    /// A routable relay had no token path.
-    #[error("connector relay {relay} is routable and requires token-file")]
-    MissingToken {
-        /// Unsafe routable endpoint.
-        relay: String,
-    },
-}
-
-/// Validate all connector entries into immutable dial plans.
-///
-/// No DNS or file I/O occurs here. That keeps startup deterministic while the
-/// supervisor still re-reads rotating token files on every attempt.
-pub fn plan_connectors(
-    entries: &[phux_config::ConnectorConfigEntry],
-) -> Result<Vec<ConnectorSpec>, ConnectorError> {
-    entries.iter().map(plan_connector).collect()
-}
-
-/// Validate one connector entry.
-pub fn plan_connector(
-    entry: &phux_config::ConnectorConfigEntry,
-) -> Result<ConnectorSpec, ConnectorError> {
-    let (host, port) = parse_host_port(&entry.relay)?;
-    let loopback = host_is_loopback(&host);
-    let trust = if loopback {
-        entry
-            .cert_fingerprint
-            .clone()
-            .map_or(CertTrust::SkipVerify, CertTrust::Pinned)
-    } else {
-        let Some(pin) = entry.cert_fingerprint.clone() else {
-            return Err(ConnectorError::MissingFingerprint {
-                relay: entry.relay.clone(),
-            });
-        };
-        if entry.token_file.is_none() {
-            return Err(ConnectorError::MissingToken {
-                relay: entry.relay.clone(),
-            });
-        }
-        CertTrust::Pinned(pin)
-    };
-
-    Ok(ConnectorSpec {
-        host,
-        port,
-        trust,
-        token_file: entry.token_file.clone(),
-    })
-}
-
-fn parse_host_port(relay: &str) -> Result<(String, u16), ConnectorError> {
-    let malformed = |reason: &str| ConnectorError::Malformed {
-        relay: relay.to_owned(),
-        reason: reason.to_owned(),
-    };
-    let (host, port) = if let Some(rest) = relay.strip_prefix('[') {
-        let Some((host, port)) = rest.split_once("]:") else {
-            return Err(malformed("bracketed IPv6 must end with ]:PORT"));
-        };
-        (host, port)
-    } else {
-        relay
-            .rsplit_once(':')
-            .ok_or_else(|| malformed("expected HOST:PORT"))?
-    };
-    if host.is_empty() {
-        return Err(malformed("host is empty"));
-    }
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| malformed("port must be an integer from 1 to 65535"))?;
-    if port == 0 {
-        return Err(malformed("port must be an integer from 1 to 65535"));
-    }
-    Ok((host.to_owned(), port))
-}
-
-fn host_is_loopback(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-}
+mod plan;
+pub use plan::{ConnectorError, ConnectorSpec, plan_connector, plan_connectors};
 
 /// Read one enrollment token and enforce the owner-only secret-file contract.
 fn read_connector_token(path: Option<&Path>) -> Result<Option<Vec<u8>>, String> {
@@ -173,8 +59,13 @@ fn read_connector_token(path: Option<&Path>) -> Result<Option<Vec<u8>>, String> 
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| format!("token file {} is empty", path.display()))?;
-    let token = phux_dial::quic::parse_token_hex(token)
-        .map_err(|error| format!("token file {}: {error}", path.display()))?;
+    let token = phux_dial::quic::parse_token_hex(token).map_err(|_| {
+        format!(
+            "token file {} does not hold a hex token; write the token `phux relay pair` \
+             printed on the relay into it",
+            path.display()
+        )
+    })?;
     if token.len() != crate::auth::TOKEN_LEN {
         return Err(format!(
             "token file {} must contain exactly {} token bytes",
@@ -443,6 +334,27 @@ fn refused(refusals: &crate::transport::RefusalWarnings, relay: SocketAddr, why:
     }
 }
 
+/// The relay's reason for closing a tunnel, in words that say what to do,
+/// when it closed with one of its own codes.
+fn relay_refusal(reason: quinn::ConnectionError) -> Option<&'static str> {
+    let quinn::ConnectionError::ApplicationClosed(close) = reason else {
+        return None;
+    };
+    let code = u32::try_from(close.error_code.into_inner()).ok()?;
+    match code {
+        phux_dial::quic::AUTH_FAILED_CODE => Some(
+            "the relay refused this server's tunnel token: it was rotated or never enrolled; \
+             run `phux relay pair --route ROUTE` on the relay and give the new token to \
+             `phux relay connect`",
+        ),
+        phux_dial::quic::RECLAIMED_CODE => Some(
+            "another server took this route over on the relay (one tunnel per route); \
+             stop the other server or enroll a separate route for it",
+        ),
+        _ => None,
+    }
+}
+
 /// Spawn one independently supervised task per connector plan.
 pub(crate) fn spawn_connectors(
     specs: Vec<ConnectorSpec>,
@@ -483,6 +395,9 @@ async fn supervise(
 ) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
     let refusals = Arc::new(crate::transport::RefusalWarnings::new());
+    let relay = spec.to_string();
+    let record = |slot| state.with_mut(|s| s.record_remote_listener(slot));
+    record(RemoteListenerSlot::relay_down(relay.clone(), None));
     loop {
         let attempt = backoff.failures().saturating_add(1);
         let connected = async {
@@ -507,7 +422,8 @@ async fn supervise(
 
         let (failed_attempt, error) = match outcome {
             Ok((endpoint, connection, control_send, control_recv)) => {
-                info!(relay = %spec, attempt, "outbound connector established");
+                info!(relay = %spec, attempt, "relay tunnel up");
+                record(RemoteListenerSlot::relay_up(relay.clone()));
                 let established_at = tokio::time::Instant::now();
                 let incoming = ConnectorIncoming {
                     window: SendWindow::new(connection.clone()),
@@ -524,21 +440,34 @@ async fn supervise(
                     .await
                 {
                     Ok(()) => return,
-                    Err(error) => (
-                        backoff.settle_after_loss(established_at.elapsed()),
-                        error.to_string(),
-                    ),
+                    Err(error) => {
+                        let up_for = established_at.elapsed();
+                        let lost = incoming
+                            .connection
+                            .close_reason()
+                            .and_then(relay_refusal)
+                            .map_or_else(
+                                || format!("tunnel lost after {}s: {error}", up_for.as_secs()),
+                                str::to_owned,
+                            );
+                        (backoff.settle_after_loss(up_for), lost)
+                    }
                 }
             }
             Err(error) => (attempt, error),
         };
+        record(RemoteListenerSlot::relay_down(
+            relay.clone(),
+            Some(error.clone()),
+        ));
+        let delay = backoff.next_delay();
         warn!(
             relay = %spec,
             attempt = failed_attempt,
+            retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
             %error,
-            "outbound connector lost; scheduling redial"
+            "relay tunnel down; redialing"
         );
-        let delay = backoff.next_delay();
         tokio::select! {
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(delay) => {}

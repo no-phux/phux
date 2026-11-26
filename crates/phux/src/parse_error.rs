@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 
-use crate::help::{help_style, render_help_page};
+use crate::help::{bare_required_flags, help_style, render_help_page};
 use crate::{Cli, commands, json_output_requested, output};
 
 fn flag_exists_on_any_verb(cmd: &usage::Command<'_>, long: &str) -> bool {
@@ -23,61 +23,100 @@ fn misplaced_scoped_flag(err: &usage::Error<'_, '_>) -> Option<String> {
     flag_exists_on_any_verb(Cli::command(), long).then_some(flag)
 }
 
-/// Every verb path (`attach`, `host add`) that accepts `--long`.
-fn verbs_with_flag(cmd: &usage::Command<'_>, long: &str, prefix: &str, out: &mut Vec<String>) {
-    for sub in cmd.subcommands {
-        let path = if prefix.is_empty() {
-            sub.name.to_owned()
-        } else {
-            format!("{prefix} {}", sub.name)
-        };
-        if sub.flags.iter().any(|flag| flag.longs.contains(&long)) {
-            out.push(path.clone());
-        }
-        verbs_with_flag(sub, long, &path, out);
-    }
-}
-
 /// The teaching hint for a refused per-verb flag, keyed on where it was
 /// typed. Before any verb it is a placement mistake (`phux --json ls`).
-/// After a verb that does not take it, "place it after the verb" would be
-/// wrong advice, so the hint names the verbs that do take it instead.
+/// After a verb, the hint names the exact command that refused it and,
+/// when a relative under the same verb takes the flag, that relative; a
+/// list of unrelated verbs that happen to take it would be noise.
 pub(crate) fn misplaced_flag_hint(err: &usage::Error<'_, '_>, words: &[String]) -> Option<String> {
     let flag = misplaced_scoped_flag(err)?;
     let long = flag.strip_prefix("--")?;
-    let root = Cli::command();
     let at = words
         .iter()
         .position(|word| *word == flag || word.starts_with(&format!("{flag}=")))
         .unwrap_or(words.len());
-    let verb = words.get(..at).unwrap_or_default().iter().find_map(|word| {
-        root.subcommands
-            .iter()
-            .find(|sub| sub.name == word || sub.aliases.contains(&word.as_str()))
-    });
-    let Some(verb) = verb else {
+    let path = typed_path(words.get(..at).unwrap_or_default());
+    if path.is_empty() {
         return Some(format!(
             "`{flag}` is set per verb, not on `phux` itself; place it after the verb: \
              `phux <verb> {flag} ...`"
         ));
-    };
-    let mut holders = Vec::new();
-    verbs_with_flag(root, long, "", &mut holders);
-    let shown: Vec<String> = holders
+    }
+    let names: Vec<&str> = path.iter().map(|(name, _)| *name).collect();
+    let typed = names.join(" ");
+    Some(flag_hint(&typed, &flag, &relatives_with_flag(&path, long)))
+}
+
+/// The commands closest to the typed one that take `--long`: its parent
+/// and the parent's other children (a bare verb's own children). Anything
+/// farther is a different task, not a near miss.
+fn relatives_with_flag(path: &[(&str, &usage::Command<'_>)], long: &str) -> Vec<String> {
+    let takes = |cmd: &usage::Command<'_>| cmd.flags.iter().any(|f| f.longs.contains(&long));
+    let anchor_len = path.len().saturating_sub(1).max(1);
+    let anchor_path = path[..anchor_len]
         .iter()
-        .take(6)
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let anchor = path[anchor_len - 1].1;
+    let typed = path.last().map(|(_, cmd)| *cmd);
+    let mut relatives = Vec::new();
+    if anchor_len < path.len() && takes(anchor) {
+        relatives.push(anchor_path.clone());
+    }
+    for sub in anchor.subcommands {
+        if takes(sub) && !typed.is_some_and(|typed| std::ptr::eq(typed, *sub)) {
+            relatives.push(format!("{anchor_path} {}", sub.name));
+        }
+    }
+    relatives
+}
+
+/// The command words a user typed, resolved through the tree: each one's
+/// declared name (an alias resolved) with its command. Flags, and values
+/// that name no subcommand, are passed over.
+fn typed_path(words: &[String]) -> Vec<(&'static str, &'static usage::Command<'static>)> {
+    let mut path = Vec::new();
+    let mut cmd = Cli::command();
+    for word in words {
+        let found = cmd
+            .subcommands
+            .iter()
+            .find(|sub| sub.name == word || sub.aliases.contains(&word.as_str()));
+        if let Some(&sub) = found {
+            path.push((sub.name, sub));
+            cmd = sub;
+        }
+    }
+    path
+}
+
+/// "`phux relay pair` does not take `--json`; see `phux relay pair --help`",
+/// naming up to three relatives that do take it.
+fn flag_hint(typed: &str, flag: &str, relatives: &[String]) -> String {
+    let help = format!("see `phux {typed} --help`");
+    if relatives.is_empty() {
+        return format!("`phux {typed}` does not take `{flag}`; {help}");
+    }
+    let shown: Vec<String> = relatives
+        .iter()
+        .take(3)
         .map(|path| format!("`phux {path}`"))
         .collect();
-    let more = if holders.len() > shown.len() {
+    let more = if relatives.len() > shown.len() {
         ", ..."
     } else {
         ""
     };
-    Some(format!(
-        "`phux {}` does not take `{flag}`; it belongs to {}{more}",
-        verb.name,
-        shown.join(", ")
-    ))
+    let verb = if shown.len() == 1 && more.is_empty() {
+        "takes"
+    } else {
+        "take"
+    };
+    format!(
+        "`phux {typed}` does not take `{flag}`; {} {verb} it; {help}",
+        shown.join(", ") + more
+    )
 }
 
 /// Whether a `phux workload` invocation carries PEM or private-key material
@@ -173,8 +212,11 @@ pub(crate) fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_
             // usage-rs owns parse explanations and suggestions. Adapt its fixed
             // error-header contract, never classify an arbitrary message. Keep
             // the usage/context block plain rather than coloring argv values.
-            let rendered =
-                redact_long_base64(&usage::render_failure_plain(Cli::spec(), argv, &err));
+            let rendered = bare_required_flags(&redact_long_base64(&usage::render_failure_plain(
+                Cli::spec(),
+                argv,
+                &err,
+            )));
             let (header, context) = rendered.split_once('\n').unwrap_or((&rendered, ""));
             let message = header.strip_prefix("error: ").unwrap_or(header);
             let hint = misplaced_flag_hint(&err, &words);

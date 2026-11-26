@@ -27,7 +27,7 @@ fn warnings_alone_do_not_fail_the_run() {
         Check::warn("b", "unknown", "do something"),
     ];
     assert!(checks.iter().all(|c| c.status != Status::Fail));
-    assert_eq!(report_human(&checks), ExitCode::SUCCESS);
+    assert_eq!(exit_code(&checks), ExitCode::SUCCESS);
 }
 
 /// Any failure fails the run, so `phux doctor` can gate a setup script.
@@ -37,7 +37,7 @@ fn one_failure_fails_the_run() {
         Check::pass("a", "fine"),
         Check::fail("b", "broken", "fix it"),
     ];
-    assert_eq!(report_human(&checks), ExitCode::FAILURE);
+    assert_eq!(exit_code(&checks), ExitCode::FAILURE);
 }
 
 /// A stale shim warns with both schema numbers and the reinstall command.
@@ -98,7 +98,7 @@ fn logs_check_names_paths_and_counts_clients() {
     let check = check_logs_at(dir.path(), &server_log);
     assert_eq!(check.status, Status::Pass);
     assert!(check.detail.contains(&server_log.display().to_string()));
-    assert!(check.detail.contains("2 client log(s)"));
+    assert!(check.detail.contains("2 client logs"));
     assert!(check.detail.contains(&dir.path().display().to_string()));
     assert!(!check.detail.contains("not created yet"));
 }
@@ -114,7 +114,7 @@ fn logs_check_reports_absent_logs_as_normal() {
     let check = check_logs_at(&state, &server_log);
     assert_eq!(check.status, Status::Pass);
     assert!(check.detail.contains("not created yet"));
-    assert!(check.detail.contains("0 client log(s)"));
+    assert!(check.detail.contains("0 client logs"));
     assert!(check.detail.contains(&server_log.display().to_string()));
 }
 
@@ -141,24 +141,54 @@ fn an_unwritable_state_dir_warns_with_a_hint() {
 }
 
 /// A check name longer than the old fixed 12-column field still lines
-/// its detail up with every other row; hints identify their check.
+/// its detail up with every other row; a hint sits under its row's detail
+/// without repeating the check's name.
 #[test]
 fn human_report_aligns_details_past_the_longest_name() {
     let checks = [
         Check::pass("config", "fine"),
-        Check::warn("workload-authority", "missing", "init it"),
+        Check::warn("workload-authority", "missing", "init it\n  then retry"),
     ];
     let rendered = render_human(&checks, false);
     let lines: Vec<&str> = rendered.lines().collect();
-    let detail_column = |line: &str, needle: &str| line.find(needle).expect(needle);
-    assert_eq!(
-        detail_column(lines[0], "fine"),
-        detail_column(lines[1], "missing"),
-        "{rendered}"
+    // In characters: the marks are not all one byte wide.
+    let column =
+        |line: &str, needle: &str| line[..line.find(needle).expect(needle)].chars().count();
+    assert_eq!(column(lines[0], "fine"), column(lines[1], "missing"));
+    assert_eq!(column(lines[1], "missing"), column(lines[2], "hint: "));
+    assert_eq!(lines[0], "✓ config              fine");
+    assert_eq!(lines[1], "! workload-authority  missing");
+    assert_eq!(lines[2].trim_start(), "hint: init it");
+    assert_eq!(lines[3].trim_start(), "hint: then retry", "{rendered}");
+    assert!(!rendered.contains("phux:"), "{rendered}");
+}
+
+/// The summary counts in words, failures first, and the full report ends
+/// with it, after the checklist.
+#[test]
+fn the_summary_closes_the_report_in_plain_counts() {
+    let pass = || Check::pass("a", "fine");
+    let warn = || Check::warn("b", "unknown", "do something");
+    let fail = || Check::fail("c", "broken", "fix it");
+    assert_eq!(summary(&[pass()]), "all checks passed");
+    assert_eq!(summary(&[pass(), warn()]), "1 warning, no failures");
+    assert_eq!(summary(&[warn(), warn()]), "2 warnings, no failures");
+    assert_eq!(summary(&[fail()]), "1 failure");
+    assert_eq!(summary(&[fail(), fail(), warn()]), "2 failures, 1 warning");
+
+    let report = render_report(&[pass(), warn()], &[], false);
+    assert!(
+        report.ends_with("\nWhat works here\n\n1 warning, no failures\n"),
+        "{report}"
     );
-    assert_eq!(lines[2], "  hint: workload-authority: init it");
-    assert!(lines[0].starts_with("phux: ok: "));
-    assert!(lines[1].starts_with("phux: warn: "));
+}
+
+/// A development build names its profile without nested parentheses.
+#[test]
+fn the_instance_reason_reads_without_nested_parentheses() {
+    let check = check_instance();
+    let open = check.detail.matches('(').count();
+    assert!(open <= 1, "{}", check.detail);
 }
 
 /// A socket file with nothing listening is still called stale.

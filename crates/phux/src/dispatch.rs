@@ -125,7 +125,7 @@ pub(crate) fn dispatch(
         Some(Command::Tag(args)) => commands::tag::run(args, socket),
         Some(Command::StdioBridge(_)) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Bootstrap(args)) => commands::bootstrap::run(args, socket),
-        Some(Command::Relay(args)) => commands::relay::run(args),
+        Some(Command::Relay(args)) => commands::relay::run(args, socket),
         Some(Command::Pair(args)) => commands::pair::run(args, socket),
         Some(Command::Workload(args)) => commands::workload::run(args),
         Some(Command::Completion(args)) => commands::completion::run(args),

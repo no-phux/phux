@@ -92,12 +92,19 @@ pub(super) fn workload_authority_check(
                 .iter()
                 .filter(|credential| credential.is_active_at(now))
                 .count();
+            let enrolled = if snapshot.is_empty() {
+                "no credentials enrolled yet".to_owned()
+            } else {
+                format!(
+                    "{active} of {} active",
+                    super::count(snapshot.len(), "credential", "credentials")
+                )
+            };
             Check::pass(
                 "workload-authority",
                 format!(
-                    "workload CA {fingerprint}; registry generation {}, {active} of {} credential(s) active",
+                    "workload CA {fingerprint}; registry generation {}, {enrolled}",
                     snapshot.generation(),
-                    snapshot.len()
                 ),
             )
         }
@@ -169,6 +176,11 @@ pub(super) fn client_certs_check(
             ),
         );
     }
+    let presenting = if enrolled == 1 {
+        "1 remote presents".to_owned()
+    } else {
+        format!("{enrolled} remotes present")
+    };
     match soonest {
         None if enrolled == 0 => Check::pass(
             "client-certs",
@@ -176,12 +188,12 @@ pub(super) fn client_certs_check(
         ),
         None => Check::pass(
             "client-certs",
-            format!("{enrolled} remote(s) present a workload client certificate"),
+            format!("{presenting} a workload client certificate"),
         ),
         Some(ends) => Check::pass(
             "client-certs",
             format!(
-                "{enrolled} remote(s) present a workload client certificate; the first expires {}",
+                "{presenting} a workload client certificate; the first expires {}",
                 calendar_date(ends)
             ),
         ),

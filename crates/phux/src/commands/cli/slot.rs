@@ -18,7 +18,7 @@ pub(crate) struct SlotArgs {
 /// `phux slot <action>`.
 #[derive(Debug, Subcommands)]
 pub(crate) enum SlotAction {
-    /// Make PANE the last tab of the slot showing TO.
+    /// Make PANE the last tab of the slot showing TO
     ///
     /// PANE leaves wherever it was: its own split collapses, or it leaves
     /// another slot.
@@ -32,7 +32,7 @@ pub(crate) enum SlotAction {
         #[usage(long)]
         json: bool,
     },
-    /// Give the tab PANE a slot of its own, split beside the one it left.
+    /// Give the tab PANE a slot of its own, split beside the one it left
     Out {
         /// The tab to take out.
         pane: String,
@@ -53,7 +53,7 @@ pub(crate) enum SlotAction {
         #[usage(long)]
         json: bool,
     },
-    /// Make the next tab the slot's default.
+    /// Make the next tab the slot's default
     Next {
         /// Any tab of the slot; `.` for the focused pane.
         #[usage(default = ".")]
@@ -62,7 +62,7 @@ pub(crate) enum SlotAction {
         #[usage(long)]
         json: bool,
     },
-    /// Make the previous tab the slot's default.
+    /// Make the previous tab the slot's default
     Prev {
         /// Any tab of the slot; `.` for the focused pane.
         #[usage(default = ".")]

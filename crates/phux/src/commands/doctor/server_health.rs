@@ -71,10 +71,11 @@ pub(super) fn server_health_checks(
         checks.push(Check::fail(
             "server-health",
             format!(
-                "the server started {count} times in the last {window_mins} minutes — it is crash-looping"
+                "{count} server processes started in the last {window_mins} minutes — unless you \
+                 restarted it, it is crash-looping"
             ),
             format!(
-                "something is killing the server on startup; the reason is in {}",
+                "the reason it exits is in {}",
                 phux_config::instance::server_log_path().display()
             ),
         ));
@@ -124,7 +125,10 @@ pub(super) fn server_health_checks(
     if checks.is_empty() {
         checks.push(Check::pass(
             "server-health",
-            format!("{} server start(s) in the last hour", recent_starts()),
+            format!(
+                "{} in the last hour",
+                super::count(recent_starts(), "server start", "server starts")
+            ),
         ));
     }
 

@@ -127,7 +127,7 @@ pub(crate) struct AddOpts {
 /// namespace.
 #[derive(Debug, Subcommands)]
 pub(crate) enum HostAction {
-    /// Add a machine so `phux attach NAME` reaches it.
+    /// Add a machine so `phux attach NAME` reaches it
     ///
     /// `phux host add me@mini` is all a new machine needs. Over the ssh
     /// trust you already have it confirms phux is installed there, starts
@@ -146,22 +146,24 @@ pub(crate) enum HostAction {
     ///
     /// `phux host add NAME --code LINK` registers NAME from the connect link
     /// `phux pair` printed on the other machine, relay links included,
-    /// without ssh and without attaching.
+    /// without ssh and without attaching. A link pasted as ENDPOINT does the
+    /// same, and one pasted alone registers under the name it carries.
     Add {
         /// `[USER@]HOST[:PORT]` to set up over ssh, an endpoint URI
-        /// (`quic://`, `wss://`, `ssh://`) to register as is, or with
-        /// `--code` the name to register the link under.
+        /// (`quic://`, `wss://`, `ssh://`) to register as is, a connect link
+        /// to register under its own name (or `--name`), or with `--code` the
+        /// name to register the link under.
         target: String,
 
         /// Manual form: the endpoint URI to register, with TARGET as the
-        /// entry's name.
+        /// entry's name. A connect link here is `--code LINK`.
         endpoint: Option<String>,
 
         #[usage(flatten)]
         opts: AddOpts,
     },
 
-    /// List registered machines from both registries.
+    /// List registered machines from both registries
     ///
     /// With no `--role`, remotes and satellites are merged into one table
     /// with a ROLE column; `--role` filters to one registry.
@@ -175,7 +177,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// List the machines on this computer's Tailscale network.
+    /// List the machines on this computer's Tailscale network
     ///
     /// Reads the local Tailscale client (`tailscale status --json`): whether
     /// it is signed in and connected, every other machine on the tailnet,
@@ -194,7 +196,9 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Remove a registered machine. Its token file is left in place.
+    /// Remove a registered machine
+    ///
+    /// Its token file is left in place.
     ///
     /// With no `--role`, the name is resolved across both registries; a name
     /// registered in both is refused until `--role` disambiguates.
@@ -211,7 +215,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Show a registered machine, including its route and credential references.
+    /// Show a registered machine, including its route and credential references
     Show {
         /// Registered name.
         name: String,
@@ -222,7 +226,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Rename a registered machine without changing its route or credentials.
+    /// Rename a registered machine without changing its route or credentials
     Rename {
         /// Current registered name.
         name: String,
@@ -234,7 +238,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Set the colour a host is drawn in, or go back to its automatic one.
+    /// Set the colour a host is drawn in, or go back to its automatic one
     ///
     /// Every client hashes a host's name to one of eight palette colours;
     /// this overrides that for a `[[remote]]` or `[[satellites]]` entry, or
@@ -258,7 +262,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Renew a remote's workload client certificate over ssh.
+    /// Renew a remote's workload client certificate over ssh
     ///
     /// Enrolls a fresh certificate the way `phux host add` does (the key is
     /// generated here; only its CSR crosses ssh), records it in the entry,
@@ -287,7 +291,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Move registered remotes from `wss://` (or ssh) onto QUIC.
+    /// Move registered remotes from `wss://` (or ssh) onto QUIC
     ///
     /// For each remote, or just NAME, dials its QUIC route with the saved
     /// token and pin: a kept direct route, else (beside the default
@@ -305,14 +309,14 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Attach to a registered remote host (same as `phux attach NAME`).
+    /// Attach to a registered remote host (same as `phux attach NAME`)
     Attach {
         /// Registered remote name.
         name: String,
     },
 
     /// Enable a satellite (a running local hub dials it now), or resume a
-    /// paused remote.
+    /// paused remote
     Enable {
         /// Registered host name.
         name: String,
@@ -320,8 +324,10 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Disable a satellite without forgetting it (a running hub drops its
-    /// link), or pause a remote: it stays registered and nothing dials it.
+    /// Disable a satellite or pause a remote without forgetting it
+    ///
+    /// A running hub drops a disabled satellite's link; a paused remote stays
+    /// registered and nothing dials it.
     Disable {
         /// Registered host name.
         name: String,
@@ -329,7 +335,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Mint a one-time code a machine this hub cannot reach joins with.
+    /// Mint a one-time code a machine this hub cannot reach joins with
     ///
     /// For a sandbox or VM behind NAT, with no listener the hub could dial.
     /// Registers NAME as an `inbound://` satellite and prints a join code
@@ -369,7 +375,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Join a hub as a satellite with the code `phux host ticket` printed.
+    /// Join a hub as a satellite with the code `phux host ticket` printed
     ///
     /// Generates a key here (it never leaves this machine), enrolls it with
     /// the code's single-use ticket, records an `[[uplink]]` entry, and asks
@@ -391,7 +397,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Make Minimal boxes join this hub as satellites.
+    /// Make Minimal boxes join this hub as satellites
     ///
     /// A Minimal (minimal.dev) box cannot be dialed, but it reaches this
     /// machine's loopback as `host.min.internal`. `setup` once, then every

@@ -55,6 +55,8 @@ pub(crate) struct RemoteServer {
     endpoint: String,
     dial: Dial,
     loopback: bool,
+    /// Whether the entry presents an enrolled client certificate.
+    enrolled: bool,
 }
 
 impl ServerSpec {
@@ -192,6 +194,7 @@ fn plan_entry_inner(
     let identity = entry
         .client_identity()
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
+    let enrolled = identity.is_some();
     if warn_renewal {
         entry.warn_if_renewal_due();
     }
@@ -220,6 +223,7 @@ fn plan_entry_inner(
         endpoint: entry.endpoint.clone(),
         dial,
         loopback,
+        enrolled,
     })
 }
 
@@ -434,6 +438,17 @@ impl RemoteServer {
         } else {
             codes::TRANSPORT
         };
+        if ended_in_handshake(err) {
+            return CliError::new(
+                codes::TRANSPORT,
+                format!(
+                    "{verb} on remote {} ({}) failed: the server ended the encrypted session \
+                     before answering, as a paired server does for a machine it does not admit",
+                    self.name, self.endpoint
+                ),
+                self.refused_remedy(),
+            );
+        }
         CliError::new(
             code,
             format!(
@@ -442,6 +457,24 @@ impl RemoteServer {
             ),
             self.remedy(err),
         )
+    }
+
+    /// The way back in after the server refused this machine's session.
+    fn refused_remedy(&self) -> String {
+        let name = &self.name;
+        if self.enrolled {
+            format!(
+                "its client certificate may be revoked or expired (`phux workload list` on \
+                 {name}): `phux host renew {name}`, or re-pair with `phux host add {name}`"
+            )
+        } else {
+            format!(
+                "this entry has no enrolled client certificate, which a paired server \
+                 requires: re-pair with `phux host add {name}` over ssh, or `phux host add \
+                 {name} --code LINK` with a link `phux pair` printed (it carries an enrollment \
+                 ticket)"
+            )
+        }
     }
 
     /// The way out: the overlay hint for an unanswered dial, else where to
@@ -458,6 +491,12 @@ impl RemoteServer {
             |hint| hint.lines().map(str::trim).collect::<Vec<_>>().join("\n"),
         )
     }
+}
+
+/// A session that ended with an unexpected EOF before the server answered:
+/// how TLS reports a server that closed it over the client's credentials.
+fn ended_in_handshake(err: &AttachError) -> bool {
+    matches!(err, AttachError::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof)
 }
 
 #[cfg(test)]

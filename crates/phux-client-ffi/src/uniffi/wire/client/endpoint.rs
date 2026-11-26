@@ -15,17 +15,22 @@ pub(super) fn classify_remote_endpoint(endpoint: &str) -> Result<Transport, Stri
     if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
         return Ok(Transport::Ws(endpoint.to_owned()));
     }
+    // A pasted connect link carries its token after `?` or `#`: never echo it.
     Err(format!(
-        "{endpoint:?} must start with quic://, wss://, or ws://"
+        "{:?} must start with quic://, wss://, or ws://",
+        phux_client_runtime::pairing::redact_uri(endpoint)
     ))
 }
 
 /// Reject malformed QUIC targets without starting the runtime's reconnect
 /// loop. DNS resolution and reachability remain the runtime dialer's job.
 fn validate_quic_authority(authority: &str) -> Result<(), String> {
-    let (host, port) = authority
-        .rsplit_once(':')
-        .ok_or_else(|| format!("quic://{authority} needs HOST:PORT (bracket an IPv6 address)"))?;
+    let (host, port) = authority.rsplit_once(':').ok_or_else(|| {
+        format!(
+            "{} needs HOST:PORT (bracket an IPv6 address)",
+            phux_client_runtime::pairing::redact_uri(&format!("quic://{authority}"))
+        )
+    })?;
     let bracketed = host.starts_with('[') && host.ends_with(']');
     let bare_host = host.trim_matches(['[', ']']);
     let valid_host = !bare_host.is_empty()
@@ -36,7 +41,8 @@ fn validate_quic_authority(authority: &str) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "quic://{authority} needs HOST:PORT with a non-zero numeric port; bracket an IPv6 address"
+        "{} needs HOST:PORT with a non-zero numeric port; bracket an IPv6 address",
+        phux_client_runtime::pairing::redact_uri(&format!("quic://{authority}"))
     ))
 }
 

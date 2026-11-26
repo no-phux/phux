@@ -65,7 +65,7 @@ Agents:
   signal        Send a signal to a pane's process group
   mission       Track tasks in the local work store
   chat          Talk with a friend or agent over native phux mail
-  mail          Send, read and acknowledge mail between agents
+  mail          Send, read, and acknowledge mail between agents
   claim         Claim paths so other agents leave them alone
   notify        Post a note for a pane, shown as a toast
   notify-mode   Mute or unmute a pane's notifications
@@ -80,7 +80,7 @@ Machines:
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
   pair          Mint, rotate, revoke, list, or prune remote credentials
-  relay         Run a standalone relay, or enroll a route with it
+  relay         Run a relay, enroll routes, or connect a server to one
   workload      Manage the mTLS workload authority
   download      Download a file from a server or one of its satellites
   forward       Forward a port or your ssh-agent to the server's machine
@@ -147,65 +147,51 @@ that overrides inference.
 Usage: phux agent <SUBCOMMAND>
 
 Commands:
-  answer            Answer a pane's pending agent question by validated choice.
-  app               An application as resources: launched, mirrored from its own
-                    pane, and quit with it. `phux spawn --app` is the short
-                    form.
-  clear             Clear a pane's declared agent identity.
-  doc               A typed document is a pane's child resource that a producer
-                    feeds with whole documents of the content type it was opened
-                    with (Markdown, SVG, CSV, JSON, PNG...). Needs
-                    `TYPED_DOCUMENT`.
-  emit              Append one record to a pane's agent session.
-  explain           Explain the evidence behind one pane's state.
+  answer            Answer a pane's pending agent question by validated choice
+  app               Launch an application and mirror it as resources
+  clear             Clear a pane's declared agent identity
+  doc               Read, follow, and produce a pane's typed document
+  emit              Append one record to a pane's agent session
+  explain           Explain the evidence behind one pane's state
   install-claude    Make plain `claude` launch inside phux and declare its
-                    identity.
+                    identity
   install-shim      Make plain agent commands (`claude`, `codex`, `opencode`,
-                    `pi`) launch inside phux.
+                    `pi`) launch inside phux
   list              List every pane's detected or declared agent and current
-                    state. [aliases: ls]
-  log               Read a pane's agent session stream.
+                    state [aliases: ls]
+  log               Read a pane's agent session stream
   native-command    Send a typed SDK intent to the exact `AgentSession` and
-                    activation.
-  page              A browser page over the Chrome debugging protocol (CDP), as
-                    a tree (its accessibility tree) and a surface (its
-                    screencast) under one pane. Needs a browser started with
-                    `--remote-debugging-port`.
+                    activation
+  page              Mirror and drive a browser page over the Chrome debugging
+                    protocol
   prompt            Hand an agent a turn's worth of work, with a delivery
-                    receipt.
+                    receipt
   question-receipt  Read a previously submitted response receipt without
-                    resending.
+                    resending
   questions         Read current questions from the server, without reading a
-                    title or transcript.
+                    title or transcript
   report-state      Report hook-sourced lifecycle evidence to the pane's
-                    detector.
+                    detector
   respond-question  Respond to an exact structured question as a human; never
-                    types into a pane.
+                    types into a pane
   send-keys         Send keys to a pane, but only if it still hosts the expected
-                    agent.
+                    agent
   session           Open or close a pane's agent session (an `AgentSession`
-                    resource).
-  set               Declare the agent identity and state associated with a pane.
-  show              Show inferred state for one pane.
+                    resource)
+  set               Declare the agent identity and state associated with a pane
+  show              Show inferred state for one pane
   start             Start an agent INSIDE an existing shell pane, and return
-                    when it is ready for input.
+                    when it is ready for input
   stats             Show each pane's agent work: tasks finished and time spent
-                    working.
-  surface           A pixel surface is a pane's child resource that a producer
-                    feeds with PNG or JPEG images of a window or display;
-                    `snapshot` writes the newest and `follow` every one. Needs a
-                    server that advertises `PIXEL_SURFACE`.
-  tree              An accessibility tree is a pane's child resource that a
-                    producer feeds with whole documents of an application's
-                    accessibility tree; `snapshot` reads the newest and `follow
-                    --until TEXT` waits on it. Needs a server that advertises
-                    `ACCESSIBILITY_TREE`.
-  uninstall-claude  Remove the claude-in-phux shim and shell activation.
+                    working
+  surface           Read, follow, and mirror a pane's pixel surface
+  tree              Read, follow, and mirror a pane's accessibility tree
+  uninstall-claude  Remove the claude-in-phux shim and shell activation
   uninstall-shim    Remove agent shims; the shell rc block goes with the last
-                    one.
-  usage             Show the AI plan limits this host can see.
+                    one
+  usage             Show the AI plan limits this host can see
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
-                    state.
+                    state
   help              Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -218,7 +204,7 @@ Global flags:
 ## `phux agent answer`
 
 ```text
-Answer a pane's pending agent question by validated choice.
+Answer a pane's pending agent question by validated choice
 
 The `asked` event carries the question AND the suggestions the asking agent
 itself published, so an orchestrator can reply with a string the agent named
@@ -262,15 +248,15 @@ Global flags:
 ## `phux agent app`
 
 ```text
+Launch an application and mirror it as resources
+
 An application as resources: launched, mirrored from its own pane, and quit with
 it. `phux spawn --app` is the short form.
 
 Usage: phux agent app <SUBCOMMAND>
 
 Commands:
-  run   Launch an application and mirror it into this pane until it quits;
-        killing the pane quits the app. `phux spawn --app` runs this in a new
-        pane.
+  run   Launch an application and mirror it into this pane until it quits
   help  Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -283,8 +269,9 @@ Global flags:
 ## `phux agent app run`
 
 ```text
-Launch an application and mirror it into this pane until it quits; killing the
-pane quits the app. `phux spawn --app` runs this in a new pane.
+Launch an application and mirror it into this pane until it quits
+
+Killing the pane quits the app. `phux spawn --app` runs this in a new pane.
 
 Usage: phux agent app run [FLAGS] <NAME> [ARGS]…
 
@@ -324,7 +311,7 @@ Global flags:
 ## `phux agent clear`
 
 ```text
-Clear a pane's declared agent identity.
+Clear a pane's declared agent identity
 
 Deletes the agent record, then reads it back. Exits 1
 (`agent_record_unconfirmed`) when a record is still there or the server refused
@@ -348,6 +335,8 @@ Global flags:
 ## `phux agent doc`
 
 ```text
+Read, follow, and produce a pane's typed document
+
 A typed document is a pane's child resource that a producer feeds with whole
 documents of the content type it was opened with (Markdown, SVG, CSV, JSON,
 PNG...). Needs `TYPED_DOCUMENT`.
@@ -356,18 +345,13 @@ Usage: phux agent doc <SUBCOMMAND>
 
 Commands:
   folder         Keep a directory listed as a Markdown document, refreshed on
-                 change; a `navigate` intent opens a subdirectory.
-  follow         Write every document as it arrives.
+                 change
+  follow         Write every document as it arrives
   notifications  Keep this host's desktop notifications as a Markdown document
-                 (Linux, freedesktop Notifications on the session bus).
-  open           Open a document under the pane its producer runs in.
-  publish        Replace the document from a file, or stdin.
-  serve          Produce a document over a pipe until stdin ends: each stdin
-                 line `{"text": ...}` or `{"base64": ...}` replaces it; stdout
-                 prints an `opened` line, then one `input` line per viewer
-                 intent.
-  snapshot       Write the newest document to a file, or stdout: text with
-                 control characters shown as signs, binary only into a pipe.
+  open           Open a document under the pane its producer runs in
+  publish        Replace the document from a file, or stdin
+  serve          Produce a document over a pipe until stdin ends
+  snapshot       Write the newest document to a file, or stdout
   help           Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -380,8 +364,9 @@ Global flags:
 ## `phux agent doc folder`
 
 ```text
-Keep a directory listed as a Markdown document, refreshed on change; a
-`navigate` intent opens a subdirectory.
+Keep a directory listed as a Markdown document, refreshed on change
+
+A `navigate` intent opens a subdirectory.
 
 Usage: phux agent doc folder [FLAGS] <PATH>
 
@@ -402,7 +387,7 @@ Global flags:
 ## `phux agent doc follow`
 
 ```text
-Write every document as it arrives.
+Write every document as it arrives
 
 Usage: phux agent doc follow [FLAGS] <TARGET>
 
@@ -423,8 +408,9 @@ Global flags:
 ## `phux agent doc notifications`
 
 ```text
-Keep this host's desktop notifications as a Markdown document (Linux,
-freedesktop Notifications on the session bus).
+Keep this host's desktop notifications as a Markdown document
+
+Linux only: reads freedesktop Notifications on the session bus.
 
 Usage: phux agent doc notifications [FLAGS]
 
@@ -441,7 +427,7 @@ Global flags:
 ## `phux agent doc open`
 
 ```text
-Open a document under the pane its producer runs in.
+Open a document under the pane its producer runs in
 
 Usage: phux agent doc open <FLAGS> <TARGET>
 
@@ -461,7 +447,7 @@ Global flags:
 ## `phux agent doc publish`
 
 ```text
-Replace the document from a file, or stdin.
+Replace the document from a file, or stdin
 
 Usage: phux agent doc publish [--file <PATH>] [--json] <TARGET>
 
@@ -480,9 +466,10 @@ Global flags:
 ## `phux agent doc serve`
 
 ```text
-Produce a document over a pipe until stdin ends: each stdin line `{"text": ...}`
-or `{"base64": ...}` replaces it; stdout prints an `opened` line, then one
-`input` line per viewer intent.
+Produce a document over a pipe until stdin ends
+
+Each stdin line `{"text": ...}` or `{"base64": ...}` replaces the document;
+stdout prints an `opened` line, then one `input` line per viewer intent.
 
 Usage: phux agent doc serve <FLAGS>
 
@@ -499,8 +486,10 @@ Global flags:
 ## `phux agent doc snapshot`
 
 ```text
-Write the newest document to a file, or stdout: text with control characters
-shown as signs, binary only into a pipe.
+Write the newest document to a file, or stdout
+
+Text goes out with control characters shown as signs; a binary document goes
+only into a pipe.
 
 Usage: phux agent doc snapshot [--out <PATH>] [--json] <TARGET>
 
@@ -519,7 +508,7 @@ Global flags:
 ## `phux agent emit`
 
 ```text
-Append one record to a pane's agent session.
+Append one record to a pane's agent session
 
 The record is one `AgentEventsJsonlV1` line: `--type` from the closed set
 (`session_start`, `prompt`, `tool_start`, `tool_end`, `notification`, `ask`,
@@ -553,7 +542,7 @@ Global flags:
 ## `phux agent explain`
 
 ```text
-Explain the evidence behind one pane's state.
+Explain the evidence behind one pane's state
 
 With `--file` this runs OFFLINE: it evaluates the compiled detection manifests
 against a captured screen and contacts no server at all. That is the mode for
@@ -596,7 +585,7 @@ Global flags:
 ## `phux agent install-claude`
 
 ```text
-Make plain `claude` launch inside phux and declare its identity.
+Make plain `claude` launch inside phux and declare its identity
 
 Usage: phux agent install-claude [--shell <SHELL>] [--real <PATH>]
 
@@ -615,7 +604,7 @@ Global flags:
 
 ```text
 Make plain agent commands (`claude`, `codex`, `opencode`, `pi`) launch inside
-phux.
+phux
 
 Claude gets the same hook-fed shim as `install-claude`. Codex, `OpenCode` and pi
 get a launch-only shim that declares the pane's agent identity; their state
@@ -643,7 +632,7 @@ Global flags:
 ## `phux agent list`
 
 ```text
-List every pane's detected or declared agent and current state.
+List every pane's detected or declared agent and current state
 
 The third column is the pane's `%name` (`opencode`, `opencode-2`), `-` with no
 agent record, or the `phux agent set` that names the pane when `%` cannot reach
@@ -668,7 +657,7 @@ Global flags:
 ## `phux agent log`
 
 ```text
-Read a pane's agent session stream.
+Read a pane's agent session stream
 
 Attaches to the session as an observer, the way `phux rec` attaches to a pane:
 the retained records arrive first and, with `--follow`, live records after them
@@ -697,7 +686,7 @@ Global flags:
 ## `phux agent native-command`
 
 ```text
-Send a typed SDK intent to the exact `AgentSession` and activation.
+Send a typed SDK intent to the exact `AgentSession` and activation
 
 This never pastes, sends keys, takes another viewer's lease, or assumes that a
 queued dialog response was consumed.
@@ -725,6 +714,8 @@ Global flags:
 ## `phux agent page`
 
 ```text
+Mirror and drive a browser page over the Chrome debugging protocol
+
 A browser page over the Chrome debugging protocol (CDP), as a tree (its
 accessibility tree) and a surface (its screencast) under one pane. Needs a
 browser started with `--remote-debugging-port`.
@@ -733,19 +724,17 @@ Usage: phux agent page <SUBCOMMAND>
 
 Commands:
   click     Click a mirrored page at a point of its surface image, in image
-            pixels.
+            pixels
   copy      Print the host clipboard's text, read by a mirrored page's or
-            screen's producer.
-  drag      Drag across a mirrored page or screen with the left button, from one
-            point of its surface image to another: selects text.
+            screen's producer
+  drag      Drag across a mirrored page or screen with the left button
   key       Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or
-            an arrow.
-  mirror    Mirror a browser page into a tree and a surface until Ctrl-C.
-  navigate  Load a URL in a mirrored page.
-  paste     Paste text into a mirrored page or screen: a window or display puts
-            it on the host clipboard and presses the paste chord.
-  scroll    Scroll a mirrored page or screen by a delta in surface image pixels.
-  type      Type text into a mirrored page's focused field.
+            an arrow
+  mirror    Mirror a browser page into a tree and a surface until Ctrl-C
+  navigate  Load a URL in a mirrored page
+  paste     Paste text into a mirrored page or screen
+  scroll    Scroll a mirrored page or screen by a delta in surface image pixels
+  type      Type text into a mirrored page's focused field
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -758,7 +747,7 @@ Global flags:
 ## `phux agent page click`
 
 ```text
-Click a mirrored page at a point of its surface image, in image pixels.
+Click a mirrored page at a point of its surface image, in image pixels
 
 Usage: phux agent page click [--json] <ARGS>…
 
@@ -778,7 +767,7 @@ Global flags:
 ## `phux agent page copy`
 
 ```text
-Print the host clipboard's text, read by a mirrored page's or screen's producer.
+Print the host clipboard's text, read by a mirrored page's or screen's producer
 
 Usage: phux agent page copy [--json] <TARGET>
 
@@ -796,8 +785,9 @@ Global flags:
 ## `phux agent page drag`
 
 ```text
-Drag across a mirrored page or screen with the left button, from one point of
-its surface image to another: selects text.
+Drag across a mirrored page or screen with the left button
+
+Drags from one point of its surface image to another, which selects text.
 
 Usage: phux agent page drag [--json] <ARGS>…
 
@@ -819,7 +809,7 @@ Global flags:
 ## `phux agent page key`
 
 ```text
-Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow.
+Press one key in a mirrored page: Enter, Tab, Backspace, Escape, or an arrow
 
 Usage: phux agent page key [--json] <TARGET> <KEY>
 
@@ -838,7 +828,7 @@ Global flags:
 ## `phux agent page mirror`
 
 ```text
-Mirror a browser page into a tree and a surface until Ctrl-C.
+Mirror a browser page into a tree and a surface until Ctrl-C
 
 Usage: phux agent page mirror [FLAGS] <PAGE>
 
@@ -871,7 +861,7 @@ Global flags:
 ## `phux agent page navigate`
 
 ```text
-Load a URL in a mirrored page.
+Load a URL in a mirrored page
 
 Usage: phux agent page navigate [--json] <TARGET> <URL>
 
@@ -890,8 +880,10 @@ Global flags:
 ## `phux agent page paste`
 
 ```text
-Paste text into a mirrored page or screen: a window or display puts it on the
-host clipboard and presses the paste chord.
+Paste text into a mirrored page or screen
+
+A window or display puts the text on the host clipboard and presses the paste
+chord.
 
 Usage: phux agent page paste [--json] <TARGET> <TEXT>
 
@@ -910,7 +902,7 @@ Global flags:
 ## `phux agent page scroll`
 
 ```text
-Scroll a mirrored page or screen by a delta in surface image pixels.
+Scroll a mirrored page or screen by a delta in surface image pixels
 
 Usage: phux agent page scroll [--json] <ARGS>…
 
@@ -930,7 +922,7 @@ Global flags:
 ## `phux agent page type`
 
 ```text
-Type text into a mirrored page's focused field.
+Type text into a mirrored page's focused field
 
 Usage: phux agent page type [--json] <TARGET> <TEXT>
 
@@ -949,7 +941,7 @@ Global flags:
 ## `phux agent prompt`
 
 ```text
-Hand an agent a turn's worth of work, with a delivery receipt.
+Hand an agent a turn's worth of work, with a delivery receipt
 
 The prompt text and Enter ride ONE acknowledged, idempotent operation, so a
 caller that does not get an answer can ask again under the same operation id
@@ -1008,9 +1000,9 @@ Global flags:
 ## `phux agent question-receipt`
 
 ```text
-Read a previously submitted response receipt without resending.
+Read a previously submitted response receipt without resending
 
-Usage: phux agent question-receipt <--question-json <QUESTION_JSON>> <--operation-id <OPERATION_ID>>
+Usage: phux agent question-receipt --question-json <QUESTION_JSON> --operation-id <OPERATION_ID>
 
 Flags:
       --question-json <QUESTION_JSON>  Original exact question reference as
@@ -1026,7 +1018,7 @@ Global flags:
 ## `phux agent questions`
 
 ```text
-Read current questions from the server, without reading a title or transcript.
+Read current questions from the server, without reading a title or transcript
 
 Usage: phux agent questions <TARGET>
 
@@ -1043,7 +1035,7 @@ Global flags:
 ## `phux agent report-state`
 
 ```text
-Report hook-sourced lifecycle evidence to the pane's detector.
+Report hook-sourced lifecycle evidence to the pane's detector
 
 Usage: phux agent report-state <TARGET> <STATE>
 
@@ -1062,9 +1054,9 @@ Global flags:
 ## `phux agent respond-question`
 
 ```text
-Respond to an exact structured question as a human; never types into a pane.
+Respond to an exact structured question as a human; never types into a pane
 
-Usage: phux agent respond-question <--request-json <REQUEST_JSON>>
+Usage: phux agent respond-question --request-json <REQUEST_JSON>
 
 Flags:
       --request-json <REQUEST_JSON>  JSON with the returned question reference,
@@ -1079,7 +1071,7 @@ Global flags:
 ## `phux agent send-keys`
 
 ```text
-Send keys to a pane, but only if it still hosts the expected agent.
+Send keys to a pane, but only if it still hosts the expected agent
 
 The agent-addressed sibling of top-level `phux send-keys`, and it differs from
 it in exactly one way: it re-checks the pane's declared agent identity
@@ -1118,7 +1110,7 @@ Global flags:
 ## `phux agent session`
 
 ```text
-Open or close a pane's agent session (an `AgentSession` resource).
+Open or close a pane's agent session (an `AgentSession` resource)
 
 An agent session is the server-side, producer-fed event log an agent harness
 appends to with `phux agent emit` and anyone reads with `phux agent log`. It is
@@ -1129,8 +1121,8 @@ status --json`).
 Usage: phux agent session <SUBCOMMAND>
 
 Commands:
-  close  Close a pane's agent session; the pane is untouched.
-  open   Open an agent session bound to a pane.
+  close  Close a pane's agent session; the pane is untouched
+  open   Open an agent session bound to a pane
   help   Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1143,7 +1135,7 @@ Global flags:
 ## `phux agent session close`
 
 ```text
-Close a pane's agent session; the pane is untouched.
+Close a pane's agent session; the pane is untouched
 
 TARGET is the session (`@N`), the pane hosting it, or `%name`. Prints
 `@N<TAB>closed`.
@@ -1163,7 +1155,7 @@ Global flags:
 ## `phux agent session open`
 
 ```text
-Open an agent session bound to a pane.
+Open an agent session bound to a pane
 
 Spawns an `AgentSession` resource whose parent is the Terminal TARGET resolves
 to: the server-side, producer-fed event log the agent's harness appends to with
@@ -1196,7 +1188,7 @@ Global flags:
 ## `phux agent set`
 
 ```text
-Declare the agent identity and state associated with a pane.
+Declare the agent identity and state associated with a pane
 
 Writes the whole agent record (last writer wins), keeping the pane's kind when
 `--kind` is omitted, then reads it back. Exits 1 (`agent_record_unconfirmed`)
@@ -1232,7 +1224,7 @@ Global flags:
 ## `phux agent show`
 
 ```text
-Show inferred state for one pane.
+Show inferred state for one pane
 
 Usage: phux agent show [--json] [TARGET]
 
@@ -1251,7 +1243,7 @@ Global flags:
 
 ```text
 Start an agent INSIDE an existing shell pane, and return when it is ready for
-input.
+input
 
 The layout-free sibling of `phux launch`: it creates, splits, and moves nothing.
 `launch` returns a Terminal id ("a pane now exists"); this returns a readiness
@@ -1309,7 +1301,7 @@ Global flags:
 ## `phux agent stats`
 
 ```text
-Show each pane's agent work: tasks finished and time spent working.
+Show each pane's agent work: tasks finished and time spent working
 
 Prints the `phux.agent-stats/v1` document. `--publish` records the hook event in
 the environment, then writes that Global key; the agent-stats plugin runs it
@@ -1328,6 +1320,8 @@ Global flags:
 ## `phux agent surface`
 
 ```text
+Read, follow, and mirror a pane's pixel surface
+
 A pixel surface is a pane's child resource that a producer feeds with PNG or
 JPEG images of a window or display; `snapshot` writes the newest and `follow`
 every one. Needs a server that advertises `PIXEL_SURFACE`.
@@ -1335,17 +1329,13 @@ every one. Needs a server that advertises `PIXEL_SURFACE`.
 Usage: phux agent surface <SUBCOMMAND>
 
 Commands:
-  follow    Write every image as it arrives, each replacing the file.
-  mirror    Mirror a window or a display into a surface until Ctrl-C: macOS, or
-            Linux on a wlroots compositor (Hyprland, Sway) through `grim`.
-  open      Open a surface under the pane its producer runs in.
-  publish   Replace the surface's image from a PNG or JPEG file, or stdin.
-  snapshot  Write the surface's newest image to a file.
-  standing  Run the `[[mirrors]]` entries as this process's children, each into
-            its `mirror-<target>` session, restarting any that exit. Rune runs
-            this on macOS, where the server's own children cannot hold Screen
-            Recording access; one runs per server.
-  targets   List the displays and windows `mirror` can name on this host.
+  follow    Write every image as it arrives, each replacing the file
+  mirror    Mirror a window or a display into a surface until Ctrl-C
+  open      Open a surface under the pane its producer runs in
+  publish   Replace the surface's image from a PNG or JPEG file, or stdin
+  snapshot  Write the surface's newest image to a file
+  standing  Run the configured `[[mirrors]]` entries, restarting any that exit
+  targets   List the displays and windows `mirror` can name on this host
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1358,7 +1348,7 @@ Global flags:
 ## `phux agent surface follow`
 
 ```text
-Write every image as it arrives, each replacing the file.
+Write every image as it arrives, each replacing the file
 
 Usage: phux agent surface follow [FLAGS] <TARGET>
 
@@ -1378,8 +1368,10 @@ Global flags:
 ## `phux agent surface mirror`
 
 ```text
-Mirror a window or a display into a surface until Ctrl-C: macOS, or Linux on a
-wlroots compositor (Hyprland, Sway) through `grim`.
+Mirror a window or a display into a surface until Ctrl-C
+
+Works on macOS, and on Linux under a wlroots compositor (Hyprland, Sway) through
+`grim`.
 
 Usage: phux agent surface mirror [FLAGS] <WINDOW>
 
@@ -1419,7 +1411,7 @@ Global flags:
 ## `phux agent surface open`
 
 ```text
-Open a surface under the pane its producer runs in.
+Open a surface under the pane its producer runs in
 
 Usage: phux agent surface open <FLAGS> <TARGET>
 
@@ -1443,7 +1435,7 @@ Global flags:
 ## `phux agent surface publish`
 
 ```text
-Replace the surface's image from a PNG or JPEG file, or stdin.
+Replace the surface's image from a PNG or JPEG file, or stdin
 
 Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
 
@@ -1462,7 +1454,7 @@ Global flags:
 ## `phux agent surface snapshot`
 
 ```text
-Write the surface's newest image to a file.
+Write the surface's newest image to a file
 
 Usage: phux agent surface snapshot [--out <PATH>] [--json] <TARGET>
 
@@ -1482,10 +1474,11 @@ Global flags:
 ## `phux agent surface standing`
 
 ```text
-Run the `[[mirrors]]` entries as this process's children, each into its
-`mirror-<target>` session, restarting any that exit. Rune runs this on macOS,
-where the server's own children cannot hold Screen Recording access; one runs
-per server.
+Run the configured `[[mirrors]]` entries, restarting any that exit
+
+Runs each entry as this process's child, into its `mirror-<target>` session,
+restarting any that exit. Rune runs this on macOS, where the server's own
+children cannot hold Screen Recording access; one runs per server.
 
 Usage: phux agent surface standing [--parent-pid <PID>]
 
@@ -1501,7 +1494,7 @@ Global flags:
 ## `phux agent surface targets`
 
 ```text
-List the displays and windows `mirror` can name on this host.
+List the displays and windows `mirror` can name on this host
 
 Usage: phux agent surface targets [--json]
 
@@ -1516,6 +1509,8 @@ Global flags:
 ## `phux agent tree`
 
 ```text
+Read, follow, and mirror a pane's accessibility tree
+
 An accessibility tree is a pane's child resource that a producer feeds with
 whole documents of an application's accessibility tree; `snapshot` reads the
 newest and `follow --until TEXT` waits on it. Needs a server that advertises
@@ -1525,13 +1520,13 @@ Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
   click     Activate one element by node, not pixel: `--node ID` or `--name
-            TEXT`.
-  follow    Print every document as it arrives.
+            TEXT`
+  follow    Print every document as it arrives
   mirror    Mirror a running application into a tree, until Ctrl-C: macOS
-            Accessibility, or AT-SPI on Linux.
-  open      Open a tree under the pane its producer runs in.
-  publish   Replace the tree's document from a file, or stdin.
-  snapshot  Print the tree's newest document, control characters shown as signs.
+            Accessibility, or AT-SPI on Linux
+  open      Open a tree under the pane its producer runs in
+  publish   Replace the tree's document from a file, or stdin
+  snapshot  Print the tree's newest document, control characters shown as signs
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1544,7 +1539,7 @@ Global flags:
 ## `phux agent tree click`
 
 ```text
-Activate one element by node, not pixel: `--node ID` or `--name TEXT`.
+Activate one element by node, not pixel: `--node ID` or `--name TEXT`
 
 Usage: phux agent tree click [FLAGS] <TARGET>
 
@@ -1572,7 +1567,7 @@ Global flags:
 ## `phux agent tree follow`
 
 ```text
-Print every document as it arrives.
+Print every document as it arrives
 
 Usage: phux agent tree follow [FLAGS] <TARGET>
 
@@ -1593,7 +1588,7 @@ Global flags:
 
 ```text
 Mirror a running application into a tree, until Ctrl-C: macOS Accessibility, or
-AT-SPI on Linux.
+AT-SPI on Linux
 
 Usage: phux agent tree mirror [FLAGS] <APP>
 
@@ -1619,9 +1614,9 @@ Global flags:
 ## `phux agent tree open`
 
 ```text
-Open a tree under the pane its producer runs in.
+Open a tree under the pane its producer runs in
 
-Usage: phux agent tree open <--app <APP>> [--json] <TARGET>
+Usage: phux agent tree open --app <APP> [--json] <TARGET>
 
 Arguments:
   <TARGET>  The parent pane.
@@ -1638,7 +1633,7 @@ Global flags:
 ## `phux agent tree publish`
 
 ```text
-Replace the tree's document from a file, or stdin.
+Replace the tree's document from a file, or stdin
 
 Usage: phux agent tree publish [--file <PATH>] [--json] <TARGET>
 
@@ -1657,7 +1652,7 @@ Global flags:
 ## `phux agent tree snapshot`
 
 ```text
-Print the tree's newest document, control characters shown as signs.
+Print the tree's newest document, control characters shown as signs
 
 Usage: phux agent tree snapshot [--json] <TARGET>
 
@@ -1675,7 +1670,7 @@ Global flags:
 ## `phux agent uninstall-claude`
 
 ```text
-Remove the claude-in-phux shim and shell activation.
+Remove the claude-in-phux shim and shell activation
 
 Usage: phux agent uninstall-claude
 
@@ -1689,7 +1684,7 @@ Global flags:
 ## `phux agent uninstall-shim`
 
 ```text
-Remove agent shims; the shell rc block goes with the last one.
+Remove agent shims; the shell rc block goes with the last one
 
 Usage: phux agent uninstall-shim [--agent <AGENT>] [--json]
 
@@ -1707,7 +1702,7 @@ Global flags:
 ## `phux agent usage`
 
 ```text
-Show the AI plan limits this host can see.
+Show the AI plan limits this host can see
 
 Reads each signed-in subscription's limit windows from the vendor's own
 credentials: Claude Code (its OAuth usage endpoint), Codex (the rate limits its
@@ -1741,7 +1736,7 @@ Global flags:
 ## `phux agent wait`
 
 ```text
-Block until a pane's agent TRANSITIONS into a lifecycle state.
+Block until a pane's agent TRANSITIONS into a lifecycle state
 
 Satisfied only by an observed transition, never by a level read of the current
 state. That distinction is the point of the verb: `idle` is normally the
@@ -1796,10 +1791,10 @@ Usage: phux api [--remote <HOST>] <SUBCOMMAND>
 
 Commands:
   call      Call a typed public operation without resolving names or changing
-            focus.
-  describe  Read the full input, output, authorization and recovery contract for
-            one operation.
-  list      List the connected server's public operations and their contracts.
+            focus
+  describe  Read the full input, output, authorization, and recovery contract
+            for one operation
+  list      List the connected server's public operations and their contracts
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1814,9 +1809,9 @@ Global flags:
 ## `phux api call`
 
 ```text
-Call a typed public operation without resolving names or changing focus.
+Call a typed public operation without resolving names or changing focus
 
-Usage: phux api call <--request-json <JSON>> <OPERATION>
+Usage: phux api call --request-json <JSON> <OPERATION>
 
 Arguments:
   <OPERATION>  Public operation name.
@@ -1833,8 +1828,8 @@ Global flags:
 ## `phux api describe`
 
 ```text
-Read the full input, output, authorization and recovery contract for one
-operation.
+Read the full input, output, authorization, and recovery contract for one
+operation
 
 Usage: phux api describe <OPERATION>
 
@@ -1851,7 +1846,7 @@ Global flags:
 ## `phux api list`
 
 ```text
-List the connected server's public operations and their contracts.
+List the connected server's public operations and their contracts
 
 Usage: phux api list
 
@@ -1925,8 +1920,8 @@ any process.
 Usage: phux archive <SUBCOMMAND>
 
 Commands:
-  export  Write the running server's sessions as a JSON archive.
-  import  Recreate an archive's missing sessions without starting them.
+  export  Write the running server's sessions as a JSON archive
+  import  Recreate an archive's missing sessions without starting them
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -1939,7 +1934,7 @@ Global flags:
 ## `phux archive export`
 
 ```text
-Write the running server's sessions as a JSON archive.
+Write the running server's sessions as a JSON archive
 
 Usage: phux archive export [-o --output <PATH>] [--projection <PREFIX>]
 
@@ -1964,7 +1959,7 @@ Global flags:
 ## `phux archive import`
 
 ```text
-Recreate an archive's missing sessions without starting them.
+Recreate an archive's missing sessions without starting them
 
 Each missing session becomes a persistent session with its archived host,
 project, project link, and directory, and each archived local pane a dormant
@@ -2182,9 +2177,9 @@ server running.
 Usage: phux audit <SUBCOMMAND>
 
 Commands:
-  tail    Print the newest records, oldest first.
+  tail    Print the newest records, oldest first
   verify  Check the hash chain and every signature; exits 1 at the first bad
-          record and names its seq.
+          record and names its seq
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -2197,7 +2192,7 @@ Global flags:
 ## `phux audit tail`
 
 ```text
-Print the newest records, oldest first.
+Print the newest records, oldest first
 
 Usage: phux audit tail [FLAGS]
 
@@ -2217,7 +2212,7 @@ Global flags:
 
 ```text
 Check the hash chain and every signature; exits 1 at the first bad record and
-names its seq.
+names its seq
 
 Usage: phux audit verify [--json]
 
@@ -2650,31 +2645,25 @@ Usage: phux config <SUBCOMMAND>
 
 Commands:
   agents             List configured agents, merged with live pane state when a
-                     server is running.
+                     server is running
   check              Validate the config and report every problem, with full key
-                     paths.
+                     paths
   distro             Discover or switch distro layers without overwriting
-                     personal config. Changes are local only; run `phux config
-                     reload` afterwards for running clients. Server startup
-                     settings apply on the next server start.
+                     personal config
   import-tmux        Bring tmux bindings and preferences into a native phux
-                     config layer.
-  init               Write a commented starter config to the canonical path.
-  keys               List every key binding in effect and where it came from.
-  path               Print the resolved config path. Pure path math — prints the
-                     path whether or not the file exists.
-  plugins            List plugin manifests declared by `[[plugins]]`.
+                     config layer
+  init               Write a commented starter config to the canonical path
+  keys               List every key binding in effect and where it came from
+  path               Print the resolved config path
+  plugins            List plugin manifests declared by `[[plugins]]`
   reload             Re-read the layered config and apply it to running clients
-                     in place.
+                     in place
   run                Execute one locally configured plugin action on this
-                     machine.
+                     machine
   shell-integration  Print the snippet that makes a shell mark prompts and
-                     commands.
+                     commands
   show               Print the effective config (shipped defaults + your
-                     overrides) as TOML. With `--default`, print the shipped
-                     defaults verbatim instead, ignoring any user config. With
-                     `--layers`, print which layer of the `extends` stack set
-                     each effective key instead of the values.
+                     overrides) as TOML
   help               Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -2687,7 +2676,7 @@ Global flags:
 ## `phux config agents`
 
 ```text
-List configured agents, merged with live pane state when a server is running.
+List configured agents, merged with live pane state when a server is running
 
 Usage: phux config agents [--json]
 
@@ -2702,7 +2691,7 @@ Global flags:
 ## `phux config check`
 
 ```text
-Validate the config and report every problem, with full key paths.
+Validate the config and report every problem, with full key paths
 
 The loader already refuses an unknown key, but it names only the leaf field
 (`unknown field 'enabledd'`) and stops at the first one. This reports
@@ -2731,18 +2720,18 @@ Global flags:
 ## `phux config distro`
 
 ```text
-Discover or switch distro layers without overwriting personal config. Changes
-are local only; run `phux config reload` afterwards for running clients. Server
-startup settings apply on the next server start.
+Discover or switch distro layers without overwriting personal config
+
+Changes are local only; run `phux config reload` afterwards for running clients.
+Server startup settings apply on the next server start.
 
 Usage: phux config distro <SUBCOMMAND>
 
 Commands:
-  current  Show the selected managed distro, not arbitrary user extends layers.
-  list     List bundled names in search precedence, sorted by name.
-  off      Remove only the managed distro entry, leaving personal config intact.
-  use      Validate and select a bundled name or a layer file/directory path.
-           Preserves comments, user overrides, and other extends entries.
+  current  Show the selected managed distro, not arbitrary user extends layers
+  list     List bundled names in search precedence, sorted by name
+  off      Remove only the managed distro entry, leaving personal config intact
+  use      Validate and select a bundled name or a layer file/directory path
   help     Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -2755,7 +2744,7 @@ Global flags:
 ## `phux config distro current`
 
 ```text
-Show the selected managed distro, not arbitrary user extends layers.
+Show the selected managed distro, not arbitrary user extends layers
 
 Usage: phux config distro current [--json]
 
@@ -2770,7 +2759,7 @@ Global flags:
 ## `phux config distro list`
 
 ```text
-List bundled names in search precedence, sorted by name.
+List bundled names in search precedence, sorted by name
 
 Usage: phux config distro list [--json]
 
@@ -2785,7 +2774,7 @@ Global flags:
 ## `phux config distro off`
 
 ```text
-Remove only the managed distro entry, leaving personal config intact.
+Remove only the managed distro entry, leaving personal config intact
 
 Usage: phux config distro off [--json]
 
@@ -2800,8 +2789,9 @@ Global flags:
 ## `phux config distro use`
 
 ```text
-Validate and select a bundled name or a layer file/directory path. Preserves
-comments, user overrides, and other extends entries.
+Validate and select a bundled name or a layer file/directory path
+
+Preserves comments, user overrides, and other extends entries.
 
 Usage: phux config distro use [--json] <NAME_OR_PATH>
 
@@ -2819,7 +2809,7 @@ Global flags:
 ## `phux config import-tmux`
 
 ```text
-Bring tmux bindings and preferences into a native phux config layer.
+Bring tmux bindings and preferences into a native phux config layer
 
 Reads global options and key tables from an already running tmux, without
 sourcing files or changing either server. By default, prints TOML on stdout and
@@ -2850,7 +2840,7 @@ Global flags:
 ## `phux config init`
 
 ```text
-Write a commented starter config to the canonical path.
+Write a commented starter config to the canonical path
 
 The file is the shipped defaults, fully commented out: inert until you uncomment
 a line, so the binary's defaults stay authoritative. Refuses to overwrite an
@@ -2878,7 +2868,7 @@ Global flags:
 ## `phux config keys`
 
 ```text
-List every key binding in effect and where it came from.
+List every key binding in effect and where it came from
 
 Shows the shipped defaults, your config and its `extends` layers, and enabled
 plugins' keys merged exactly as the terminal UI merges them. Prefix-table keys
@@ -2901,8 +2891,9 @@ Global flags:
 ## `phux config path`
 
 ```text
-Print the resolved config path. Pure path math — prints the path whether or not
-the file exists.
+Print the resolved config path
+
+Pure path math: prints the path whether or not the file exists.
 
 Usage: phux config path
 
@@ -2916,7 +2907,7 @@ Global flags:
 ## `phux config plugins`
 
 ```text
-List plugin manifests declared by `[[plugins]]`.
+List plugin manifests declared by `[[plugins]]`
 
 Usage: phux config plugins [--json]
 
@@ -2931,7 +2922,7 @@ Global flags:
 ## `phux config reload`
 
 ```text
-Re-read the layered config and apply it to running clients in place.
+Re-read the layered config and apply it to running clients in place
 
 Validates the config locally first (a broken file fails here, with the parse
 error, and nothing is signalled), then rings the `phux.config.reload/v1`
@@ -2952,7 +2943,7 @@ Global flags:
 ## `phux config run`
 
 ```text
-Execute one locally configured plugin action on this machine.
+Execute one locally configured plugin action on this machine
 
 Usage: phux config run [FLAGS] <PLUGIN> <ACTION>
 
@@ -2978,7 +2969,7 @@ Global flags:
 ## `phux config shell-integration`
 
 ```text
-Print the snippet that makes a shell mark prompts and commands.
+Print the snippet that makes a shell mark prompts and commands
 
 phux reads the prompt and command marks a shell emits (OSC 133): `phux wait
 --output-only`, copy mode's "last command's output" key and the exit-code widget
@@ -3006,8 +2997,9 @@ Global flags:
 ## `phux config show`
 
 ```text
-Print the effective config (shipped defaults + your overrides) as TOML. With
-`--default`, print the shipped defaults verbatim instead, ignoring any user
+Print the effective config (shipped defaults + your overrides) as TOML
+
+With `--default`, print the shipped defaults verbatim instead, ignoring any user
 config. With `--layers`, print which layer of the `extends` stack set each
 effective key instead of the values.
 
@@ -3040,8 +3032,8 @@ Usage: phux credentials <SUBCOMMAND>
 
 Commands:
   run    Execute a LOCAL command with approved secrets injected into its
-         environment.
-  serve  Serve approved requests using the local 1Password desktop integration.
+         environment
+  serve  Serve approved requests using the local 1Password desktop integration
   help   Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -3054,7 +3046,7 @@ Global flags:
 ## `phux credentials run`
 
 ```text
-Execute a LOCAL command with approved secrets injected into its environment.
+Execute a LOCAL command with approved secrets injected into its environment
 
 Usage: phux credentials run <FLAGS> <COMMAND>…
 
@@ -3091,7 +3083,7 @@ Global flags:
 ## `phux credentials serve`
 
 ```text
-Serve approved requests using the local 1Password desktop integration.
+Serve approved requests using the local 1Password desktop integration
 
 Usage: phux credentials serve <FLAGS>
 
@@ -3199,10 +3191,11 @@ exactly what someone debugging phux does not have.
 Read-only. Exits 1 if any check failed; warnings alone exit 0, since a stopped
 server is a normal state and not a broken install.
 
-It ends with "What works here": agent status, notifications, remote reach, file
-transfer, restore after restart and the agent skill, each with the reason and
-the fix. `--json` carries it as `checklist`. `--remote HOST` asks that machine's
-server for its list instead.
+After the checks comes "What works here": agent status, notifications, remote
+reach, file transfer, restore after restart and the agent skill, each with the
+reason and the fix. A capability that is off is not a failure. One line counting
+warnings and failures closes the report. `--json` carries the list as
+`checklist`. `--remote HOST` asks that machine's server for its list instead.
 
 Usage: phux doctor [--json] [--remote <[USER@]HOST[:PORT]>]
 
@@ -3347,13 +3340,13 @@ under `--json`.
 Usage: phux git <SUBCOMMAND>
 
 Commands:
-  branches  Local and remote-tracking branches.
-  diff      One file's unified diff (unstaged unless --staged or --untracked).
-  log       One page of history, newest first.
+  branches  Local and remote-tracking branches
+  diff      One file's unified diff (unstaged unless --staged or --untracked)
+  log       One page of history, newest first
   pr        The current branch's pull request and its checks, from the host's
-            `gh`.
-  show      One commit: message, files with line counts, and the patch.
-  status    Branch, upstream, and every changed file with line counts.
+            `gh`
+  show      One commit: message, files with line counts, and the patch
+  status    Branch, upstream, and every changed file with line counts
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -3366,7 +3359,7 @@ Global flags:
 ## `phux git branches`
 
 ```text
-Local and remote-tracking branches.
+Local and remote-tracking branches
 
 Usage: phux git branches [--json] <TARGET>
 
@@ -3386,7 +3379,7 @@ Global flags:
 ## `phux git diff`
 
 ```text
-One file's unified diff (unstaged unless --staged or --untracked).
+One file's unified diff (unstaged unless --staged or --untracked)
 
 Usage: phux git diff [FLAGS] <TARGET> <PATH>
 
@@ -3409,7 +3402,7 @@ Global flags:
 ## `phux git log`
 
 ```text
-One page of history, newest first.
+One page of history, newest first
 
 Usage: phux git log [FLAGS] <TARGET> [PATH]
 
@@ -3434,7 +3427,7 @@ Global flags:
 ## `phux git pr`
 
 ```text
-The current branch's pull request and its checks, from the host's `gh`.
+The current branch's pull request and its checks, from the host's `gh`
 
 Usage: phux git pr [--json] <TARGET>
 
@@ -3454,7 +3447,7 @@ Global flags:
 ## `phux git show`
 
 ```text
-One commit: message, files with line counts, and the patch.
+One commit: message, files with line counts, and the patch
 
 Usage: phux git show [--json] <TARGET> <SHA>
 
@@ -3475,7 +3468,7 @@ Global flags:
 ## `phux git status`
 
 ```text
-Branch, upstream, and every changed file with line counts.
+Branch, upstream, and every changed file with line counts
 
 Usage: phux git status [--json] <TARGET>
 
@@ -3531,26 +3524,24 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add       Add a machine so `phux attach NAME` reaches it.
-  attach    Attach to a registered remote host (same as `phux attach NAME`).
-  color     Set the colour a host is drawn in, or go back to its automatic one.
-  disable   Disable a satellite without forgetting it (a running hub drops its
-            link), or pause a remote: it stays registered and nothing dials it.
-  discover  List the machines on this computer's Tailscale network.
+  add       Add a machine so `phux attach NAME` reaches it
+  attach    Attach to a registered remote host (same as `phux attach NAME`)
+  color     Set the colour a host is drawn in, or go back to its automatic one
+  disable   Disable a satellite or pause a remote without forgetting it
+  discover  List the machines on this computer's Tailscale network
   enable    Enable a satellite (a running local hub dials it now), or resume a
-            paused remote.
-  join      Join a hub as a satellite with the code `phux host ticket` printed.
-  ls        List registered machines from both registries. [aliases: list]
-  minimal   Make Minimal boxes join this hub as satellites.
+            paused remote
+  join      Join a hub as a satellite with the code `phux host ticket` printed
+  ls        List registered machines from both registries [aliases: list]
+  minimal   Make Minimal boxes join this hub as satellites
   rename    Rename a registered machine without changing its route or
-            credentials.
-  renew     Renew a remote's workload client certificate over ssh.
-  rm        Remove a registered machine. Its token file is left in place.
-            [aliases: remove]
+            credentials
+  renew     Renew a remote's workload client certificate over ssh
+  rm        Remove a registered machine [aliases: remove]
   show      Show a registered machine, including its route and credential
-            references.
-  ticket    Mint a one-time code a machine this hub cannot reach joins with.
-  upgrade   Move registered remotes from `wss://` (or ssh) onto QUIC.
+            references
+  ticket    Mint a one-time code a machine this hub cannot reach joins with
+  upgrade   Move registered remotes from `wss://` (or ssh) onto QUIC
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -3563,7 +3554,7 @@ Global flags:
 ## `phux host add`
 
 ```text
-Add a machine so `phux attach NAME` reaches it.
+Add a machine so `phux attach NAME` reaches it
 
 `phux host add me@mini` is all a new machine needs. Over the ssh trust you
 already have it confirms phux is installed there, starts the server and keeps it
@@ -3580,16 +3571,18 @@ registers a peer this hub dials for its users instead of a server you attach to.
 
 `phux host add NAME --code LINK` registers NAME from the connect link `phux
 pair` printed on the other machine, relay links included, without ssh and
-without attaching.
+without attaching. A link pasted as ENDPOINT does the same, and one pasted alone
+registers under the name it carries.
 
 Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
   <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, an endpoint URI
-              (`quic://`, `wss://`, `ssh://`) to register as is, or with
-              `--code` the name to register the link under.
+              (`quic://`, `wss://`, `ssh://`) to register as is, a connect link
+              to register under its own name (or `--name`), or with `--code` the
+              name to register the link under.
   [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
-              entry's name.
+              entry's name. A connect link here is `--code LINK`.
 
 Flags:
       --role <ROLE>              Which registry the machine lands in: a server
@@ -3686,7 +3679,7 @@ Global flags:
 ## `phux host attach`
 
 ```text
-Attach to a registered remote host (same as `phux attach NAME`).
+Attach to a registered remote host (same as `phux attach NAME`)
 
 Usage: phux host attach <NAME>
 
@@ -3703,7 +3696,7 @@ Global flags:
 ## `phux host color`
 
 ```text
-Set the colour a host is drawn in, or go back to its automatic one.
+Set the colour a host is drawn in, or go back to its automatic one
 
 Every client hashes a host's name to one of eight palette colours; this
 overrides that for a `[[remote]]` or `[[satellites]]` entry, or for this machine
@@ -3734,8 +3727,10 @@ Global flags:
 ## `phux host disable`
 
 ```text
-Disable a satellite without forgetting it (a running hub drops its link), or
-pause a remote: it stays registered and nothing dials it.
+Disable a satellite or pause a remote without forgetting it
+
+A running hub drops a disabled satellite's link; a paused remote stays
+registered and nothing dials it.
 
 Usage: phux host disable [--json] <NAME>
 
@@ -3755,7 +3750,7 @@ Global flags:
 ## `phux host discover`
 
 ```text
-List the machines on this computer's Tailscale network.
+List the machines on this computer's Tailscale network
 
 Reads the local Tailscale client (`tailscale status --json`): whether it is
 signed in and connected, every other machine on the tailnet, which run an OS
@@ -3782,8 +3777,7 @@ Global flags:
 ## `phux host enable`
 
 ```text
-Enable a satellite (a running local hub dials it now), or resume a paused
-remote.
+Enable a satellite (a running local hub dials it now), or resume a paused remote
 
 Usage: phux host enable [--json] <NAME>
 
@@ -3803,7 +3797,7 @@ Global flags:
 ## `phux host join`
 
 ```text
-Join a hub as a satellite with the code `phux host ticket` printed.
+Join a hub as a satellite with the code `phux host ticket` printed
 
 Generates a key here (it never leaves this machine), enrolls it with the code's
 single-use ticket, records an `[[uplink]]` entry, and asks the running server to
@@ -3833,7 +3827,7 @@ Global flags:
 ## `phux host ls`
 
 ```text
-List registered machines from both registries.
+List registered machines from both registries
 
 With no `--role`, remotes and satellites are merged into one table with a ROLE
 column; `--role` filters to one registry.
@@ -3855,7 +3849,7 @@ Global flags:
 ## `phux host minimal`
 
 ```text
-Make Minimal boxes join this hub as satellites.
+Make Minimal boxes join this hub as satellites
 
 A Minimal (minimal.dev) box cannot be dialed, but it reaches this machine's
 loopback as `host.min.internal`. `setup` once, then every box `min session
@@ -3865,10 +3859,10 @@ leaves when it is destroyed.
 Usage: phux host minimal <SUBCOMMAND>
 
 Commands:
-  remove  Undo `setup`: stop the watcher, remove the loadout, forget every box.
-  setup   Make every Minimal box join this hub.
-  sync    Join each running box that has not joined, and forget destroyed ones.
-  watch   Run `sync` every few seconds until stopped; what the service runs.
+  remove  Undo `setup`: stop the watcher, remove the loadout, forget every box
+  setup   Make every Minimal box join this hub
+  sync    Join each running box that has not joined, and forget destroyed ones
+  watch   Run `sync` every few seconds until stopped; what the service runs
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -3881,7 +3875,7 @@ Global flags:
 ## `phux host minimal remove`
 
 ```text
-Undo `setup`: stop the watcher, remove the loadout, forget every box.
+Undo `setup`: stop the watcher, remove the loadout, forget every box
 
 Running boxes keep their phux; they stop reaching this hub because their
 credentials are revoked.
@@ -3898,7 +3892,7 @@ Global flags:
 ## `phux host minimal setup`
 
 ```text
-Make every Minimal box join this hub.
+Make every Minimal box join this hub
 
 Writes the `phux` Minimal loadout, which copies a Linux phux into each box and
 starts its server, adds it to Minimal's `default_loadouts`, makes this machine's
@@ -3929,7 +3923,7 @@ Global flags:
 ## `phux host minimal sync`
 
 ```text
-Join each running box that has not joined, and forget destroyed ones.
+Join each running box that has not joined, and forget destroyed ones
 
 A box joins as satellite `min-NAME`, NAME being its Minimal session name, and
 gets session `min-NAME` here: one pane running `min session attach` into the
@@ -3952,7 +3946,7 @@ Global flags:
 ## `phux host minimal watch`
 
 ```text
-Run `sync` every few seconds until stopped; what the service runs.
+Run `sync` every few seconds until stopped; what the service runs
 
 Usage: phux host minimal watch [FLAGS]
 
@@ -3972,7 +3966,7 @@ Global flags:
 ## `phux host rename`
 
 ```text
-Rename a registered machine without changing its route or credentials.
+Rename a registered machine without changing its route or credentials
 
 Usage: phux host rename [--role <ROLE>] [--json] <NAME> <NEW_NAME>
 
@@ -3995,7 +3989,7 @@ Global flags:
 ## `phux host renew`
 
 ```text
-Renew a remote's workload client certificate over ssh.
+Renew a remote's workload client certificate over ssh
 
 Enrolls a fresh certificate the way `phux host add` does (the key is generated
 here; only its CSR crosses ssh), records it in the entry, and only then revokes
@@ -4031,7 +4025,9 @@ Global flags:
 ## `phux host rm`
 
 ```text
-Remove a registered machine. Its token file is left in place.
+Remove a registered machine
+
+Its token file is left in place.
 
 With no `--role`, the name is resolved across both registries; a name registered
 in both is refused until `--role` disambiguates.
@@ -4057,7 +4053,7 @@ Global flags:
 ## `phux host show`
 
 ```text
-Show a registered machine, including its route and credential references.
+Show a registered machine, including its route and credential references
 
 Usage: phux host show [--role <ROLE>] [--json] <NAME>
 
@@ -4079,7 +4075,7 @@ Global flags:
 ## `phux host ticket`
 
 ```text
-Mint a one-time code a machine this hub cannot reach joins with.
+Mint a one-time code a machine this hub cannot reach joins with
 
 For a sandbox or VM behind NAT, with no listener the hub could dial. Registers
 NAME as an `inbound://` satellite and prints a join code carrying this hub's
@@ -4116,7 +4112,7 @@ Global flags:
 ## `phux host upgrade`
 
 ```text
-Move registered remotes from `wss://` (or ssh) onto QUIC.
+Move registered remotes from `wss://` (or ssh) onto QUIC
 
 For each remote, or just NAME, dials its QUIC route with the saved token and
 pin: a kept direct route, else (beside the default `wss://HOST:8787`, not on
@@ -4463,7 +4459,7 @@ Global flags:
 ## `phux mail`
 
 ```text
-Send, read and acknowledge mail between agents
+Send, read, and acknowledge mail between agents
 
 Mail lives in this host's work store beside `phux mission` tasks and survives
 restarts. An agent is addressed by its pane here, `@749`, optionally labelled,
@@ -4529,7 +4525,7 @@ up to 4 messages, like `wait --timeout 0`, and prints one hook JSON object:
 `additionalContext` for a context event, or a `block` decision whose reason is
 the mail for `stop`, so the agent keeps going and handles it.
 
-Usage: phux mail hook-context <--event <EVENT>> [--as <ADDRESS>]
+Usage: phux mail hook-context --event <EVENT> [--as <ADDRESS>]
 
 Flags:
       --event <EVENT>  The hook event the reply answers.
@@ -5015,9 +5011,9 @@ Ctrl-] detaches; the server-owned process survives.
 Usage: phux native <SUBCOMMAND>
 
 Commands:
-  attach  Reattach an exact local terminal; never selects a focused pane.
+  attach  Reattach an exact local terminal; never selects a focused pane
   create  Create a distinct terminal in a shared persistent session and display
-          it.
+          it
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -5030,7 +5026,7 @@ Global flags:
 ## `phux native attach`
 
 ```text
-Reattach an exact local terminal; never selects a focused pane.
+Reattach an exact local terminal; never selects a focused pane
 
 Usage: phux native attach <TARGET>
 
@@ -5048,7 +5044,7 @@ Global flags:
 ## `phux native create`
 
 ```text
-Create a distinct terminal in a shared persistent session and display it.
+Create a distinct terminal in a shared persistent session and display it
 
 Usage: phux native create [-s --session <SESSION>] [-c --cwd <CWD>] [COMMAND]…
 
@@ -5224,11 +5220,10 @@ of it; your own config.toml keeps winning throughout.
 Usage: phux omarchy <SUBCOMMAND>
 
 Commands:
-  keys    Print every key binding as `KEYS → what it does`, one per line.
-  remove  Undo `setup`: restore the previous distro and theme selection and
-          delete the hook, the layer, and the marked Hyprland blocks.
-  setup   Put phux in place on this Omarchy desktop. Safe to run again.
-  status  Show which parts of the Omarchy integration are in place.
+  keys    Print every key binding as `KEYS → what it does`, one per line
+  remove  Undo `setup`: restore the previous distro and theme selection
+  setup   Put phux in place on this Omarchy desktop
+  status  Show which parts of the Omarchy integration are in place
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -5241,7 +5236,7 @@ Global flags:
 ## `phux omarchy keys`
 
 ```text
-Print every key binding as `KEYS → what it does`, one per line.
+Print every key binding as `KEYS → what it does`, one per line
 
 The input Omarchy's `omarchy-menu-select` takes, so Super+Ctrl+K can show phux's
 keys in Omarchy's own menu.
@@ -5258,8 +5253,9 @@ Global flags:
 ## `phux omarchy remove`
 
 ```text
-Undo `setup`: restore the previous distro and theme selection and delete the
-hook, the layer, and the marked Hyprland blocks.
+Undo `setup`: restore the previous distro and theme selection
+
+Also deletes the hook, the layer, and the marked Hyprland blocks.
 
 Usage: phux omarchy remove [--dry-run]
 
@@ -5274,7 +5270,9 @@ Global flags:
 ## `phux omarchy setup`
 
 ```text
-Put phux in place on this Omarchy desktop. Safe to run again.
+Put phux in place on this Omarchy desktop
+
+Safe to run again.
 
 Installs a distro layer with Omarchy's tmux keys and selects it (a distro you
 had selected stays underneath), follows Omarchy's current theme unless your
@@ -5297,7 +5295,7 @@ Global flags:
 ## `phux omarchy status`
 
 ```text
-Show which parts of the Omarchy integration are in place.
+Show which parts of the Omarchy integration are in place
 
 Usage: phux omarchy status [--json]
 
@@ -5436,11 +5434,10 @@ edit the store and need no server.
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
 Commands:
-  ls      List credentials in the store (id, minted, last seen, status: unused,
-          active, expired, or revoked, with when it stops working).
-  prune   Revoke credentials unused for at least DURATION.
-  revoke  Revoke every generation of a credential for new connections.
-  rotate  Replace a credential's bearer secret with a bounded overlap.
+  ls      List stored credentials: id, minted, last seen, status, and expiry
+  prune   Revoke credentials unused for at least DURATION
+  revoke  Revoke every generation of a credential for new connections
+  rotate  Replace a credential's bearer secret with a bounded overlap
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -5542,8 +5539,7 @@ Global flags:
 ## `phux pair ls`
 
 ```text
-List credentials in the store (id, minted, last seen, status: unused, active,
-expired, or revoked, with when it stops working).
+List stored credentials: id, minted, last seen, status, and expiry
 
 Usage: phux pair ls
 
@@ -5562,9 +5558,9 @@ Global flags:
 ## `phux pair prune`
 
 ```text
-Revoke credentials unused for at least DURATION.
+Revoke credentials unused for at least DURATION
 
-Usage: phux pair prune <--unused-for <DURATION>>
+Usage: phux pair prune --unused-for <DURATION>
 
 Flags:
       --unused-for <DURATION>  How long a credential may sit idle before prune
@@ -5585,7 +5581,7 @@ Global flags:
 ## `phux pair revoke`
 
 ```text
-Revoke every generation of a credential for new connections.
+Revoke every generation of a credential for new connections
 
 A `sha256:` id names an enrolled workload client certificate (the id `phux host
 add` and `phux workload add-key` print); it is revoked in the workload registry,
@@ -5612,7 +5608,7 @@ Global flags:
 ## `phux pair rotate`
 
 ```text
-Replace a credential's bearer secret with a bounded overlap.
+Replace a credential's bearer secret with a bounded overlap
 
 Usage: phux pair rotate [--overlap-seconds <SECONDS>] <CREDENTIAL_ID>
 
@@ -5879,16 +5875,16 @@ file.
 Usage: phux plugin <SUBCOMMAND>
 
 Commands:
-  disable   Disable a configured plugin by id.
-  enable    Enable a configured plugin by id.
-  install   Fetch, build, validate, and link a plugin package.
-  link      Add or update a manifest entry in `config.toml`.
-  list      List configured plugin manifests. [aliases: ls]
-  log       Show recent plugin action and hook runs, oldest first.
-  new       Write a minimal plugin directory.
-  unlink    Remove a configured plugin by id. [aliases: rm, remove]
-  update    Re-fetch, rebuild, and revalidate installed plugins.
-  validate  Validate one manifest, or every configured manifest when omitted.
+  disable   Disable a configured plugin by id
+  enable    Enable a configured plugin by id
+  install   Fetch, build, validate, and link a plugin package
+  link      Add or update a manifest entry in `config.toml`
+  list      List configured plugin manifests [aliases: ls]
+  log       Show recent plugin action and hook runs, oldest first
+  new       Write a minimal plugin directory
+  unlink    Remove a configured plugin by id [aliases: rm, remove]
+  update    Re-fetch, rebuild, and revalidate installed plugins
+  validate  Validate one manifest, or every configured manifest when omitted
   help      Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -5901,7 +5897,7 @@ Global flags:
 ## `phux plugin disable`
 
 ```text
-Disable a configured plugin by id.
+Disable a configured plugin by id
 
 Usage: phux plugin disable [--json] <ID>
 
@@ -5919,7 +5915,7 @@ Global flags:
 ## `phux plugin enable`
 
 ```text
-Enable a configured plugin by id.
+Enable a configured plugin by id
 
 Usage: phux plugin enable [--json] <ID>
 
@@ -5937,7 +5933,7 @@ Global flags:
 ## `phux plugin install`
 
 ```text
-Fetch, build, validate, and link a plugin package.
+Fetch, build, validate, and link a plugin package
 
 REF is chosen in this order. An existing local directory is copied. An existing
 local file whose name ends in `.tar`, `.tar.gz`, or `.tgz` is extracted with the
@@ -5998,7 +5994,7 @@ Global flags:
 ## `phux plugin link`
 
 ```text
-Add or update a manifest entry in `config.toml`.
+Add or update a manifest entry in `config.toml`
 
 Usage: phux plugin link [--disabled] [--json] <MANIFEST>
 
@@ -6017,7 +6013,7 @@ Global flags:
 ## `phux plugin list`
 
 ```text
-List configured plugin manifests.
+List configured plugin manifests
 
 Usage: phux plugin list [--json]
 
@@ -6032,7 +6028,7 @@ Global flags:
 ## `phux plugin log`
 
 ```text
-Show recent plugin action and hook runs, oldest first.
+Show recent plugin action and hook runs, oldest first
 
 Every plugin action run (a TUI keybinding, `phux config run`, the MCP tool) and
 every server hook run appends one record to a bounded log in the state directory
@@ -6064,7 +6060,7 @@ Global flags:
 ## `phux plugin new`
 
 ```text
-Write a minimal plugin directory.
+Write a minimal plugin directory
 
 NAME is the plugin id (`hello`, `com.example.tools`). It is also the manifest
 `name` and, unless `--dir` is set, the directory created in the working
@@ -6092,7 +6088,7 @@ Global flags:
 ## `phux plugin unlink`
 
 ```text
-Remove a configured plugin by id.
+Remove a configured plugin by id
 
 Usage: phux plugin unlink [--json] <ID>
 
@@ -6110,7 +6106,7 @@ Global flags:
 ## `phux plugin update`
 
 ```text
-Re-fetch, rebuild, and revalidate installed plugins.
+Re-fetch, rebuild, and revalidate installed plugins
 
 Reads the managed directory's `plugins.lock`, re-fetches each recorded source
 (all of them, or just NAME), reruns its `[[build]]` steps, revalidates the
@@ -6141,7 +6137,7 @@ Global flags:
 ## `phux plugin validate`
 
 ```text
-Validate one manifest, or every configured manifest when omitted.
+Validate one manifest, or every configured manifest when omitted
 
 Usage: phux plugin validate [--json] [MANIFEST]
 
@@ -6172,17 +6168,17 @@ worktree` derives from the checkout path.
 Usage: phux project <SUBCOMMAND>
 
 Commands:
-  init     Write a starter `.phux/project.toml` into a checkout.
-  inspect  Map a git repository and its checked-out worktrees.
-  link     Link a session into a named project, on any machine.
-  list     List the `[[projects]]` catalog and whether each session is open.
+  init     Write a starter `.phux/project.toml` into a checkout
+  inspect  Map a git repository and its checked-out worktrees
+  link     Link a session into a named project, on any machine
+  list     List the `[[projects]]` catalog and whether each session is open
            [aliases: ls]
-  open     Attach to a project's session, building it from its recipe if absent.
+  open     Attach to a project's session, building it from its recipe if absent
   status   Report whether a recipe is approved: exit 0 trusted, 1 untrusted or
-           absent, 2 undeterminable.
-  trust    Validate a recipe and approve its exact bytes on this machine.
-  unlink   Clear a session's project link; it groups by its repository again.
-  untrust  Withdraw this machine's approval of a recipe.
+           absent, 2 undeterminable
+  trust    Validate a recipe and approve its exact bytes on this machine
+  unlink   Clear a session's project link; it groups by its repository again
+  untrust  Withdraw this machine's approval of a recipe
   help     Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6195,7 +6191,7 @@ Global flags:
 ## `phux project init`
 
 ```text
-Write a starter `.phux/project.toml` into a checkout.
+Write a starter `.phux/project.toml` into a checkout
 
 Refuses to overwrite an existing recipe. The starter is approved as written;
 editing it makes it untrusted until `phux project trust`.
@@ -6215,7 +6211,7 @@ Global flags:
 ## `phux project inspect`
 
 ```text
-Map a git repository and its checked-out worktrees.
+Map a git repository and its checked-out worktrees
 
 A local repo operation: it never contacts a phux server and never creates or
 deletes a worktree. Agents use it to map checkouts to sessions before spawning
@@ -6238,7 +6234,7 @@ Global flags:
 ## `phux project link`
 
 ```text
-Link a session into a named project, on any machine.
+Link a session into a named project, on any machine
 
 The link is stored on the server that owns SESSION, so every client (desktop,
 TUI, `phux ls`) sees it, and groups sessions by project name across hosts: a
@@ -6278,7 +6274,7 @@ Global flags:
 ## `phux project list`
 
 ```text
-List the `[[projects]]` catalog and whether each session is open.
+List the `[[projects]]` catalog and whether each session is open
 
 Usage: phux project list [--json]
 
@@ -6293,7 +6289,7 @@ Global flags:
 ## `phux project open`
 
 ```text
-Attach to a project's session, building it from its recipe if absent.
+Attach to a project's session, building it from its recipe if absent
 
 TARGET is a `[[projects]]` name or a directory (default: the current one);
 inside git, the checkout root is used. An unapproved recipe is shown and must be
@@ -6322,7 +6318,7 @@ Global flags:
 
 ```text
 Report whether a recipe is approved: exit 0 trusted, 1 untrusted or absent, 2
-undeterminable.
+undeterminable
 
 Usage: phux project status [--json] [TARGET]
 
@@ -6340,7 +6336,7 @@ Global flags:
 ## `phux project trust`
 
 ```text
-Validate a recipe and approve its exact bytes on this machine.
+Validate a recipe and approve its exact bytes on this machine
 
 The approval covers every worktree of the same repository and ends the moment
 one byte of the recipe changes.
@@ -6360,7 +6356,7 @@ Global flags:
 ## `phux project unlink`
 
 ```text
-Clear a session's project link; it groups by its repository again.
+Clear a session's project link; it groups by its repository again
 
 Only the link is cleared, never the free-text project a recipe or archive
 recorded.
@@ -6396,7 +6392,7 @@ Global flags:
 ## `phux project untrust`
 
 ```text
-Withdraw this machine's approval of a recipe.
+Withdraw this machine's approval of a recipe
 
 Usage: phux project untrust [TARGET]
 
@@ -6442,7 +6438,7 @@ phux rec mark "label"
 Usage: phux rec [FLAGS] [TARGET] [SUBCOMMAND]
 
 Commands:
-  mark  Post an asciicast marker to every recording in progress.
+  mark  Post an asciicast marker to every recording in progress
   help  Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -6494,7 +6490,7 @@ Global flags:
 ## `phux rec mark`
 
 ```text
-Post an asciicast marker to every recording in progress.
+Post an asciicast marker to every recording in progress
 
 Usage: phux rec mark [--json] <LABEL>
 
@@ -6540,23 +6536,25 @@ Global flags:
 ## `phux relay`
 
 ```text
-Run a standalone relay, or enroll a route with it
+Run a relay, enroll routes, or connect a server to one
 
 The relay is a separate rendezvous process for reaching a phux server that
 cannot accept inbound connections: the server dials OUT to the relay and
 registers a tunnel for a named route, remote consumers dial IN naming that
 route, and the relay splices the two as opaque bytes — it never reads what
-crosses. `run` serves in the foreground; `pair` enrolls a route name and mints
-the token the server's tunnel authenticates with. Relay state (the route-token
+crosses. On the relay, `run` serves in the foreground and `pair` enrolls a route
+name and mints the token the server's tunnel authenticates with; on the server,
+`connect` hands that token to its `[[connector]]`. Relay state (the route-token
 store and a self-signed certificate) lives at fixed paths under the phux state
 directory.
 
 Usage: phux relay <SUBCOMMAND>
 
 Commands:
-  pair  Enroll a route and mint (or rotate) its tunnel token.
-  run   Run the relay in the foreground.
-  help  Print this message or the help of the given subcommand(s)
+  connect  Have this machine's server dial a relay with a route's token
+  pair     Enroll a route and mint (or rotate) its tunnel token
+  run      Run the relay in the foreground
+  help     Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -6565,21 +6563,51 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux relay connect`
+
+```text
+Have this machine's server dial a relay with a route's token
+
+Reads the tunnel token `phux relay pair` printed from stdin (paste it at the
+prompt, or pipe it), stores it owner-only under the state directory, and writes
+the `[[connector]]` entry for RELAY, replacing one for the same relay. A
+connector needs `[policy] mode = "paired"`, so an unset mode is set. A running
+server is restarted in place, panes kept, and the command waits for the tunnel;
+otherwise the server dials when it next starts. Then `phux pair --relay-route
+ROUTE` mints device links.
+
+Usage: phux relay connect [--cert-fingerprint <FP>] [--json] <HOST:PORT>
+
+Arguments:
+  <HOST:PORT>  The relay's `HOST:PORT`, as consumers and this server reach it.
+
+Flags:
+      --cert-fingerprint <FP>  The relay certificate's SHA-256 fingerprint `phux
+                               relay pair` printed. Required unless RELAY is
+                               loopback.
+      --json                   Emit stable, versioned JSON on stdout instead of
+                               the human view. On failure, stdout stays empty
+                               and stderr carries one JSON error object.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux relay pair`
 
 ```text
-Enroll a route and mint (or rotate) its tunnel token.
+Enroll a route and mint (or rotate) its tunnel token
 
 Writes one entry binding a fresh secret token to NAME in the relay's route-token
-store and prints the token once, alongside the relay certificate's SHA-256
-fingerprint. Give both to the phux server that will dial out to this relay: the
-token authenticates its tunnel, and the fingerprint pins the relay's
-certificate. Pairing a route that is already enrolled REPLACES its token
-(rotation) — exactly one token per route. Revoke a route by deleting its line
-from the store. This never contacts a running relay — it only writes the token
-file, and a running relay picks the change up at the next tunnel handshake.
+store and prints the token once, with the relay certificate's SHA-256
+fingerprint and the `phux relay connect` command that hands both to the phux
+server. Pairing a route that is already enrolled REPLACES its token (rotation) —
+exactly one token per route. Revoke a route by deleting its line from the store.
+This never contacts a running relay; a running relay picks the change up at the
+next tunnel handshake.
 
-Usage: phux relay pair <--route <NAME>>
+Usage: phux relay pair --route <NAME> [--json]
 
 Flags:
       --route <NAME>   Route name the token is bound to. Consumers select the
@@ -6587,6 +6615,9 @@ Flags:
                        DNS label: `[a-z0-9-]`, at most 63 characters, no leading
                        or trailing hyphen. Anything else is rejected, never
                        normalized.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -6596,16 +6627,17 @@ Global flags:
 ## `phux relay run`
 
 ```text
-Run the relay in the foreground.
+Run the relay in the foreground
 
 Binds one QUIC endpoint on LISTEN and serves both relay legs on it: phux servers
 dial out from behind NAT and register a tunnel for their enrolled route, and
 remote consumers dial in naming a route, each spliced onto that route's live
 tunnel as opaque bytes. Enroll routes with `phux relay pair`; the token store is
 re-read whenever it changes, so pairing a new route (or revoking one by deleting
-its line) needs no restart. Serves until Ctrl-C.
+its line) needs no restart. Logs each tunnel and bridged consumer on stderr.
+Serves until Ctrl-C.
 
-Usage: phux relay run <--listen <HOST:PORT>> [--max-conns <N>]
+Usage: phux relay run --listen <HOST:PORT> [--max-conns <N>]
 
 Flags:
       --listen <HOST:PORT>  Address the relay's QUIC endpoint binds (e.g.
@@ -6680,9 +6712,8 @@ given a report path can `cat` it or run `phux report show`.
 Usage: phux report [--json] [SUBCOMMAND]
 
 Commands:
-  new   Write a logs-and-version bundle (no live screen). Prefer the TUI action
-        (`C-a B`) while attached so the session and pane are included.
-  show  Print one report. Omit ID to show the latest.
+  new   Write a logs-and-version bundle (no live screen)
+  show  Print one report
   help  Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6698,8 +6729,10 @@ Global flags:
 ## `phux report new`
 
 ```text
-Write a logs-and-version bundle (no live screen). Prefer the TUI action (`C-a
-B`) while attached so the session and pane are included.
+Write a logs-and-version bundle (no live screen)
+
+Prefer the TUI action (`C-a B`) while attached so the session and pane are
+included.
 
 Usage: phux report new [--json] [NOTE]…
 
@@ -6719,7 +6752,9 @@ Global flags:
 ## `phux report show`
 
 ```text
-Print one report. Omit ID to show the latest.
+Print one report
+
+Omit ID to show the latest.
 
 Usage: phux report show [--json] [ID]
 
@@ -6791,10 +6826,10 @@ them attaches or resizes.
 Usage: phux resource <SUBCOMMAND>
 
 Commands:
-  execution  Read or wait for one exact durable execution; outputs JSON.
-  methods    List the methods a resource answers on this server.
-  show       Show one resource: kind, lifecycle, exit, process, tags, agent.
-  wait       Wait until a resource's process exits.
+  execution  Read or wait for one exact durable execution; outputs JSON
+  methods    List the methods a resource answers on this server
+  show       Show one resource: kind, lifecycle, exit, process, tags, agent
+  wait       Wait until a resource's process exits
   help       Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -6807,9 +6842,9 @@ Global flags:
 ## `phux resource execution`
 
 ```text
-Read or wait for one exact durable execution; outputs JSON.
+Read or wait for one exact durable execution; outputs JSON
 
-Usage: phux resource execution <--request-json <JSON>> [--remote <HOST>]
+Usage: phux resource execution --request-json <JSON> [--remote <HOST>]
 
 Flags:
       --request-json <JSON>  Exact execution identity and optional
@@ -6825,7 +6860,7 @@ Global flags:
 ## `phux resource methods`
 
 ```text
-List the methods a resource answers on this server.
+List the methods a resource answers on this server
 
 Each method's verb, whether it changes state, and whether it is available here:
 a method another kind owns, or one that needs a feature this server does not
@@ -6849,7 +6884,7 @@ Global flags:
 ## `phux resource show`
 
 ```text
-Show one resource: kind, lifecycle, exit, process, tags, agent.
+Show one resource: kind, lifecycle, exit, process, tags, agent
 
 Prints `key: value` lines, or with `--json` the stable document. Read-only:
 never attaches or resizes. `controller` is the connection that last typed into a
@@ -6877,7 +6912,7 @@ Global flags:
 ## `phux resource wait`
 
 ```text
-Wait until a resource's process exits.
+Wait until a resource's process exits
 
 Exit 0 when it exited (now or earlier, while the server still holds it), 1 when
 it is gone (it closed unretained, or never existed), 124 at `--timeout`, 2 for a
@@ -7111,7 +7146,7 @@ user's `$SHELL` inside a real PTY, and serves `ATTACH` requests until Ctrl-C.
 Usage: phux server [FLAGS] [SUBCOMMAND]
 
 Commands:
-  permissions  Show the macOS privacy grants the running server holds.
+  permissions  Show the macOS privacy grants the running server holds
   help         Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -7219,7 +7254,7 @@ Global flags:
 ## `phux server permissions`
 
 ```text
-Show the macOS privacy grants the running server holds.
+Show the macOS privacy grants the running server holds
 
 macOS charges every program in a pane to the server, so Full Disk Access, Screen
 Recording and Accessibility are the server's to hold. Lists each as `granted`,
@@ -7261,12 +7296,12 @@ process died with the host: `phux restore` relaunches them.
 Usage: phux service <SUBCOMMAND>
 
 Commands:
-  install     Write the unit and hand it to the init system.
-  logs        Show the supervised server's log.
-  prune-logs  Delete the accumulated per-pid `client-*.log` files.
-  reconcile   Bring an installed unit's restart policy up to date, in place.
-  status      Report whether a unit is installed and running.
-  uninstall   Unload the unit and remove what `install` wrote.
+  install     Write the unit and hand it to the init system
+  logs        Show the supervised server's log
+  prune-logs  Delete the accumulated per-pid `client-*.log` files
+  reconcile   Bring an installed unit's restart policy up to date, in place
+  status      Report whether a unit is installed and running
+  uninstall   Unload the unit and remove what `install` wrote
   help        Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -7279,7 +7314,7 @@ Global flags:
 ## `phux service install`
 
 ```text
-Write the unit and hand it to the init system.
+Write the unit and hand it to the init system
 
 Idempotent: rerunning reconciles an existing unit, so changing a listener
 address is `install` again with the new flag.
@@ -7334,7 +7369,7 @@ Global flags:
 ## `phux service logs`
 
 ```text
-Show the supervised server's log.
+Show the supervised server's log
 
 Usage: phux service logs [-f --follow] [-n --lines <LINES>]
 
@@ -7351,7 +7386,7 @@ Global flags:
 ## `phux service prune-logs`
 
 ```text
-Delete the accumulated per-pid `client-*.log` files.
+Delete the accumulated per-pid `client-*.log` files
 
 Usage: phux service prune-logs [--dry-run]
 
@@ -7366,7 +7401,7 @@ Global flags:
 ## `phux service reconcile`
 
 ```text
-Bring an installed unit's restart policy up to date, in place.
+Bring an installed unit's restart policy up to date, in place
 
 Rewrites only the keys that carry the restart policy and leaves every other byte
 of the unit alone, so the listeners, hub mode and socket baked into it by an
@@ -7392,7 +7427,7 @@ Global flags:
 ## `phux service status`
 
 ```text
-Report whether a unit is installed and running.
+Report whether a unit is installed and running
 
 Usage: phux service status
 
@@ -7406,7 +7441,7 @@ Global flags:
 ## `phux service uninstall`
 
 ```text
-Unload the unit and remove what `install` wrote.
+Unload the unit and remove what `install` wrote
 
 Usage: phux service uninstall
 
@@ -7601,10 +7636,10 @@ older clients show.
 Usage: phux slot <SUBCOMMAND>
 
 Commands:
-  add   Make PANE the last tab of the slot showing TO.
-  next  Make the next tab the slot's default.
-  out   Give the tab PANE a slot of its own, split beside the one it left.
-  prev  Make the previous tab the slot's default.
+  add   Make PANE the last tab of the slot showing TO
+  next  Make the next tab the slot's default
+  out   Give the tab PANE a slot of its own, split beside the one it left
+  prev  Make the previous tab the slot's default
   help  Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -7617,11 +7652,11 @@ Global flags:
 ## `phux slot add`
 
 ```text
-Make PANE the last tab of the slot showing TO.
+Make PANE the last tab of the slot showing TO
 
 PANE leaves wherever it was: its own split collapses, or it leaves another slot.
 
-Usage: phux slot add <--to <PANE>> [--json] <PANE>
+Usage: phux slot add --to <PANE> [--json] <PANE>
 
 Arguments:
   <PANE>  The pane to make a tab.
@@ -7638,7 +7673,7 @@ Global flags:
 ## `phux slot next`
 
 ```text
-Make the next tab the slot's default.
+Make the next tab the slot's default
 
 Usage: phux slot next [--json] [PANE]
 
@@ -7657,7 +7692,7 @@ Global flags:
 ## `phux slot out`
 
 ```text
-Give the tab PANE a slot of its own, split beside the one it left.
+Give the tab PANE a slot of its own, split beside the one it left
 
 Usage: phux slot out [FLAGS] <PANE>
 
@@ -7681,7 +7716,7 @@ Global flags:
 ## `phux slot prev`
 
 ```text
-Make the previous tab the slot's default.
+Make the previous tab the slot's default
 
 Usage: phux slot prev [--json] [PANE]
 
@@ -7917,9 +7952,9 @@ snapshot #web`.
 Usage: phux tag <SUBCOMMAND>
 
 Commands:
-  add   Add one or more tags to each pane a selector resolves to.
-  ls    List the tags on each pane a selector resolves to. [aliases: list]
-  rm    Remove one or more tags from each pane a selector resolves to. [aliases:
+  add   Add one or more tags to each pane a selector resolves to
+  ls    List the tags on each pane a selector resolves to [aliases: list]
+  rm    Remove one or more tags from each pane a selector resolves to [aliases:
         remove]
   help  Print this message or the help of the given subcommand(s)
 
@@ -7933,7 +7968,7 @@ Global flags:
 ## `phux tag add`
 
 ```text
-Add one or more tags to each pane a selector resolves to.
+Add one or more tags to each pane a selector resolves to
 
 Usage: phux tag add [--json] <TARGET> <TAGS>…
 
@@ -7954,7 +7989,7 @@ Global flags:
 ## `phux tag ls`
 
 ```text
-List the tags on each pane a selector resolves to.
+List the tags on each pane a selector resolves to
 
 Usage: phux tag ls [--json] <TARGET>
 
@@ -7974,7 +8009,7 @@ Global flags:
 ## `phux tag rm`
 
 ```text
-Remove one or more tags from each pane a selector resolves to.
+Remove one or more tags from each pane a selector resolves to
 
 Usage: phux tag rm [--json] <TARGET> <TAGS>…
 
@@ -8036,12 +8071,11 @@ intent together; a receipt is not process or task completion.
 Usage: phux terminal <SUBCOMMAND>
 
 Commands:
-  create     Create, place and start a terminal from one strict JSON intention.
+  create     Create, place, and start a terminal from one strict JSON intention
   operation  Recover a retained creation receipt without executing or retrying
-             anything. A missing receipt means unknown, not that the original
-             request was refused.
+             anything
   run        Start argv directly in a new terminal and wait for that exact
-             execution.
+             execution
   help       Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -8054,13 +8088,13 @@ Global flags:
 ## `phux terminal create`
 
 ```text
-Create, place and start a terminal from one strict JSON intention.
+Create, place, and start a terminal from one strict JSON intention
 
 Use `api describe terminal.create` for the complete nested request schema. Argv
 runs in a new process, never by typing into an existing shell. The resource and
 failed/completed execution remain until explicit removal.
 
-Usage: phux terminal create <--request-json <JSON>>
+Usage: phux terminal create --request-json <JSON>
 
 Flags:
       --request-json <JSON>  JSON intention containing `idempotency_key`,
@@ -8074,8 +8108,9 @@ Global flags:
 ## `phux terminal operation`
 
 ```text
-Recover a retained creation receipt without executing or retrying anything. A
-missing receipt means unknown, not that the original request was refused.
+Recover a retained creation receipt without executing or retrying anything
+
+A missing receipt means unknown, not that the original request was refused.
 
 Usage: phux terminal operation <FLAGS>
 
@@ -8134,13 +8169,13 @@ everything else is local.
 Usage: phux theme <SUBCOMMAND>
 
 Commands:
-  install  Install a theme from a git URL or a local directory.
-  list     List installed and plugin-provided themes; `*` marks the selected
-           one. [aliases: ls]
-  remove   Remove an installed theme by name. [aliases: rm]
-  set      Select a theme: write `[theme] name` (or `file`) and signal a reload.
+  install  Install a theme from a git URL or a local directory
+  list     List installed and plugin-provided themes; `*` marks the selected one
+           [aliases: ls]
+  remove   Remove an installed theme by name [aliases: rm]
+  set      Select a theme: write `[theme] name` (or `file`) and signal a reload
   show     Show a theme's resolved colours, or the selected theme's when NAME is
-           omitted.
+           omitted
   help     Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -8153,7 +8188,7 @@ Global flags:
 ## `phux theme install`
 
 ```text
-Install a theme from a git URL or a local directory.
+Install a theme from a git URL or a local directory
 
 SOURCE is cloned with the system `git` (or copied) into the managed theme
 directory (`$XDG_DATA_HOME/phux/themes`, else `~/.local/share/phux/themes`)
@@ -8179,7 +8214,7 @@ Global flags:
 ## `phux theme list`
 
 ```text
-List installed and plugin-provided themes; `*` marks the selected one.
+List installed and plugin-provided themes; `*` marks the selected one
 
 Usage: phux theme list [--json]
 
@@ -8194,7 +8229,7 @@ Global flags:
 ## `phux theme remove`
 
 ```text
-Remove an installed theme by name.
+Remove an installed theme by name
 
 A plugin-provided theme is refused here: disable the plugin instead.
 
@@ -8213,7 +8248,7 @@ Global flags:
 ## `phux theme set`
 
 ```text
-Select a theme: write `[theme] name` (or `file`) and signal a reload.
+Select a theme: write `[theme] name` (or `file`) and signal a reload
 
 With NAME, the catalog entry must exist and load. With `--file`, any
 `colors.toml` path is accepted (`~/` expands), so pointing it at
@@ -8237,7 +8272,7 @@ Global flags:
 ## `phux theme show`
 
 ```text
-Show a theme's resolved colours, or the selected theme's when NAME is omitted.
+Show a theme's resolved colours, or the selected theme's when NAME is omitted
 
 Prints the mode, every semantic colour after Omarchy's fallback cascade, the
 shared palette-0..15 mapping, and the foreground-on- background contrast ratio.
@@ -8680,18 +8715,17 @@ with no restart.
 Usage: phux workload [--json] <SUBCOMMAND>
 
 Commands:
-  add-key        Enroll a client certificate, or sign a CSR into one.
-  authority      Print the workload CA fingerprint.
+  add-key        Enroll a client certificate, or sign a CSR into one
+  authority      Print the workload CA fingerprint
   grant          Add one scope grant to an enrolled credential, without
-                 re-pairing.
-  list           List enrolled credentials.
+                 re-pairing
+  list           List enrolled credentials
   repair-paired  Restore full control to a device enrolled with the old pairing
-                 ceiling.
+                 ceiling
   revoke         Revoke a credential: new connections are refused and live ones
-                 end.
-  sync-managed   Replace an organization's managed credentials with one
-                 document.
-  ungrant        Remove one scope grant from an enrolled credential.
+                 end
+  sync-managed   Replace an organization's managed credentials with one document
+  ungrant        Remove one scope grant from an enrolled credential
   help           Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -8705,7 +8739,7 @@ Global flags:
 ## `phux workload add-key`
 
 ```text
-Enroll a client certificate, or sign a CSR into one.
+Enroll a client certificate, or sign a CSR into one
 
 Reads one PEM client certificate issued by this authority, or one PEM
 certificate signing request, from stdin or from `--file`. Key material is never
@@ -8771,7 +8805,7 @@ Global flags:
 ## `phux workload authority`
 
 ```text
-Print the workload CA fingerprint.
+Print the workload CA fingerprint
 
 Prints only the `sha256:` fingerprint clients pin. `--init` creates the CA first
 when none exists; an existing CA is never replaced. `--rotate` replaces it with
@@ -8797,7 +8831,7 @@ Global flags:
 ## `phux workload grant`
 
 ```text
-Add one scope grant to an enrolled credential, without re-pairing.
+Add one scope grant to an enrolled credential, without re-pairing
 
 The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope` takes it,
 plus the control selectors `page`, `window`, `display` and `page:HOST`,
@@ -8824,7 +8858,7 @@ Global flags:
 ## `phux workload list`
 
 ```text
-List enrolled credentials.
+List enrolled credentials
 
 Usage: phux workload list [--public-keys]
 
@@ -8840,7 +8874,7 @@ Global flags:
 ## `phux workload repair-paired`
 
 ```text
-Restore full control to a device enrolled with the old pairing ceiling.
+Restore full control to a device enrolled with the old pairing ceiling
 
 Adds organize and terminate only to the named active human device whose ceiling
 is exactly the legacy full-control pairing grant. Custom scopes, automation,
@@ -8864,7 +8898,7 @@ Global flags:
 ## `phux workload revoke`
 
 ```text
-Revoke a credential: new connections are refused and live ones end.
+Revoke a credential: new connections are refused and live ones end
 
 A running server observes the registry write and closes every connection the
 credential admitted; no restart is needed. `phux pair revoke` accepts the same
@@ -8889,7 +8923,7 @@ Global flags:
 ## `phux workload sync-managed`
 
 ```text
-Replace an organization's managed credentials with one document.
+Replace an organization's managed credentials with one document
 
 Reads `{"v":1,"org":NAME,"roots":[PEM CA...],"credentials":[...]}` from FILE, or
 stdin when FILE is `-` or omitted. Each credential is a PEM `certificate` that
@@ -8900,7 +8934,7 @@ organization managed before is replaced; others are untouched. A removed
 credential's live connections end. A managed credential connects without a
 pairing token, so only feed this a document from a control plane you trust.
 
-Usage: phux workload sync-managed <--org <NAME>> [FILE]
+Usage: phux workload sync-managed --org <NAME> [FILE]
 
 Arguments:
   [FILE]  The document, or `-` for stdin (the default).
@@ -8918,7 +8952,7 @@ Global flags:
 ## `phux workload ungrant`
 
 ```text
-Remove one scope grant from an enrolled credential.
+Remove one scope grant from an enrolled credential
 
 Removes every scope equal to the one given. A running server ends the device's
 live connections that relied on it; the device reconnects with what remains. The
@@ -8951,12 +8985,10 @@ state and the server knows no git.
 Usage: phux worktree <SUBCOMMAND>
 
 Commands:
-  list    List the repository's worktrees and their bound sessions. [aliases:
-          ls]
-  new     Create a worktree and a session rooted in it.
-  open    Open the session bound to an existing worktree, creating it if absent.
-  remove  Remove a worktree, killing the session bound to it first. [aliases:
-          rm]
+  list    List the repository's worktrees and their bound sessions [aliases: ls]
+  new     Create a worktree and a session rooted in it
+  open    Open the session bound to an existing worktree, creating it if absent
+  remove  Remove a worktree, killing the session bound to it first [aliases: rm]
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -8969,7 +9001,7 @@ Global flags:
 ## `phux worktree list`
 
 ```text
-List the repository's worktrees and their bound sessions.
+List the repository's worktrees and their bound sessions
 
 The `bound` column reads `live` when a session by the derived name exists, `-`
 when it does not, and `?` when no server is running — "no server" and "no
@@ -8992,7 +9024,7 @@ Global flags:
 ## `phux worktree new`
 
 ```text
-Create a worktree and a session rooted in it.
+Create a worktree and a session rooted in it
 
 An existing local branch is checked out; a missing one is created, from `--from`
 when given and from the current HEAD otherwise. The worktree lands beside the
@@ -9029,7 +9061,7 @@ Global flags:
 ## `phux worktree open`
 
 ```text
-Open the session bound to an existing worktree, creating it if absent.
+Open the session bound to an existing worktree, creating it if absent
 
 Idempotent: an already-live session is reported and left alone, so scripts and
 keybindings can call this without checking first.
@@ -9056,7 +9088,7 @@ Global flags:
 ## `phux worktree remove`
 
 ```text
-Remove a worktree, killing the session bound to it first.
+Remove a worktree, killing the session bound to it first
 
 The session is killed before git runs, because git refuses to remove a worktree
 whose files are held open and a shell sitting in that directory holds it open.

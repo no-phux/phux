@@ -16,7 +16,7 @@ const DEFAULT_TAIL: u32 = 20;
 /// Subcommands of `phux audit`.
 #[derive(Debug, Subcommands)]
 pub(crate) enum AuditAction {
-    /// Print the newest records, oldest first.
+    /// Print the newest records, oldest first
     Tail {
         /// How many records to print; 20 when omitted.
         #[usage(short = 'n', long, value_name = "NUM")]
@@ -32,7 +32,7 @@ pub(crate) enum AuditAction {
         json: bool,
     },
     /// Check the hash chain and every signature; exits 1 at the first bad
-    /// record and names its seq.
+    /// record and names its seq
     Verify {
         #[usage(flatten)]
         json: super::JsonOpt,

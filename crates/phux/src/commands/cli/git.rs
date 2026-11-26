@@ -19,7 +19,7 @@ pub(crate) struct GitArgs {
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum GitAction {
-    /// Branch, upstream, and every changed file with line counts.
+    /// Branch, upstream, and every changed file with line counts
     Status {
         /// Target selector: session, session:group, session:group.pane,
         /// @id, or `.` (focused).
@@ -27,7 +27,7 @@ pub(crate) enum GitAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// One file's unified diff (unstaged unless --staged or --untracked).
+    /// One file's unified diff (unstaged unless --staged or --untracked)
     Diff {
         /// Target selector, as for `status`.
         target: String,
@@ -42,7 +42,7 @@ pub(crate) enum GitAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// One page of history, newest first.
+    /// One page of history, newest first
     Log {
         /// Target selector, as for `status`.
         target: String,
@@ -57,21 +57,21 @@ pub(crate) enum GitAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// Local and remote-tracking branches.
+    /// Local and remote-tracking branches
     Branches {
         /// Target selector, as for `status`.
         target: String,
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// The current branch's pull request and its checks, from the host's `gh`.
+    /// The current branch's pull request and its checks, from the host's `gh`
     Pr {
         /// Target selector, as for `status`.
         target: String,
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// One commit: message, files with line counts, and the patch.
+    /// One commit: message, files with line counts, and the patch
     Show {
         /// Target selector, as for `status`.
         target: String,
