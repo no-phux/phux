@@ -23,6 +23,7 @@ const PAD_STEP: f32 = 16.0;
 pub enum Latch {
     Ctrl,
     Alt,
+    Shift,
 }
 
 /// A key pressed on the drawn keyboard or the accessory bar.
@@ -62,8 +63,8 @@ pub struct Phone {
     pub swipe: swipe::Swipe,
     pub ctrl: bool,
     pub alt: bool,
-    /// Shift held for the next key: a hardware or system keyboard's, as it
-    /// combines with a latched ⌃ or ⌥.
+    /// Shift held for the next key, or to keep a terminal hold's selection
+    /// local while a program tracks the mouse.
     pub shift: bool,
     /// The keyboard's own shift: the next letter is a capital.
     pub capital: bool,
@@ -124,9 +125,11 @@ impl Phone {
     }
 
     /// Drop a gesture in flight; whether there was one. Its target was read
-    /// from the previous connection's screen.
+    /// from the previous connection's screen. The caller also retires the
+    /// terminal touch through Desk's selection/capture cleanup.
     pub(super) fn forget_gesture(&mut self) -> bool {
         let moving = self.navigation.is_some()
+            || self.touch.is_some()
             || self.fling.is_some()
             || self.refit.is_some()
             || self.travel != [0.0; 2]
@@ -147,6 +150,7 @@ impl Phone {
         match latch {
             Latch::Ctrl => self.ctrl,
             Latch::Alt => self.alt,
+            Latch::Shift => self.shift,
         }
     }
 
@@ -325,6 +329,7 @@ impl Desk {
         let held = match latch {
             Latch::Ctrl => &mut phone.ctrl,
             Latch::Alt => &mut phone.alt,
+            Latch::Shift => &mut phone.shift,
         };
         *held = !*held;
     }

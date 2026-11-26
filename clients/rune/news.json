@@ -1,5 +1,10 @@
 [
   {
+    "date": "2026-11-26",
+    "title": "Phone navigation, within reach",
+    "body": "In Rune 0.1.58: swipe between sessions or pull Sessions in from the left edge. Return stays in reach and Shift keeps text selection local. Reconnecting cancels unfinished drags."
+  },
+  {
     "date": "2026-11-25",
     "title": "Attach photos and files on iPhone",
     "body": "The paperclip on the iOS key bar sends photos, files and pasted images to the pane you're in."

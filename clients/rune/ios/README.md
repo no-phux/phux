@@ -5,6 +5,8 @@ system text input and Keychain. Upstream Rune's `embed::LayerHost` owns the
 Metal surface and the existing Phux `Desk`/phone view. There is no framework
 fork, duplicate terminal renderer, winit mobile loop or desktop CLI bootstrap.
 
+For native held-menu callback ownership, see [Native menus](./NATIVE_MENUS.md).
+
 ## Build and qualify
 
 Requires Xcode with iOS simulator SDK, Rust's `aarch64-apple-ios-sim` and
@@ -119,7 +121,7 @@ prove the real OS transition; launch success alone never qualifies it.
 After the first terminal screenshot the runner posts a Darwin notification
 inside its simulator; the probe records the top bar's UIKit Liquid Glass
 controls, taps the real glass back button, and reports once the Sessions
-page has removed the covered bar's glass and shown its own glass dock
+page has removed the covered bar's glass and shown its own glass dock and Done
 (`rune-glass.json`, `ios-glass-sessions.png`). It never adopts a user's simulator
 or production socket. Qualification-only socket/command launch arguments
 are compiled out on devices.
@@ -309,20 +311,7 @@ not a guessed delay after switching apps.
 
 ## Input ownership
 
-UIKit implements `UITextInput`; Rune paints the terminal and fields. Terminal
-capture keeps marked text/dictation local until committed. Paste retains the
-existing confirmation boundary. App fields are edited synchronously through
-their app-owned `TextEdit`, not an unaddressed deferred IME event. Snapshots
-carry target identity, revision and UTF-16 selection; stale owners and split
-surrogates fail closed. Unknown/inert fields never fall through to terminal
-input. Return uses the same palette/search/rename/inbox/question handlers.
-The terminal accessory's one-shot Ctrl/Alt/Shift latches apply to system
-keyboard input too. Native fields use their system keyboard modifiers;
-their accessory offers Done instead of terminal latches. Tap the field to
-resume editing after Done. Accessory keys never type through a focused or
-held ACP editor into the terminal behind it. The native accessory is laid
-out after every sheet's modal content, so its controls remain tappable;
-unmounted ACP fields lose only focus/preedit, never their committed draft.
+See [Native input](./NATIVE_INPUT.md) for editor ownership and accessory keys.
 
 Remaining qualification/integration is tracked in Beads: provisioned device
 and TestFlight, OS-driven keyboard/IME tests, physical-camera recognition and

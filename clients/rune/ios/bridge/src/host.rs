@@ -349,13 +349,29 @@ pub unsafe extern "C" fn phux_rune_ios_press(pointer: *mut c_void, id: *const c_
 
 /// The native long-press menu picked verb `id`: true when it named one.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_rune_ios_menu_pick(pointer: *mut c_void, id: *const c_char) -> bool {
+pub unsafe extern "C" fn phux_rune_ios_menu_pick(
+    pointer: *mut c_void,
+    request: u64,
+    id: *const c_char,
+) -> bool {
     attempt(|| {
         let host = unsafe { host(pointer)? };
-        Ok(mobile::menu_pick(host.layer.runtime_mut(), unsafe {
-            text(id)?
-        }))
+        Ok(mobile::menu_pick(
+            host.layer.runtime_mut(),
+            request,
+            unsafe { text(id)? },
+        ))
     })
+}
+
+/// The native menu disappeared; a selected correlated action may still follow.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_menu_dismiss(pointer: *mut c_void, request: u64) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        mobile::menu_dismiss(host.layer.runtime_mut(), request);
+        Ok(())
+    });
 }
 
 /// A tapped card, widget or Dynamic Island: true when the link was one.

@@ -150,9 +150,21 @@ impl Desk {
     pub(super) fn reopen_after_reconnect(&mut self, _client: &Client) -> bool {
         self.connection.fetched.clear();
         self.connection.fitted.clear();
-        self.phone
+        let moving = self
+            .phone
             .as_mut()
-            .is_some_and(super::phone::Phone::forget_gesture)
+            .is_some_and(super::phone::Phone::forget_gesture);
+        let native_menu = self.native.as_ref().is_some_and(|native| {
+            native.held_menu.is_some()
+                || self
+                    .phone
+                    .as_ref()
+                    .is_some_and(|phone| phone.menu.is_some())
+        });
+        // Retire the touch, not just its preview. This also releases any
+        // selection or program mouse capture through the existing cleanup.
+        self.phone_interrupted();
+        moving || native_menu
     }
 
     /// Let go of views the engine forgot. A terminal whose replica leaves

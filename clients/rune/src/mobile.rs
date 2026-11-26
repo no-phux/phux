@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime};
 
 pub use crate::desk::Desk as State;
 pub use crate::desk::native_input::{Action, Bridge as Input, Operation};
+pub use crate::desk::phone::navigation::native::{menu_dismiss, menu_pick};
 pub use phux_client_runtime::TlsClientIdentity;
 pub use phux_client_runtime::enroll::{DeviceSigner, enroll_target_blocking, held_identity};
 pub use rune;
@@ -31,6 +32,8 @@ pub struct Platform {
     /// asked for.
     pub(crate) attaching: VecDeque<crate::desk::phone::attach::Attaching>,
     pub(crate) attachments: u64,
+    /// At most one source-bound native menu answer, including visual dismissal.
+    pub(crate) held_menu: Option<crate::desk::phone::navigation::native::Request>,
     /// What [`crate::desk::presence`] last told the host it came from.
     pub(crate) presence: Option<crate::desk::presence::Inputs>,
     /// Where a computer posts this phone's agent counts while it is closed.
@@ -87,6 +90,7 @@ impl Platform {
             attach_requested: false,
             attaching: VecDeque::new(),
             attachments: 0,
+            held_menu: None,
             presence: None,
             live: None,
             away_since: None,
@@ -375,6 +379,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
         attach_requested: false,
         attaching: VecDeque::new(),
         attachments: 0,
+        held_menu: None,
         presence: None,
         live: None,
         active: true,
@@ -455,8 +460,8 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 mod host;
 mod invite;
 pub use host::{
-    attach, controls, edge_srgb, menu_pick, open_link, paste, path_changed, press,
-    set_accessibility, set_live, take_requests, viewport_changed, zoom,
+    attach, controls, edge_srgb, open_link, paste, path_changed, press, set_accessibility,
+    set_live, take_requests, viewport_changed, zoom,
 };
 pub use invite::parse_pairing_invite;
 

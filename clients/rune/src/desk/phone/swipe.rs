@@ -193,24 +193,27 @@ impl Desk {
 
     /// A paged-away session still selected after [`LANDING`] did not
     /// switch: bring it back rather than leave the stage empty.
-    pub(in crate::desk) fn land_swipe(&mut self, tx: &mut rune::Tx) {
+    pub(in crate::desk) fn land_swipe(&mut self, tx: &mut rune::Tx) -> bool {
         let clock = self.clock;
         let selected = self.selected_session_name();
         let Some(phone) = self.phone.as_mut() else {
-            return;
+            return false;
         };
         let Some((name, since)) = &phone.swipe.leaving else {
-            return;
+            return false;
         };
         if selected.as_ref() != Some(name) {
             phone.swipe.leaving = None;
+            true
         } else if clock - since >= LANDING {
             phone.swipe.leaving = None;
             phone.swipe.arrival = None;
+            true
         } else {
             tx.wake_after(std::time::Duration::from_secs_f64(
                 LANDING - (clock - since),
             ));
+            false
         }
     }
 

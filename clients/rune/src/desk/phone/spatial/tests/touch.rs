@@ -262,11 +262,54 @@ fn a_hold_hands_a_tracking_program_its_drag_unless_shift_is_latched() {
         Some(&(MouseAction::Release, MouseButton::Left))
     );
     assert!(rt.copy_request.is_none());
-    // ⇧ keeps the selection local, as Shift does on a desktop.
-    rt.update(|d, _| d.phone.as_mut().unwrap().shift = true);
+    // Use the real reachable accessory action, not a manually set model bit.
+    assert!(rt.accessibility_action("phone-latch-Shift", rune::accesskit::Action::Click, None));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.phone.as_ref().unwrap().shift);
     hold_and_drag(&mut rt, 2.0);
     assert!(mice(&outbound(&client)).is_empty());
     assert!(rt.copy_request.take().is_some());
+}
+
+#[test]
+fn reconnect_releases_selection_and_program_holds_once_without_copying() {
+    for tracking in [false, true] {
+        let (client, mut rt) = fixture(true);
+        if tracking {
+            output(&client, 1, 1, b"\x1b[?1002h\x1b[?1006h");
+            poll(&mut rt);
+        }
+        let (x, y) = in_grid(&rt);
+        touch(&mut rt, Started, x, y);
+        tick(&mut rt, 1.0);
+        tick(&mut rt, 1.4);
+        let before = mice(&outbound(&client));
+        if tracking {
+            assert_eq!(before, [(MouseAction::Press, MouseButton::Left)]);
+            assert!(rt.state.connection.mouse_capture.is_some());
+        } else {
+            assert!(before.is_empty());
+            assert!(rt.state.pointer.held.is_some());
+            assert_ne!(rt.state.connection.gesture, 0);
+        }
+        rt.update(|d, _| assert!(d.reopen_after_reconnect(&client)));
+        assert!(rt.state.phone.as_ref().unwrap().touch.is_none());
+        assert!(rt.state.connection.mouse_capture.is_none());
+        assert!(rt.state.pointer.held.is_none());
+        assert_eq!(rt.state.connection.gesture, 0);
+        let released = mice(&outbound(&client));
+        let expected = if tracking {
+            vec![(MouseAction::Release, MouseButton::Left)]
+        } else {
+            vec![]
+        };
+        assert_eq!(released, expected);
+        touch(&mut rt, Moved, x + 90.0, y + 17.0);
+        touch(&mut rt, Ended, x + 90.0, y + 17.0);
+        tick(&mut rt, 1.7);
+        assert!(rt.copy_request.is_none(), "a cancelled hold copies nothing");
+        no_input(&client);
+    }
 }
 
 #[test]

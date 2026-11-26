@@ -50,9 +50,10 @@ void phux_rune_ios_touch(void *host, uint64_t identity, uint32_t phase,
 // A tap on the frame's native control `id` (its `controls`): runs that
 // control's press, as Rune's accessibility press would. False when none ran.
 bool phux_rune_ios_press(void *host, const char *id);
-// The frame's `menu` request picked verb `id`: runs it on the row last held.
-// False when `id` names no verb.
-bool phux_rune_ios_menu_pick(void *host, const char *id);
+// Answer only this exact frame menu request, original source and offered verb.
+bool phux_rune_ios_menu_pick(void *host, uint64_t request, const char *id);
+// Visual dismissal is not selection cancellation: a correlated action may follow.
+void phux_rune_ios_menu_dismiss(void *host, uint64_t request);
 // A tapped card, widget or Dynamic Island: `phux://inbox` or
 // `phux://pane/@N`. False when the link is neither.
 bool phux_rune_ios_open_link(void *host, const char *url);

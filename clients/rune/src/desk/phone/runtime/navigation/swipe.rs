@@ -181,6 +181,79 @@ fn a_short_edge_pull_slides_back_and_an_edge_scroll_still_scrolls() {
 }
 
 #[test]
+fn a_reconnect_retires_page_and_drawer_touches_but_a_new_finger_still_works() {
+    for edge in [false, true] {
+        let (client, mut rt) = scene();
+        let first = rt.state.selected_session_name();
+        let (middle, y) = middle(&rt);
+        let x = if edge { 4.0 } else { middle };
+        let dx = if edge { 200.0 } else { -200.0 };
+        rt.touch(9, Started, x, y, 1.0);
+        tick(&mut rt, 1.0);
+        rt.touch(9, Moved, x + dx, y, 1.016);
+        tick(&mut rt, 1.016);
+        assert!(swipe(&rt).paging || swipe(&rt).pull.is_some());
+        rt.update(|d, _| assert!(d.reopen_after_reconnect(&client)));
+        tick(&mut rt, 1.1);
+        rt.touch(9, Moved, x + dx, y, 1.2);
+        rt.touch(9, Ended, x + dx, y, 1.3);
+        tick(&mut rt, 1.3);
+        assert_eq!(rt.state.selected_session_name(), first, "old page touch");
+        assert_eq!(rt.state.phone_page(), None, "old drawer touch");
+        assert_eq!(swipe(&rt), &Default::default());
+        assert!(rt.state.connection.pending_session.is_none());
+
+        // The cancelled page springs home; the next finger lands on its
+        // settled terminal, not on the gap exposed by that animation.
+        for _ in 0..90 {
+            rt.frame(1.0 / 60.0);
+        }
+        rt.touch(10, Started, x, y, 2.0);
+        tick(&mut rt, 2.0);
+        rt.touch(10, Moved, x + dx, y, 2.016);
+        tick(&mut rt, 2.016);
+        rt.touch(10, Ended, x + dx, y, 2.3);
+        tick(&mut rt, 2.3);
+        if edge {
+            assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
+        } else {
+            assert_ne!(rt.state.selected_session_name(), first);
+        }
+        no_terminal_input(&client);
+    }
+}
+
+#[test]
+fn a_failed_page_landing_rebuilds_the_idle_stage_from_the_poll_alone() {
+    let (_client, mut rt) = scene();
+    let first = rt.state.selected_session_name().unwrap();
+    let since = rt.clock;
+    rt.update(|d, tx| {
+        d.clock = since;
+        let phone = d.phone.as_mut().unwrap();
+        phone.swipe.arrival = Some(-1.0);
+        phone.swipe.leaving = Some((first.clone(), since));
+        tx.instant();
+    });
+    rt.frame(0.0);
+    let key = format!("phone-session-page-{first}");
+    let stage = crate::ui::element(&rt, "phone-spatial-stage").rect;
+    assert!(crate::ui::element(&rt, &key).rect[0] < stage[0] - 100.0);
+    // This is the shared poll result Desk::poll consumes. No rt.update,
+    // input, cursor blink or client news may mask a lost invalidation.
+    rt.poll = Some(|d, clock, tx| {
+        d.clock = clock;
+        d.phone_touch_tick(tx)
+    });
+    for _ in 0..180 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(swipe(&rt).leaving.is_none(), "the deadline cleared state");
+    let page = crate::ui::element(&rt, &key).rect;
+    assert!((page[0] - stage[0]).abs() < 1.0, "{page:?} returns onstage");
+}
+
+#[test]
 fn return_is_pinned_beside_the_keyboard_and_sends_enter() {
     let (client, mut rt) = scene();
     let enter = crate::ui::element(&rt, "phone-key-Enter");
@@ -192,7 +265,10 @@ fn return_is_pinned_beside_the_keyboard_and_sends_enter() {
     let toggle = crate::ui::element(&rt, "phone-keyboard-toggle");
     assert!(enter.rect[0] > toggle.rect[0], "under the right thumb");
     assert!(enter.rect[2] >= 44.0 && enter.rect[3] >= 44.0);
-    assert!(rt.find("phone-latch-Shift").is_none(), "no ⇧ on the bar");
+    assert!(
+        rt.find("phone-latch-Shift").is_some(),
+        "local selection override"
+    );
     tap(&mut rt, "phone-key-Enter", 1.0);
     let keys: Vec<_> = client
         .take_outbound()

@@ -288,9 +288,9 @@ impl Desk {
     /// The gesture's clockwork, once a poll: a hold coming due, a scroll's
     /// speed, and a coast. True when the screen moved.
     pub(in crate::desk) fn phone_touch_tick(&mut self, tx: &mut Tx) -> bool {
-        self.land_swipe(tx);
+        let landed = self.land_swipe(tx);
         self.time_touch(tx);
-        self.coast(tx)
+        landed | self.coast(tx)
     }
 
     fn time_touch(&mut self, tx: &mut Tx) {
@@ -342,6 +342,9 @@ impl Desk {
     /// End whatever the finger was doing, as a cancelled release would: the
     /// app left the foreground with it down, or its release was lost.
     pub(crate) fn phone_interrupted(&mut self) {
+        if self.native.is_some() {
+            self.close_phone_menu();
+        }
         self.stop_coast();
         let Some(touch) = self.phone.as_mut().and_then(|p| p.touch.take()) else {
             return;
