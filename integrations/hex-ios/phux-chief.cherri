@@ -1,0 +1,19 @@
+#define name Phux Chief
+#define color purple
+#define glyph microphone
+#include 'actions/web'
+
+app Hex 'anomaly.hex.mobile' {
+    'DictateWithHexIntent'
+}
+action #Hex.DictateWithHexIntent dictateWithHex(): text
+
+const transcript = dictateWithHex()
+if transcript {
+    const receipt = jsonRequest("https://YOUR-MAC.YOUR-TAILNET.ts.net/hex-chief/", "POST", {
+        "text": "{transcript}"
+    }, {
+        "Authorization": "Bearer YOUR_BRIDGE_TOKEN"
+    })
+    showNotification("{receipt}", "Phux Chief", false)
+}
