@@ -47,19 +47,30 @@ fn write(bridge: &mut Bridge, rt: &mut Runtime<Desk>, text: &str) {
     settle(rt);
 }
 
+fn press_host_button(rt: &mut Runtime<Desk>, key: &str) {
+    let controls = crate::mobile::controls(rt);
+    assert!(
+        controls
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == key && c["enabled"] == true)
+    );
+    assert!(crate::mobile::press(rt, key));
+    settle(rt);
+}
+
 #[test]
 fn staged_input_only_reaches_its_pane_on_send_and_survives_refusal() {
     let (client, mut rt) = phone((393.0, 480.0), false);
     let mut bridge = Bridge::default();
     let raw = bridge.snapshot(&rt);
     assert_eq!(raw.kind, "terminal");
-    assert!(crate::mobile::press(&mut rt, "phone-compose"));
-    settle(&mut rt);
+    press_host_button(&mut rt, "phone-compose");
     write(&mut bridge, &mut rt, "printf 'hello 🦊'");
     assert_eq!(bridge.snapshot(&rt).text, "printf 'hello 🦊'");
     no_terminal_input(&client);
-    assert!(crate::mobile::press(&mut rt, "phone-compose-send"));
-    settle(&mut rt);
+    press_host_button(&mut rt, "phone-compose-send");
     let owner = rt.state.composer_owner().unwrap();
     let id = rt
         .state

@@ -163,8 +163,15 @@ pub fn controls(rt: &rune::Runtime<State>) -> Value {
     let controls = native.controls.borrow();
     let shown = controls.iter().filter_map(|control| {
         let ([x, y, w, h], opacity) = rt.presented(&control.key)?;
-        let centre = rt.element_at(x + w / 2.0, y + h / 2.0)?;
-        let uncovered = centre.key() == Some(control.key.as_str());
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let centre = rt.element_at(cx, cy)?;
+        // Painted controls include a Rune label or icon. Those children
+        // can be topmost; a competing sheet still wins the global pick.
+        let uncovered = if control.painted {
+            rt.element_at_in(&control.key, cx, cy).as_ref() == Some(&centre)
+        } else {
+            centre.key() == Some(control.key.as_str())
+        };
         (uncovered && opacity > 0.01 && w >= 1.0 && h >= 1.0).then(|| {
             json!({"id": control.key, "rect": [x, y, w, h], "opacity": opacity,
                 "label": control.label, "title": control.title, "symbol": control.symbol,
