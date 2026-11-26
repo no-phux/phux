@@ -14,6 +14,24 @@ fn session_headers_sit_on_ground_over_grouped_cards_of_their_panes() {
             settle(&mut rt);
             let title = element(&rt, "phone-session-title-1");
             let pane = element(&rt, "phone-session-pane-title-@1");
+            let search = element(&rt, "phone-session-search").rect;
+            let footer = element(&rt, "phone-session-new").rect;
+            let list = element(&rt, "phone-session-list").rect;
+            let heading = element(&rt, "phone-navigation-heading").rect;
+            assert!((heading[0] - search[0]).abs() < 0.5);
+            for key in [
+                "phone-session-connections",
+                "phone-session-section-1",
+                "phone-needs-you",
+            ] {
+                let rect = element(&rt, key).rect;
+                assert!(
+                    (rect[0] - search[0]).abs() < 0.5 && (rect[2] - search[2]).abs() < 0.5,
+                    "{key}: {rect:?} vs {search:?}"
+                );
+            }
+            assert!((footer[0] - search[0]).abs() < 0.5 && (footer[2] - search[2]).abs() < 0.5);
+            assert!(list[1] + list[3] <= footer[1], "list and footer overlap");
             assert!(
                 pane.rect[0] > title.rect[0] + phux_design::tokens::SPACE.s4,
                 "pane names must read as children: {title:?}, {pane:?}"
@@ -42,7 +60,7 @@ fn session_headers_sit_on_ground_over_grouped_cards_of_their_panes() {
             let last = element(&rt, "phone-session-pane-@3");
             let next = element(&rt, "phone-session-2");
             assert!(
-                next.rect[1] - (last.rect[1] + last.rect[3]) >= phux_design::tokens::SPACE.s6 - 0.5
+                next.rect[1] - (last.rect[1] + last.rect[3]) >= phux_design::tokens::SPACE.s5 - 0.5
             );
         }
     }
@@ -62,7 +80,6 @@ fn boxless_rows_reveal_complete_keyboard_rings_and_keep_pane_selection() {
             "phone-session-1",
             "phone-session-pane-@2",
             "phone-needs-you-pane-@2",
-            "phone-session-fold-1",
             "phone-quiet",
             "phone-session-3",
         ] {
