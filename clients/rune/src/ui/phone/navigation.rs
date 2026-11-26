@@ -109,43 +109,83 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     })
 }
 
-/// Sessions is a drawer from the left edge, where the thumb pulls it from:
-/// frosted glass over the blurred terminal, the phone's one blur. It slides
-/// in and out on the drawer spring, or follows a pulling finger exactly.
-/// Opaque where glass may not draw.
+/// Sessions comes in from the left edge, where the thumb pulls it from, as
+/// frost rather than a sliding panel: the terminal blurs in place under
+/// [`frost`] (the phone's one blur) while the list drifts a short way in
+/// behind the finger and sharpens. A let-go pull or a close fades it back
+/// off. Terminal actions is one glass page. Opaque where glass may not draw.
 fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El {
-    let sheet = p.glass_panel(
-        sheet,
+    if page != Page::Sessions {
+        return glass(sheet, p);
+    }
+    let shown = shown(pull, width);
+    let drift = p.space.s16;
+    // The list trails the frost, so it reads once the glass has come up
+    // behind it rather than as text floating on the terminal.
+    sheet
+        .offset(-drift * (1.0 - shown), 0.0)
+        .offset_motion(follow(pull, p))
+        .opacity(shown * shown)
+        .opacity_motion(follow(pull, p))
+        .transition(
+            rune::Transition::offset(-drift, 0.0)
+                .combined(rune::Transition::opacity())
+                .springs(p.motion.drawer),
+        )
+}
+
+/// The frost Sessions comes up on: the whole terminal blurred in place.
+/// Under a pulling finger it thickens, its blur and tint growing from
+/// clear to whole by the point a lift opens, so the terminal never shows
+/// crisp through the list. A sibling under the list, never inside a layer
+/// that fades as one, which would flatten what it blurs.
+pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
+    let phone = desk.phone.as_ref()?;
+    let pull = phone.swipe.pull.filter(|_| desk.phone_page().is_none());
+    let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
+    if page != Page::Sessions {
+        return None;
+    }
+    let p = &super::page_look(desk);
+    let commit = crate::desk::phone::swipe::PULL_COMMIT;
+    let thick = (shown(pull, phone.stage[0]) / commit).min(1.0);
+    let frost = p.glass_panel_thick(
+        el().key("phone-drawer-frost").cover(),
         GlassSurface::PhoneBar,
         p.glass_tint_layer(),
         p.roles.layer.ground,
+        thick,
     );
-    if page != Page::Sessions {
-        return sheet;
+    Some(
+        frost
+            .transition(rune::Transition::opacity().springs(p.motion.drawer))
+            .inert()
+            .a11y_hidden(),
+    )
+}
+
+fn glass(panel: El, p: &Look) -> El {
+    p.glass_panel(
+        panel,
+        GlassSurface::PhoneBar,
+        p.glass_tint_layer(),
+        p.roles.layer.ground,
+    )
+}
+
+/// How far in Sessions has come: whole once open.
+fn shown(pull: Option<f32>, width: f32) -> f32 {
+    pull.map_or(1.0, |pulled| (pulled / width.max(1.0)).clamp(0.0, 1.0))
+}
+
+/// A pulling finger is followed exactly; a let-go one settles on the
+/// drawer spring.
+fn follow(pull: Option<f32>, p: &Look) -> rune::Spring {
+    if pull.is_some() {
+        rune::Spring::NONE
+    } else {
+        p.motion.drawer.enter
     }
-    let width = width.max(1.0);
-    let travel = pull.map_or(0.0, |pulled| pulled - width.max(pulled));
-    // The terminal the drawer is pulled over dims as it comes, and clears
-    // as an opened drawer covers it or a let-go one leaves.
-    let shade = el()
-        .key("phone-drawer-shade")
-        .absolute(width, 0.0)
-        .w(width)
-        .h_full()
-        .fill(p.roles.layer.scrim.paint())
-        .opacity(pull.map_or(0.0, |pulled| (pulled / width).min(1.0)))
-        .opacity_motion(p.motion.drawer.enter)
-        .inert()
-        .a11y_hidden();
-    sheet
-        .child(shade)
-        .offset(travel, 0.0)
-        .offset_motion(if pull.is_some() {
-            rune::Spring::NONE
-        } else {
-            p.motion.drawer.enter
-        })
-        .transition(rune::Transition::move_edge(rune::Edge::Leading).springs(p.motion.drawer))
 }
 
 /// Done closes the page: a glass checkmark like the top bar's buttons on

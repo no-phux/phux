@@ -47,6 +47,9 @@ pub enum Feedback {
     Copied,
     /// A sideways drag crossed the point where lifting commits it.
     Detent,
+    /// A sideways drag crossed the point where lifting steps over into
+    /// another session: firmer than a tab's detent.
+    Threshold,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -23,8 +23,11 @@ pub fn glass_panels(rt: &rune::Runtime<Desk>) -> usize {
         let mut up = Some(i);
         while let Some(j) = up {
             let e = &all[j];
+            // A glass's own opacity fades its blur with it; only an
+            // ancestor's draws it into one layer.
+            let opaque = j == i || e.opacity >= 0.999;
             assert!(
-                e.opacity >= 0.999 && (e.scale - 1.0).abs() < 1e-3,
+                opaque && (e.scale - 1.0).abs() < 1e-3,
                 "glass {:?} under a one-layer ancestor {:?} (opacity {}, scale {})",
                 all[i].key,
                 e.key,

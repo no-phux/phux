@@ -265,6 +265,9 @@ fn floating(root: El, desk: &Desk, p: &Tokens, band: f32, cx: &mut Cx<Desk>) -> 
 /// ownership. The phone places its keyboard after these layers.
 fn floating_surfaces(mut root: El, desk: &Desk, p: &Tokens, top: f32, cx: &mut Cx<Desk>) -> El {
     for surface in desk.surfaces() {
+        if matches!(surface, Surface::PhoneNavigation | Surface::PhonePull) {
+            root = root.children(phone::navigation::frost(desk));
+        }
         root = root.children(surface_view(surface, desk, p, top, cx));
     }
     root

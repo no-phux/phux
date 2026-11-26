@@ -99,8 +99,27 @@ impl Tokens {
         layer: Rgba8,
         opaque: Rgba8,
     ) -> El {
+        self.glass_panel_thick(panel, surface, layer, opaque, 1.0)
+    }
+
+    /// [`Self::glass_panel`] only `thick` (0 to 1) of the way there: its
+    /// blur and tint thinned together, as glass frosting over; an opaque
+    /// panel fades instead.
+    pub(crate) fn glass_panel_thick(
+        &self,
+        panel: El,
+        surface: GlassSurface,
+        layer: Rgba8,
+        opaque: Rgba8,
+        thick: f32,
+    ) -> El {
+        let thick = thick.clamp(0.0, 1.0);
         match self.glass(surface, layer) {
-            Some((blur, tint)) => panel.backdrop_blur(blur).fill(tint).trace_name(GLASS_TRACE),
+            Some((blur, tint)) => panel
+                .backdrop_blur(blur * thick)
+                .fill(tint.alpha(tint.a * thick))
+                .trace_name(GLASS_TRACE),
+            None if thick < 1.0 => panel.fill(opaque.paint()).opacity(thick),
             None => panel.fill(opaque.paint()),
         }
     }
