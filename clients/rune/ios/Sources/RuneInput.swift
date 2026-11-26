@@ -9,6 +9,9 @@ final class RuneInput: UITextView, UITextViewDelegate {
     private(set) var context: InputContext?
     var send: (([String: Any], InputContext) -> [String: Any]?)?
     var didDismiss: ((InputContext) -> Void)?
+    /// A system picker over the surface holds the keyboard; its taking and
+    /// returning it is not the person dismissing it.
+    var covered = false
     private var mutationDepth = 0
     private var synchronizing = false
     private var composition: InputContext?
@@ -43,6 +46,7 @@ final class RuneInput: UITextView, UITextViewDelegate {
         if composing, composition == nil { composition = context }
         let next = cancelStaleComposition(next)
         if let current = context, current.token != next.token { retire() }
+        guard !covered else { return }
         guard next.wanted, dismissedToken != next.token else {
             retire()
             return
@@ -279,7 +283,7 @@ final class RuneInput: UITextView, UITextViewDelegate {
         }
     }
     func textViewDidEndEditing(_ textView: UITextView) {
-        guard !synchronizing, let captured = context else { return }
+        guard !synchronizing, !covered, let captured = context else { return }
         dismissedToken = captured.token
         context = nil
         composition = nil

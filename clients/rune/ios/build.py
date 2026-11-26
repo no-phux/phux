@@ -90,7 +90,7 @@ def bundle_plist(identity, simulator, fonts, icons=None):
         # Only the OS's TLS/QUIC and standard authentication: exempt, so App
         # Store Connect asks no export-compliance question per upload.
         "ITSAppUsesNonExemptEncryption": False,
-        "NSCameraUsageDescription": "Scan a Phux pairing QR to connect without typing credentials.",
+        "NSCameraUsageDescription": "Scan a Phux pairing QR to connect, or take a photo to attach to a terminal.",
         "NSLocalNetworkUsageDescription": "Connect securely to your computer and get its Phux pairing code over SSH.",
         # App.swift accepts pairing links on exactly these schemes.
         "CFBundleURLTypes": [{"CFBundleURLName": bundle_id + ".pairing",

@@ -26,13 +26,25 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
         Feedback::Copied => "copied",
     });
     let native = state.native.as_mut();
-    let (connection, paste) = native.map_or((false, false), |native| {
-        (
-            std::mem::take(&mut native.connection_requested),
-            std::mem::take(&mut native.paste_requested),
-        )
+    let (connection, paste, attach, attaching) =
+        native.map_or((false, false, false, None), |native| {
+            let attaching = native.attaching.front().map(|asked| asked.id);
+            (
+                std::mem::take(&mut native.connection_requested),
+                std::mem::take(&mut native.paste_requested),
+                std::mem::take(&mut native.attach_requested),
+                attaching,
+            )
+        });
+    // Where the menu opens from: the paperclip, or a hardware key's nowhere.
+    let attach = attach.then(|| {
+        rt.presented("phone-attach")
+            .map_or([0.0; 4], |(rect, _)| rect)
     });
-    json!({"connection": connection, "paste": paste, "copied_text": copied,
+    // `attaching` names the pane a menu's picks or a pasted image answer.
+    let attaching = attaching.filter(|_| paste || attach.is_some());
+    json!({"connection": connection, "paste": paste, "attach": attach,
+        "attaching": attaching, "copied_text": copied,
         "open_urls": urls, "feedback": feedback})
 }
 
@@ -44,6 +56,15 @@ pub fn paste(rt: &mut rune::Runtime<State>, text: Option<&str>) {
             Some(text) => state.paste_from_host(text),
             None => state.paste_too_large(),
         }
+        tx.instant();
+    });
+}
+
+/// One file for the attachment request `id`, or `None` when the host
+/// couldn't read it.
+pub fn attach(rt: &mut rune::Runtime<State>, id: u64, extension: &str, data: Option<Vec<u8>>) {
+    rt.update(|state, tx| {
+        state.attach_from_host(id, extension, data);
         tx.instant();
     });
 }
@@ -206,7 +227,8 @@ mod tests {
             "mobile::host::tests::a_frames_requests_are_taken_once_and_copies_leave_as_plain_text",
             || {
                 let mut rt = runtime();
-                let quiet = json!({"connection": false, "paste": false, "copied_text": null,
+                let quiet = json!({"connection": false, "paste": false, "attach": null,
+            "attaching": null, "copied_text": null,
             "open_urls": [], "feedback": null});
                 assert_eq!(take_requests(&mut rt), quiet);
                 rt.update(|state, tx| {
@@ -218,7 +240,8 @@ mod tests {
                 });
                 assert_eq!(
                     take_requests(&mut rt),
-                    json!({"connection": true, "paste": true, "copied_text": "selected words",
+                    json!({"connection": true, "paste": true, "attach": null,
+                "attaching": null, "copied_text": "selected words",
                 "open_urls": [], "feedback": "hold"})
                 );
                 assert_eq!(take_requests(&mut rt), quiet, "each request is served once");

@@ -130,6 +130,15 @@ final class NativeBridge {
         // A C string ends at its first NUL; a pasteboard's text need not.
         text.replacingOccurrences(of: "\0", with: "").withCString { phux_rune_ios_paste(pointer, $0) }
     }
+    /// One picked file for `request`; nil when it could not be read.
+    func attach(_ file: Attachments.File?, request: UInt64) {
+        let bytes = file?.data ?? Data()
+        (file?.fileExtension ?? "").withCString { name in
+            bytes.withUnsafeBytes {
+                phux_rune_ios_attach(pointer, request, name, $0.bindMemory(to: UInt8.self).baseAddress, $0.count)
+            }
+        }
+    }
     func pathChanged() { phux_rune_ios_path_changed(pointer) }
     func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }
     func active(_ active: Bool) { phux_rune_ios_active(pointer, active) }

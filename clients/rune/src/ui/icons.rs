@@ -65,6 +65,11 @@ icon!(
     "phux-more",
     "M4.5 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM9 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM13.5 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"
 );
+icon!(
+    PAPERCLIP,
+    "phux-paperclip",
+    "M14.3 7.4L8.2 13.5a4 4 0 0 1-5.7-5.7L8.6 1.7a2.7 2.7 0 0 1 3.8 3.8L6.3 11.6a1.3 1.3 0 0 1-1.9-1.9L10 4"
+);
 icon!(PROMPT, "phux-prompt", "M3 5l3 3-3 3M8 11.5h5");
 icon!(
     RESOURCE,

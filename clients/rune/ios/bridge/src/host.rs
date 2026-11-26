@@ -357,6 +357,27 @@ pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *cons
     });
 }
 
+/// One picked file for attachment request `id`; null `data` when UIKit
+/// couldn't read it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_attach(
+    pointer: *mut c_void,
+    id: u64,
+    extension: *const c_char,
+    data: *const u8,
+    length: usize,
+) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        let extension = unsafe { text(extension)? };
+        // SAFETY: Bridge.h requires `length` readable bytes for this call.
+        let data =
+            (!data.is_null()).then(|| unsafe { std::slice::from_raw_parts(data, length) }.to_vec());
+        mobile::attach(host.layer.runtime_mut(), id, extension, data);
+        Ok(())
+    });
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_path_changed(pointer: *mut c_void) {
     attempt(|| {

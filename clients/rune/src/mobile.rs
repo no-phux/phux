@@ -6,6 +6,7 @@ use phux_client_runtime::Target;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -24,6 +25,12 @@ pub struct Platform {
     pub connection_requested: bool,
     /// A command asked for the system pasteboard, which only the host reads.
     pub paste_requested: bool,
+    /// The paperclip asked for the host's attachment menu.
+    pub attach_requested: bool,
+    /// Where the host's attachments go, newest first, and how many were
+    /// asked for.
+    pub(crate) attaching: VecDeque<crate::desk::phone::attach::Attaching>,
+    pub(crate) attachments: u64,
     pub active: bool,
     /// When the app left the foreground. Wall time: a monotonic clock may
     /// stand still while the device sleeps.
@@ -73,6 +80,9 @@ impl Platform {
             active: true,
             connection_requested: false,
             paste_requested: false,
+            attach_requested: false,
+            attaching: VecDeque::new(),
+            attachments: 0,
             away_since: None,
             controls: RefCell::default(),
         }
@@ -356,6 +366,9 @@ fn with_target(target: Target, session: Option<String>) -> State {
         app: None,
         connection_requested: false,
         paste_requested: false,
+        attach_requested: false,
+        attaching: VecDeque::new(),
+        attachments: 0,
         active: true,
         away_since: None,
         controls: RefCell::default(),
@@ -434,7 +447,7 @@ pub fn report(rt: &rune::Runtime<State>, frames: u64, marker: &str) -> Value {
 mod host;
 mod invite;
 pub use host::{
-    controls, edge_srgb, paste, path_changed, press, set_accessibility, take_requests,
+    attach, controls, edge_srgb, paste, path_changed, press, set_accessibility, take_requests,
     viewport_changed, zoom,
 };
 pub use invite::parse_pairing_invite;
