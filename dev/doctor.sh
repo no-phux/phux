@@ -116,10 +116,14 @@ native_tools() {
     mac_sdk
 }
 node_tools() {
-    local version
+    local version found
     version="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
     if [[ "$version" =~ ^[0-9]+$ ]] && [[ "$version" -ge 24 ]]; then ok "Node $version"; else
-        fail 'Node 24+ (CI uses 26)' "$(env_remedy 'Install Node 26 LTS from https://nodejs.org or brew install node@26; put its bin directory on PATH')"
+        # Name what is there, not only what is missing: a node that is on PATH
+        # but cannot start reads otherwise exactly like no node at all.
+        found="$(command -v node || echo 'not on PATH')"
+        [[ "$found" == 'not on PATH' ]] || found="$found: $(node --version 2>&1 | head -n 2 | tr '\n' ' ')"
+        fail "Node 24+ (CI uses 26; found: $found)" "$(env_remedy 'Install Node 26 LTS from https://nodejs.org or brew install node@26; put its bin directory on PATH')"
     fi
     need npm 'Install npm with Node 26; see docs/development.md'
 }
