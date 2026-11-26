@@ -1,6 +1,36 @@
 [
   {
     "date": "2026-11-26",
+    "title": "Polish the mobile sessions drawer",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
+    "title": "Make the iPhone terminal composer toggleable",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
+    "title": "Export painted iPhone buttons for native activation",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
+    "title": "Rework iPhone terminal input and session switching",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
+    "title": "Developer mode and labs, feature flags every client and the server read",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
+    "title": "Frost sessions in place and swipe between tabs before sessions",
+    "body": "In Rune 0.1.60."
+  },
+  {
+    "date": "2026-11-26",
     "title": "Clearer search feedback",
     "body": "In Rune 0.1.59: Sessions keeps no-match feedback compact, with a hint to try another name or clear the search."
   },
