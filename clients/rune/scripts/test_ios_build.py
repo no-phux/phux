@@ -24,6 +24,7 @@ qualify = load("qualify")
 def valid_report():
     return {"schema": 1, "session": qualify.SESSION, "frames": 3,
             "terminal_id": "123", "connected": True, "input_through_native": True,
+            "composer_through_native": True,
             "marker_seen": True, "transport":"paired-quic", "input_contracts":list(qualify.INPUT_CONTRACTS),
             "onboarding_import": True, "onboarding_confirmed": True, "resumed_identity": False,
             "surface_at_scale": True,
