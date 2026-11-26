@@ -485,15 +485,12 @@ fn placed_spawn_refusals_and_unknown_outcomes_never_trigger_cleanup() {
 
 #[test]
 fn spawn_parent_reads_a_pane_id_or_none() {
-    assert_eq!(parse_parent(Some("@7"), false), Ok(Some(7)));
-    assert_eq!(parse_parent(Some("7"), false), Ok(Some(7)));
-    assert_eq!(parse_parent(Some("none"), false), Ok(None));
-    assert_eq!(
-        parse_parent(None, true),
-        Ok(None),
-        "a satellite pane is not ours"
-    );
+    assert_eq!(parse_parent(Some("@7"), Some(2)), Ok(Some(7)));
+    assert_eq!(parse_parent(Some("7"), None), Ok(Some(7)));
+    assert_eq!(parse_parent(Some("none"), Some(2)), Ok(None));
+    assert_eq!(parse_parent(None, Some(2)), Ok(Some(2)));
+    assert_eq!(parse_parent(None, None), Ok(None));
     for bad in ["@0", "x", "%claude", ""] {
-        assert!(parse_parent(Some(bad), false).is_err(), "{bad}");
+        assert!(parse_parent(Some(bad), None).is_err(), "{bad}");
     }
 }

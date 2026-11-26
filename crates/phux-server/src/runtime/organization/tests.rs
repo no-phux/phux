@@ -24,6 +24,22 @@ fn committed(result: CommandResult) -> Committed {
     }
 }
 
+/// Runtime-owner fixtures use an explicit owner grant unless the test
+/// installed a scoped or revoked grant.
+fn handle(
+    state: &SharedState,
+    client: ClientId,
+    command: Command,
+    root: &CancellationToken,
+) -> CommandResult {
+    state.with_mut(|s| {
+        if s.connection_grant(client).is_none() {
+            s.set_connection_grant(client, crate::policy::ConnectionGrant::owner());
+        }
+    });
+    super::handle(state, client, command, root)
+}
+
 /// A persistent, attribute-less `SESSION_CREATE`, launching its first
 /// Terminal when `launched`.
 fn session_create(n: u8, name: &str, launched: bool) -> Command {

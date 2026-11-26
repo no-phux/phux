@@ -3,9 +3,9 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 use tokio::sync::oneshot;
 
 use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
-use crate::runtime::apps::terminal::commands::signal::{commit_signal, record_signal_failure};
 use crate::runtime::apps::terminal::test_support::ControlRequest;
 use crate::runtime::commands::kill::handle_kill_terminals;
+use crate::runtime::commands::terminal::signal::{commit_signal, record_signal_failure};
 use crate::runtime::keyed_ops::{KeyedAdmission, admit};
 use crate::state::{ClientId, SharedState};
 
@@ -38,7 +38,9 @@ fn outcomes(result: CommandResult) -> serde_json::Value {
 async fn kill_resources_across_hosts_merges_results_instead_of_fire_and_forget() {
     let (state, client, mut up) = hub();
     let satellite = tokio::spawn(async move {
-        let Some(RelayRequest::Keyed { command, reply, .. }) = up.requests.recv().await else {
+        let Some(RelayRequest::Keyed { command, reply, .. }) =
+            up.requests.recv().await.map(|queued| queued.request)
+        else {
             panic!("the keyed batch reaches the satellite's link");
         };
         let _ = reply.send(CommandResult::OkWith(CommandValue::Json(
@@ -97,7 +99,9 @@ async fn kill_resources_across_hosts_merges_results_instead_of_fire_and_forget()
 async fn an_unkeyed_cross_host_batch_keeps_its_ok_reply() {
     let (state, client, mut up) = hub();
     let satellite = tokio::spawn(async move {
-        let Some(RelayRequest::Command { command, reply, .. }) = up.requests.recv().await else {
+        let Some(RelayRequest::Command { command, reply, .. }) =
+            up.requests.recv().await.map(|queued| queued.request)
+        else {
             panic!("the unkeyed batch relays as a plain command");
         };
         let _ = reply.send(CommandResult::Ok);

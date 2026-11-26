@@ -43,6 +43,7 @@ use ratcn::{
 use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_rank, fuzzy_score};
 use super::widgets::{
     MODAL_PAD, Modal, centered_panel, footer_status_budget, modal_inner_width, scroll_into_view,
+    wrap_words,
 };
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::kit::{self, Surface};
@@ -55,7 +56,7 @@ mod parse;
 mod render;
 mod surface;
 
-use parse::{display_path_for, parse_input, wrap_words};
+use parse::{display_path_for, parse_input};
 use surface::{Control, Layout, Model, Msg, RowDecl};
 
 /// Rows the detail panel takes on a roomy viewport (rule excluded): key

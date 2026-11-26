@@ -90,6 +90,7 @@ pub(crate) fn page() -> Page {
          ├── workload-keys       # client keys the server admits\n\
          ├── workload-org-roots/ # each organization's root certificates (owner-only)\n\
          ├── org/                # organization store: sessions, panes, and their records\n\
+         │                       # org/v1.scrollback/ keeps `[restore] scrollback` (0700)\n\
          ├── remotes/            # credentials for each `[[remote]]` host\n\
          ├── satellites/         # credentials for each `[[satellites]]` host\n\
          ├── connectors/         # tunnel tokens for each `[[connector]]` relay\n\

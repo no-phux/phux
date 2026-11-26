@@ -493,7 +493,7 @@ fn launch(
         // Attached: the session's end is the verb's end, whatever its code.
         return Err(code);
     }
-    let id = rt.block_on(new::create_session_via_metadata(
+    let id = rt.block_on(new::create_seeded_session(
         &target,
         &name,
         Some(argv),

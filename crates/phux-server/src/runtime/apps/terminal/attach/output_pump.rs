@@ -30,7 +30,7 @@ pub(crate) enum PumpFault {
 }
 
 impl PumpFault {
-    pub(super) fn record(self) {
+    pub(crate) fn record(self) {
         let outcome = match self {
             Self::OutboundClosed => "outbound_closed",
             Self::TombstoneNotQueued => "tombstone_not_queued",

@@ -101,6 +101,10 @@ pub enum Kind {
     /// A client answered a pane's OSC 52 clipboard read.
     #[serde(rename = "clipboard.read")]
     ClipboardRead,
+    /// A pane asked to open a link on a client, or that client answered: the
+    /// link's host, never the rest of it.
+    #[serde(rename = "open_url")]
+    OpenUrl,
 }
 
 /// How the decision came out.

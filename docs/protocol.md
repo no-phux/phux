@@ -59,7 +59,10 @@ that settles a request.
    picks one offered Terminal profile. If it can serve none of those offered,
    it sends `ERROR` `CODEC_UNAVAILABLE` and closes.
 4. `HELLO_OK` carries the server version, feature bits (`features`,
-   `features_ext`), instance id, selected profile, and size limits.
+   `features_ext`, `features_ext2`), instance id, selected profile, and size limits.
+   Trailing capability words are omitted when empty and absent words mean no
+   support. `features_ext2` bit `0x1` is `ARCHIVED_LAUNCH_ADMISSION`: current-host
+   archived execution enforcement, not raw execution approval.
 
 Without a Terminal profile, binding a Terminal stream is refused
 `CODEC_UNAVAILABLE` and the connection stays. Before `HELLO_OK` only `HELLO`
@@ -97,6 +100,17 @@ without `ATTACH`. Input leases and authorization still apply.
   engine decode and `BOOTSTRAP_READY`; `ATTACH_READY` replaces neither.
 - A tombstone retires its generation even if late frames arrive. Keep the
   last view display-only until the replacement is ready.
+- A producer's ids are unique per connection, resyncs included, and a reattach
+  tombstones the generation then live.
+- A hub names relayed generations itself, so no consumer sees an id twice
+  whatever the satellite or a redial repeats. A `BOOTSTRAP_BEGIN` over a live
+  relayed generation is a tombstone plus that BEGIN; every later frame of the
+  old one still ends the link.
+- A hub consumer with nothing to draw always has a deadline. At it the hub
+  attaches again for that consumer or, past a few asks, ends the subscription
+  with an uncorrelated `RESOURCE_EXHAUSTED` in its own words, never the
+  satellite's. A redial of the same satellite process, a delivery overflow and
+  an answered attach that brought no screen only bring the deadline forward.
 - On a gap, overflow, resize, or codec discontinuity, fence and recut. Never
   skip bytes or replay into an obsolete replica. Every recovery path is
   bounded and ends in an explicit error.
@@ -192,10 +206,12 @@ and push.
 - Allocate type bytes in `wire/frame/catalog.rs` and sub-tags in the
   `*tags.rs` files beside it; duplicates fail to compile.
 - Append field ids to `tlv_body!` in `wire/field/`.
-- Gate new behavior with a bit in
-  [`caps/server_features/ext.rs`](../crates/phux-protocol/src/caps/server_features/ext.rs)
-  (the `features` word is frozen) and follow
-  [Making a change compatible](./compatibility.md#making-a-change-compatible).
+- Gate new behavior with an extension capability bit; `features` and all
+  published bit positions are frozen. `ServerFeatureExt` owns the first
+  extension word and `ServerFeatureExt2` the next. An absent word means
+  unsupported, not permission to try the operation. Restore/relaunch admission
+  checks the executing peer's current word, including at federation hops.
+  Follow [Making a change compatible](./compatibility.md#making-a-change-compatible).
 - Classify every new command in `kinds.rs`, or dispatch denies it.
 - Regenerate, then fill in any `?` types in the schema:
 

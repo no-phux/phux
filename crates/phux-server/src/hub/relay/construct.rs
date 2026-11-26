@@ -3,8 +3,8 @@
 #[cfg(test)]
 use super::ServerFeature;
 use super::{
-    BootstrapLimits, BootstrapProfile, BytesMut, HashMap, HashSet, RelaySession,
-    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet,
+    Arc, BootstrapLimits, BootstrapProfile, BytesMut, HashMap, HashSet, RelaySession,
+    ResourceKindCatalog, SatelliteHost, ServerFeatureExtSet, ServerFeatureSet, first_generation,
 };
 
 impl RelaySession {
@@ -30,6 +30,10 @@ impl RelaySession {
     ) -> Self {
         Self {
             host,
+            epoch: {
+                static NEXT_EPOCH: super::AtomicU64 = super::AtomicU64::new(1);
+                NEXT_EPOCH.fetch_add(1, super::Ordering::Relaxed)
+            },
             bootstrap_limits,
             bootstrap_profile,
             next_request_id: 1,
@@ -39,6 +43,7 @@ impl RelaySession {
             pending_paths: HashMap::new(),
             satellite_features,
             satellite_features_ext: ServerFeatureExtSet::new(),
+            satellite_features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
             pending_detaches: HashMap::new(),
             mirrored: HashSet::new(),
             pending_mirror_gets: HashMap::new(),
@@ -47,6 +52,7 @@ impl RelaySession {
             explicit_content: HashSet::new(),
             legacy_events: HashSet::new(),
             bootstrap_flows: HashMap::new(),
+            generations: first_generation(),
             retained_bytes: 0,
             retained_frames: 0,
             orphaned_by_delivery: HashSet::new(),
@@ -62,6 +68,16 @@ impl RelaySession {
 
     /// Re-stamp relayed events from `journal`, the hub's own state.
     pub(crate) fn set_journal(&mut self, journal: Option<crate::state::SharedState>) {
+        if let Some(journal) = &journal {
+            journal.with_mut(|s| {
+                s.interrupt_satellite_host(&self.host);
+                s.federation_mut().begin_satellite_link(
+                    self.host.clone(),
+                    self.epoch,
+                    self.satellite_features,
+                );
+            });
+        }
         self.journal = journal;
     }
 
@@ -71,6 +87,11 @@ impl RelaySession {
         incarnation: crate::hub::operation_fence::Incarnation,
     ) {
         self.incarnation = incarnation;
+    }
+
+    /// The incarnation this connection's satellite announced.
+    pub(crate) const fn incarnation(&self) -> crate::hub::operation_fence::Incarnation {
+        self.incarnation
     }
 
     /// Share the link's incarnation fence, which outlives this connection.
@@ -85,6 +106,13 @@ impl RelaySession {
         self.satellite_features_ext = features;
     }
 
+    pub(crate) const fn set_satellite_features_ext2(
+        &mut self,
+        features: phux_protocol::caps::ServerFeatureExt2Set,
+    ) {
+        self.satellite_features_ext2 = features;
+    }
+
     pub(crate) fn set_resource_kinds(&mut self, resource_kinds: ResourceKindCatalog) {
         {
             let mut catalog = resource_kinds
@@ -93,6 +121,9 @@ impl RelaySession {
             catalog.kinds.clear();
             catalog.controls.clear();
             catalog.terminal_profile = Some(self.bootstrap_profile);
+            catalog.epoch = self.epoch;
+            // Outward ids outlive every epoch: a consumer never sees one twice.
+            self.generations = Arc::clone(&catalog.generations);
         }
         self.resource_kinds = Some(resource_kinds);
     }

@@ -8,8 +8,9 @@
 //! (answered once the server has written them), and ends it with
 //! `FORWARD_CLOSE`. ssh-agent forwarding (`features_ext.FORWARD_AGENT`)
 //! is brokered messages instead: a client offers its agent with
-//! `AGENT_OFFER`, receives each request as an `agent_request` event, and
-//! answers with `AGENT_REPLY`. The decoder enforces every bound here with
+//! `AGENT_OFFER`, receives each request as an `agent_request` event whose
+//! envelope names the pane it seems to come from, and answers with
+//! `AGENT_REPLY`. The decoder enforces every bound here with
 //! [`DecodeError::ForwardLimitExceeded`](crate::wire::DecodeError::ForwardLimitExceeded).
 //!
 //! The server's contract: `FORWARD_OPEN` answers once connected, within
@@ -70,7 +71,8 @@ pub enum ForwardOp {
     },
     /// `AGENT_OFFER`: this connection serves its local ssh-agent to the
     /// server's panes until it ends (`features_ext.FORWARD_AGENT`). The
-    /// newest offer on a server replaces the one before it.
+    /// newest offer on a server is the one asked; when its connection ends,
+    /// the one before it is again.
     AgentOffer,
     /// `AGENT_REPLY`: the answer to one `agent_request` event.
     AgentReply {

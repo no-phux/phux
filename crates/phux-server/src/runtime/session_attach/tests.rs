@@ -21,6 +21,7 @@ mod backpressure;
 mod capture_close;
 mod failure;
 mod fixtures;
+mod generation;
 mod undecodable;
 use fixtures::{agent_cut, agent_stub, parked_tree, wait_for_capture};
 

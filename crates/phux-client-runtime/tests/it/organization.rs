@@ -23,6 +23,7 @@ use crate::embedded::{answer, commands, negotiate, opened, reopen, server_hello}
 
 mod close;
 mod empty_spawn;
+mod workflows;
 
 /// The fixture server, advertising `ORGANIZATION` (and the session verbs
 /// that ride with it) when `organization`.

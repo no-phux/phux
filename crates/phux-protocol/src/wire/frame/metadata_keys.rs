@@ -295,6 +295,13 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
+/// Server-owned global index of OSC 7577 program-resume records.
+///
+/// JSON object keyed by the resource key's text form. Each value is
+/// `{ "command", "trusted", "tried" }` with `command` already escaped.
+/// The per-pane token is never included. Clients may read it and must not write it.
+pub const PROGRAM_RESUME_INDEX_KEY: &str = "phux.program-resume/v1";
+
 /// Server-owned OSC 7501 record index and active status.
 pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";
 
@@ -337,6 +344,15 @@ pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 /// wrote the key is gone, and, when the object says `"finished": true`, when
 /// an agent finishes.
 pub const PUSH_GRANT_KEY_PREFIX: &str = "phux.push/v1/";
+
+/// `Global`-scope key family a device registers its Lock Screen card under
+/// (`docs/protocol-files.md#live-activity`).
+///
+/// `phux.live/v1/<device>` holds the same object as a push grant, its
+/// `gateway` the device's Live Activity endpoint. While the connection that
+/// wrote the key is gone, the server posts how many agents wait and work
+/// there whenever either count moves.
+pub const LIVE_GRANT_KEY_PREFIX: &str = "phux.live/v1/";
 
 /// A decision's value: release the held action once.
 pub const APPROVAL_APPROVE: &[u8] = b"approve";

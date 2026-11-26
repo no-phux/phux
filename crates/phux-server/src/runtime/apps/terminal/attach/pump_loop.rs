@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use phux_terminal_api::actor::TerminalResource as _;
 
 /// Why a pump gave up on its generation and asked for a resync.
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +52,7 @@ pub(super) async fn next_wait(
 /// Drive one client's output subscription for a pane: park on the publication
 /// gate, then run [`run_started_output_pump`]. Returns the fault that ended
 /// it, `None` if orderly.
-pub(super) async fn run_output_pump(
+pub(crate) async fn run_output_pump(
     ctx: &OutputPumpContext,
     gate_rx: oneshot::Receiver<OutputPumpStart>,
     output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
@@ -70,6 +69,10 @@ pub(crate) async fn run_started_output_pump(
     start: OutputPumpStart,
     mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> Option<PumpFault> {
+    if let Some(mut interest) = start.interest {
+        // The real running pump now owns this published lifetime.
+        interest.published();
+    }
     let mut generation = PumpGeneration::opened_at(start.published_cut, ctx.initial_bootstrap_id);
     if let Some(live) = start.live {
         output_rx = live;
@@ -189,66 +192,5 @@ async fn dispatch_output(
                 .await
         }
         Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
-    }
-}
-
-/// Release a shared pane's consumer after its pump failed. The pane itself
-/// belongs to others: an unrecoverable generation detaches only this client
-/// and closes its connection.
-pub(crate) fn release_after_pump_fault(
-    fault: PumpFault,
-    state: &SharedState,
-    client_id: ClientId,
-    connection_token: &CancellationToken,
-) {
-    fault.record();
-    match fault {
-        PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
-        PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
-            warn!(?client_id, ?fault, "attach pump failed; closing the client");
-            crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
-            connection_token.cancel();
-        }
-        PumpFault::PublicationNotActivated => {
-            warn!(
-                ?client_id,
-                "attach pump publication not activated; closing the client"
-            );
-            connection_token.cancel();
-        }
-    }
-}
-
-/// Release `client_id`'s consumers of Terminal `handles` after a failed
-/// session `ATTACH`, each within a bounded wait so a wedged actor cannot hold
-/// the rollback.
-pub(crate) async fn release_aborted_consumers(client_id: ClientId, handles: &[ResourceHandle]) {
-    let wire_client_id = crate::runtime::wire_client(client_id);
-    let producer_deadline = std::time::Duration::from_secs(1);
-    for handle in handles {
-        let Ok(terminal) = handle.terminal() else {
-            continue;
-        };
-        let _ = tokio::time::timeout(
-            producer_deadline,
-            terminal
-                .native_release
-                .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
-        )
-        .await;
-        let (reply, done) = oneshot::channel();
-        if matches!(
-            tokio::time::timeout(
-                producer_deadline,
-                terminal.consumer_detach.send(ConsumerDetachRequest {
-                    client_id: wire_client_id,
-                    reply,
-                }),
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
-            let _ = tokio::time::timeout(producer_deadline, done).await;
-        }
     }
 }

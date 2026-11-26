@@ -148,6 +148,9 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
     if caps.credential_approvals {
         enc.write_u8_field(field::hello::CREDENTIAL_APPROVALS, 1);
     }
+    if caps.open_url {
+        enc.write_u8_field(field::hello::OPEN_URL, 1);
+    }
 }
 
 /// Write `HELLO_OK.server_caps`: layers, then the feature words only as far
@@ -155,10 +158,16 @@ fn encode_hello_caps(enc: &mut Encoder<'_>, caps: &ClientCapabilities) {
 fn encode_server_caps(enc: &mut Encoder<'_>, caps: ServerCapabilities) {
     enc.write_field_with(field::hello_ok::SERVER_CAPS, |e| {
         e.write_u8(caps.layers.as_wire());
-        if !caps.features.is_empty() || !caps.features_ext.is_empty() {
+        if !caps.features.is_empty()
+            || !caps.features_ext.is_empty()
+            || !caps.features_ext2.is_empty()
+        {
             e.write_u32_be(caps.features.as_wire());
-            if !caps.features_ext.is_empty() {
+            if !caps.features_ext.is_empty() || !caps.features_ext2.is_empty() {
                 e.write_u32_be(caps.features_ext.as_wire());
+                if !caps.features_ext2.is_empty() {
+                    e.write_u32_be(caps.features_ext2.as_wire());
+                }
             }
         }
     });

@@ -101,6 +101,7 @@ impl Desk {
             Shortcut::CopyMode => self.toggle_copy_mode(),
             Shortcut::CopyConfig => self.copy_config(tx),
             Shortcut::RestoreSessions => self.restore_sessions(),
+            Shortcut::ReviewRawRelaunch => self.review_raw_relaunch(),
             Shortcut::Bare => self.toggle_bare(),
             Shortcut::DisplayPanes => self.display_panes(),
             Shortcut::FocusSidebar => self.focus_sidebar(tx),

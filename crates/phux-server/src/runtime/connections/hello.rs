@@ -202,6 +202,7 @@ pub(super) async fn negotiate_hello(
             .with_layers(LayerSet::all())
             .with_features(server_features)
             .with_features_ext(server_features_ext(state))
+            .with_features_ext2(phux_protocol::caps::ServerFeatureExt2Set::all())
             .with_compression(compression),
         server_id: state.with(|server| server.lifecycle().server_incarnation().as_bytes().to_vec()),
         selected_profile,
@@ -263,6 +264,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::HostChecklist,
         ServerFeatureExt::ForwardTcp,
         ServerFeatureExt::ForwardAgent,
+        ServerFeatureExt::OpenUrl,
     ])
 }
 

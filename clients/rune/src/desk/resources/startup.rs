@@ -159,22 +159,22 @@ impl Desk {
             Ok(argv) => argv,
             Err(why) => return self.say(NoticeKind::Error, why),
         };
-        let Some(client) = &self.connection.client else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         let session_id = client.selected_session();
-        let request = client.with_control(|control| {
-            control.spawn_terminal_once(SpawnRequest {
-                command: Some(command),
-                session_id,
-                // Keep errors visible even in a document-only session.
-                initial_size: Some((100, 28)),
-                ..SpawnRequest::default()
-            })
-        });
+        let Some(request) = self.accept_spawn(client.submit_spawn_once(SpawnRequest {
+            command: Some(command),
+            session_id,
+            // Keep errors visible even in a document-only session.
+            initial_size: Some((100, 28)),
+            ..SpawnRequest::default()
+        })) else {
+            return;
+        };
         self.connection
             .pending_splits
-            .insert(request, (self.placement_session(client), None));
+            .insert(request, (self.placement_session(&client), None));
         self.connection.resources.starting.insert(request, source);
         self.say(NoticeKind::Info, "Starting a dedicated producer terminal. Its output shows prerequisites and failures; Ctrl-C there stops the mirror. Open the published document from the palette.");
     }

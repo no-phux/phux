@@ -44,12 +44,22 @@ fn session(id: u32, name: &str, arranged: bool) -> SessionDescriptor {
     }
 }
 
+/// A window with a client, so a link has a view scope to be opened in.
 fn desk() -> Desk {
-    Desk::with_preferences(
+    let mut desk = Desk::with_preferences(
         &Resolved::offline("reveal"),
         None,
         rune::prefs::Prefs::memory(),
-    )
+    );
+    desk.connection.client = Some(std::sync::Arc::new(phux_client_runtime::Runtime::embedded(
+        phux_client_runtime::control::ControlOptions::default(),
+    )));
+    desk
+}
+
+/// The link a window still holds.
+fn held(desk: &Desk) -> Option<&Link> {
+    desk.connection.reveal.as_ref().map(|reveal| &reveal.link)
 }
 
 fn notice(desk: &Desk) -> Option<&str> {
@@ -60,22 +70,22 @@ fn notice(desk: &Desk) -> Option<&str> {
 fn links_parse_strictly() {
     assert_eq!(
         target("phux://pane/@3"),
-        Some(Ok(Reveal::Pane(ResourceId::local(3))))
+        Some(Ok(Link::Pane(ResourceId::local(3))))
     );
     assert_eq!(
         target("PHUX://Pane/@3/"),
-        Some(Ok(Reveal::Pane(ResourceId::local(3))))
+        Some(Ok(Link::Pane(ResourceId::local(3))))
     );
     let satellite = ResourceId::satellite("box:2222", 7);
     assert_eq!(
         target("phux://pane/box:2222/@7"),
-        Some(Ok(Reveal::Pane(satellite)))
+        Some(Ok(Link::Pane(satellite)))
     );
     assert_eq!(
         target("phux://session/my%20work"),
-        Some(Ok(Reveal::Session("my work".to_owned())))
+        Some(Ok(Link::Session("my work".to_owned())))
     );
-    let tab = Reveal::Tab {
+    let tab = Link::Tab {
         session: "a/b".to_owned(),
         index: 2,
         since: None,
@@ -107,7 +117,7 @@ fn a_folder_link_must_name_a_directory_here() {
     std::fs::write(dir.join("f.txt"), "").unwrap();
     let encoded = dir.display().to_string().replace(' ', "%20");
     let link = format!("phux://folder{encoded}");
-    assert_eq!(target(&link), Some(Ok(Reveal::Folder(dir.clone()))));
+    assert_eq!(target(&link), Some(Ok(Link::Folder(dir.clone()))));
     for bad in [
         format!("{link}/f.txt"),
         format!("{link}/missing"),
@@ -119,7 +129,7 @@ fn a_folder_link_must_name_a_directory_here() {
     let mut desk = desk();
     desk.connection.topology = Some(crate::desk::topology(Vec::new(), Vec::new()));
     desk.open_system_link(&link);
-    assert_eq!(desk.connection.reveal, None);
+    assert_eq!(held(&desk), None);
     assert_eq!(notice(&desk), None);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -136,12 +146,12 @@ fn a_pane_is_found_exactly_or_refused() {
 fn a_link_waits_for_the_panes_then_fails_closed() {
     let mut desk = desk();
     desk.open_system_link("phux://pane/@9");
-    let held = Some(Reveal::Pane(ResourceId::local(9)));
-    assert_eq!(desk.connection.reveal, held, "held");
+    let link = Link::Pane(ResourceId::local(9));
+    assert_eq!(held(&desk), Some(&link), "held with its original owner");
     assert!(desk.notice.is_none());
     desk.connection.topology = Some(crate::desk::topology(Vec::new(), vec![pane(1, "w")]));
     assert!(!desk.follow_reveal());
-    assert_eq!(desk.connection.reveal, None);
+    assert_eq!(held(&desk), None);
     assert_eq!(
         notice(&desk),
         Some("No pane @9 on this server, so nothing was revealed.")
@@ -150,7 +160,7 @@ fn a_link_waits_for_the_panes_then_fails_closed() {
 
     desk.machines.current = Some("mini".to_owned());
     desk.open_system_link("phux://pane/@1");
-    assert_eq!(desk.connection.reveal, None);
+    assert_eq!(held(&desk), None);
     assert!(notice(&desk).is_some_and(|n| n.contains("mini")));
 }
 
@@ -161,10 +171,7 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
     desk.connection.topology = Some(crate::desk::topology(sessions, vec![pane(1, "work")]));
 
     desk.open_system_link("phux://session/work");
-    assert_eq!(
-        (desk.connection.reveal.as_ref(), notice(&desk)),
-        (None, None)
-    );
+    assert_eq!((held(&desk), notice(&desk)), (None, None));
     desk.open_system_link("phux://session/gone");
     assert!(notice(&desk).is_some_and(|n| n.contains("\"gone\"")));
 
@@ -177,10 +184,7 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
     desk.notice = None;
     desk.open_system_link("phux://tab/work/2");
     assert!(
-        matches!(
-            &desk.connection.reveal,
-            Some(Reveal::Tab { since: Some(_), .. })
-        ),
+        matches!(held(&desk), Some(Link::Tab { since: Some(_), .. })),
         "waits for the session's tabs"
     );
     assert!(desk.follow_reveal(), "still waiting");
@@ -201,17 +205,76 @@ fn a_session_or_tab_is_found_exactly_or_refused() {
 
     desk.notice = None;
     desk.open_system_link("phux://tab/work/1");
-    assert_eq!(
-        (desk.connection.reveal.as_ref(), notice(&desk)),
-        (None, None)
-    );
+    assert_eq!((held(&desk), notice(&desk)), (None, None));
 
     desk.connection.tabs.by_session.clear();
-    desk.connection.reveal = Some(Reveal::Tab {
+    desk.open_system_link("phux://tab/work/1");
+    let reveal = desk.connection.reveal.as_mut().expect("waits for the tabs");
+    reveal.link = Link::Tab {
         session: "work".to_owned(),
         index: 1,
         since: Some(Instant::now() - TAB_WAIT),
-    });
+    };
     assert!(!desk.follow_reveal(), "gives up");
     assert!(notice(&desk).is_some_and(|n| n.contains("didn't load")));
+}
+
+mod source_admission {
+    use super::*;
+    use crate::test_support::terminal::Replica;
+
+    #[test]
+    fn delayed_links_keep_their_original_source_and_first_source_epoch() {
+        for pending in [false, true] {
+            let replica = if pending {
+                Replica::pending(80, 24, 2)
+            } else {
+                Replica::durable(80, 24, 2)
+            };
+            let client = &replica.client;
+            let mut desk = replica.window();
+            let topology = desk.connection.topology.take();
+            desk.open_system_link("phux://pane/@2");
+            assert!(desk.connection.reveal.is_some());
+            replica.replace_server(2);
+            desk.connection.topology = topology;
+            let _ = client.take_outbound();
+            desk.follow_reveal();
+            assert!(desk.connection.reveal.is_none());
+            assert!(desk.connection.wanted.is_none());
+            assert!(desk.connection.shown.is_none());
+            assert!(client.take_outbound().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_delayed_link_cannot_supersede_a_newer_focus_gesture() {
+        let replica = Replica::pending(80, 24, 2);
+        let mut desk = replica.window();
+        let topology = desk.connection.topology.take();
+        desk.open_system_link("phux://pane/@2");
+        desk.want(ResourceId::local(1));
+        desk.connection.topology = topology;
+        desk.follow_reveal();
+        assert!(desk.open_wanted(&replica.client));
+        assert_eq!(
+            desk.connection.shown.as_ref().map(|shown| &shown.resource),
+            Some(&ResourceId::local(1))
+        );
+    }
+
+    #[test]
+    fn a_link_with_an_existing_source_can_open_the_retained_offline_replica() {
+        let replica = Replica::new(80, 24, 1);
+        let mut desk = replica.window();
+        let topology = desk.connection.topology.take();
+        desk.open_system_link("phux://pane/@1");
+        replica
+            .client
+            .with_control(|control| control.connection_lost(None));
+        desk.connection.topology = topology;
+        desk.follow_reveal();
+        let view = desk.connection.shown.as_ref().unwrap().view.unwrap();
+        assert!(replica.client.acquire_view(view).is_some());
+    }
 }

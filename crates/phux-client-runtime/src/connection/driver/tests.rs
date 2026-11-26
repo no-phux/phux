@@ -46,8 +46,12 @@ impl WriteFixture {
         Self {
             io: Io::stream(Box::new(reader), Box::new(writer)),
             peer,
-            shared: Arc::new(Mutex::new(ControlPlane::new(ControlOptions::default()))),
+            shared: Arc::new(Mutex::new(ControlPlane::new(
+                std::time::Instant::now(),
+                ControlOptions::default(),
+            ))),
             signals: Signals {
+                trace: Arc::new(Mutex::new(None)),
                 outbound: Arc::new(Notify::new()),
                 resync: watch::channel(0).1,
                 nudge: watch::channel(0).1,

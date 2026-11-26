@@ -116,7 +116,7 @@ fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
             1
         );
         assert!(matches!(
-            mailbox.requests.try_recv(),
+            mailbox.requests.try_recv().map(|queued| queued.request),
             Ok(RelayRequest::MirrorTerminal { terminal: 7 })
         ));
     }

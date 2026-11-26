@@ -117,6 +117,12 @@ impl ClientTable {
         }
     }
 
+    /// The connection that last typed into `terminal`.
+    #[must_use]
+    pub(crate) fn controller(&self, terminal: &WireResourceId) -> Option<ClientId> {
+        self.controllers.get(terminal).copied()
+    }
+
     // -- attach roles (ADR-0127) ---------------------------------------
 
     /// Whether `client` subscribed `terminal` as a `VIEWER`.

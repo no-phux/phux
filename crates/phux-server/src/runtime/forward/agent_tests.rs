@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use phux_protocol::forward::{ForwardOp, MAX_AGENT_MESSAGE_BYTES};
-use phux_protocol::wire::frame::{AgentEvent, CommandResult, ErrorCode, FrameKind};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{
+    AgentEvent, CommandResult, ErrorCode, FrameKind, RESOURCE_NOTE_KEY, Scope,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -84,7 +87,7 @@ async fn off_refuses_both_commands() {
         };
         assert_eq!(code, ErrorCode::Unsupported);
     }
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
 }
 
 /// Every type but list (11) and sign (13) is answered here and never
@@ -95,9 +98,12 @@ async fn only_list_and_sign_reach_the_client() {
     let (ctx, mut mailbox) = client(&state, 1, 4);
     offer(&ctx);
     for kind in (0..=u8::MAX).filter(|kind| !matches!(kind, 11 | 13)) {
-        assert_eq!(ask(&state, vec![kind, 0, 0, 0, 0], LONG).await, FAILURE);
+        assert_eq!(
+            ask(&state, None, vec![kind, 0, 0, 0, 0], LONG).await,
+            FAILURE
+        );
     }
-    assert_eq!(ask(&state, Vec::new(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, Vec::new(), LONG).await, FAILURE);
     assert!(
         mailbox.try_recv().is_err(),
         "a refused request was delivered"
@@ -120,7 +126,7 @@ async fn a_reply_must_be_the_matching_answer_type() {
         (sign(b"key"), FAILURE.to_vec(), FAILURE.to_vec()),
         (sign(b"key"), Vec::new(), FAILURE.to_vec()),
     ] {
-        let asked = ask(&state, message.clone(), LONG);
+        let asked = ask(&state, None, message.clone(), LONG);
         let answered = async {
             let (id, delivered) = request(&mut mailbox).await;
             assert_eq!(delivered, message);
@@ -139,7 +145,7 @@ async fn an_unanswered_request_fails_at_the_deadline_and_a_late_reply_is_refused
     let state = state();
     let (ctx, mut mailbox) = client(&state, 1, 4);
     offer(&ctx);
-    let got = ask(&state, sign(b"key"), Duration::from_millis(50)).await;
+    let got = ask(&state, None, sign(b"key"), Duration::from_millis(50)).await;
     assert_eq!(got, FAILURE);
     assert_eq!(pending(&state), 0);
     let (id, _) = request(&mut mailbox).await;
@@ -158,7 +164,7 @@ async fn a_disconnect_fails_the_waiting_request_now() {
     let (ctx, mut mailbox) = client(&state, 1, 4);
     offer(&ctx);
     let started = tokio::time::Instant::now();
-    let asked = ask(&state, sign(b"key"), LONG);
+    let asked = ask(&state, None, sign(b"key"), LONG);
     let gone = async {
         request(&mut mailbox).await;
         withdraw(&state, ClientId(1));
@@ -167,7 +173,7 @@ async fn a_disconnect_fails_the_waiting_request_now() {
     assert_eq!(got, FAILURE);
     assert_eq!(started.elapsed(), Duration::ZERO, "waited for the deadline");
     assert_eq!(pending(&state), 0);
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
 }
 
 /// A connection whose writer is gone before `withdraw` runs (the mailbox
@@ -179,14 +185,14 @@ async fn a_closed_or_full_mailbox_fails_at_once() {
     let (ctx, mailbox) = client(&state, 1, 1);
     offer(&ctx);
     drop(mailbox);
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
 
     let (ctx, _mailbox) = client(&state, 2, 1);
     offer(&ctx);
-    let first = ask(&state, LIST.to_vec(), Duration::from_millis(50));
+    let first = ask(&state, None, LIST.to_vec(), Duration::from_millis(50));
     let second = async {
         tokio::task::yield_now().await;
-        ask(&state, LIST.to_vec(), LONG).await
+        ask(&state, None, LIST.to_vec(), LONG).await
     };
     let (first, second) = tokio::join!(first, second);
     assert_eq!((first.as_slice(), second.as_slice()), (FAILURE, FAILURE));
@@ -194,20 +200,18 @@ async fn a_closed_or_full_mailbox_fails_at_once() {
 }
 
 /// The newest offer wins. The earlier client still answers what it was
-/// already sent, cannot answer the newer client's request, and its
-/// disconnect leaves the newer offer standing; when the newer client goes
-/// there is no falling back.
+/// already sent, and cannot answer the newer client's request.
 #[tokio::test]
-async fn the_newest_offer_wins_and_there_is_no_fallback() {
+async fn the_newest_offer_wins_and_each_answers_its_own() {
     let state = state();
     let (old, mut old_mail) = client(&state, 1, 4);
     let (new, mut new_mail) = client(&state, 2, 4);
     offer(&old);
-    let early = ask(&state, LIST.to_vec(), LONG);
+    let early = ask(&state, None, LIST.to_vec(), LONG);
     let rest = async {
         let (early_id, _) = request(&mut old_mail).await;
         offer(&new);
-        let late = ask(&state, LIST.to_vec(), LONG);
+        let late = ask(&state, None, LIST.to_vec(), LONG);
         let answers = async {
             let (late_id, _) = request(&mut new_mail).await;
             let CommandResult::Error { code, .. } = reply(&old, late_id, &[12]) else {
@@ -228,7 +232,96 @@ async fn the_newest_offer_wins_and_there_is_no_fallback() {
     );
 
     withdraw(&state, ClientId(2));
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
+}
+
+/// When the newest serving client leaves, the one before it answers again,
+/// whether its connection ended or only its mailbox is gone. A connection
+/// that offers twice is listed once.
+#[tokio::test]
+async fn the_previous_client_takes_over_when_the_newest_leaves() {
+    async fn answers(
+        state: &SharedState,
+        ctx: &CommandContext,
+        mailbox: &mut mpsc::Receiver<Outbound>,
+    ) {
+        let asked = ask(state, None, LIST.to_vec(), LONG);
+        let answered = async {
+            let (id, _) = request(mailbox).await;
+            assert_eq!(reply(ctx, id, &[12]), CommandResult::Ok);
+        };
+        assert_eq!(tokio::join!(asked, answered).0, [12]);
+    }
+    let state = state();
+    let (one, mut one_mail) = client(&state, 1, 4);
+    let (two, mut two_mail) = client(&state, 2, 4);
+    let (three, three_mail) = client(&state, 3, 4);
+    for ctx in [&one, &two, &one, &three] {
+        offer(ctx);
+    }
+    drop(three_mail);
+    answers(&state, &one, &mut one_mail).await;
+    withdraw(&state, ClientId(1));
+    answers(&state, &two, &mut two_mail).await;
+    withdraw(&state, ClientId(2));
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
+    assert!(one_mail.try_recv().is_err() && two_mail.try_recv().is_err());
+}
+
+/// A request nobody answered becomes its pane's note, at most once per
+/// gap; a refusal is an answer, and leaves none.
+#[tokio::test]
+async fn an_unanswered_request_is_noted_on_its_pane_once() {
+    let state = state();
+    let [pane, other] = ["one", "two"].map(|name| {
+        state.with_mut(|s| {
+            let (_session, pane) = s.seed_session(name);
+            s.idspace.intern_resource(pane)
+        })
+    });
+    let note = |id: &ResourceId| {
+        state
+            .with(|s| {
+                s.metadata()
+                    .get(&Scope::Resource(id.clone()), RESOURCE_NOTE_KEY)
+            })
+            .and_then(|value| phux_client_core::note::parse_note(&value))
+    };
+    let (ctx, mut mailbox) = client(&state, 1, 4);
+    offer(&ctx);
+    let refused = ask(&state, Some(pane.clone()), sign(b"key"), LONG);
+    let refusing = async {
+        match mailbox.recv().await {
+            Some(Outbound::Frame(FrameKind::Event {
+                terminal,
+                event: AgentEvent::SshAgentRequest { id, .. },
+                ..
+            })) => {
+                assert_eq!(terminal, Some(pane.clone()), "the event names the pane");
+                assert_eq!(reply(&ctx, id, FAILURE), CommandResult::Ok);
+            }
+            other => panic!("expected an agent_request, got {other:?}"),
+        }
+    };
+    assert_eq!(tokio::join!(refused, refusing).0, FAILURE);
+    assert_eq!(note(&pane), None);
+
+    let brief = Duration::from_millis(20);
+    ask(&state, Some(pane.clone()), LIST.to_vec(), brief).await;
+    let first = note(&pane).expect("a note");
+    let body = first.body.as_deref().unwrap();
+    assert!(body.contains("did not answer in time"), "{body}");
+
+    withdraw(&state, ClientId(1));
+    ask(&state, Some(pane.clone()), LIST.to_vec(), LONG).await;
+    assert_eq!(note(&pane), Some(first), "noted again within the gap");
+    ask(&state, Some(other.clone()), LIST.to_vec(), LONG).await;
+    let body = note(&other).expect("another pane's note").body.unwrap();
+    assert!(body.contains("no client offers an agent"), "{body}");
+
+    let closed = ResourceId::local(999);
+    ask(&state, Some(closed.clone()), LIST.to_vec(), LONG).await;
+    assert_eq!(note(&closed), None, "a pane that is gone gets no note");
 }
 
 /// A pane that gives up (its connection's task is dropped) leaves no
@@ -240,12 +333,12 @@ async fn an_abandoned_request_is_forgotten_and_the_table_is_bounded() {
     offer(&ctx);
     let mut waiting = Vec::new();
     for _ in 0..MAX_PENDING {
-        let mut asked = Box::pin(ask(&state, LIST.to_vec(), LONG));
+        let mut asked = Box::pin(ask(&state, None, LIST.to_vec(), LONG));
         assert!(futures_util::poll!(asked.as_mut()).is_pending());
         waiting.push(asked);
     }
     assert_eq!(pending(&state), MAX_PENDING);
-    assert_eq!(ask(&state, LIST.to_vec(), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, LIST.to_vec(), LONG).await, FAILURE);
     drop(waiting);
     assert_eq!(pending(&state), 0);
     for _ in 0..MAX_PENDING {
@@ -291,11 +384,11 @@ async fn offers_and_signatures_are_audited_without_their_bytes() {
     let dir = tempfile::tempdir().unwrap();
     crate::audit::capture_for_test(dir.path(), crate::audit::ROTATE_BYTES);
     let state = state();
-    assert_eq!(ask(&state, sign(KEY), LONG).await, FAILURE);
+    assert_eq!(ask(&state, None, sign(KEY), LONG).await, FAILURE);
     let (ctx, mut mailbox) = client(&state, 7, 4);
     offer(&ctx);
     for (message, answer) in [(LIST.to_vec(), [12]), (sign(KEY), [14]), (sign(KEY), [5])] {
-        let asked = ask(&state, message, LONG);
+        let asked = ask(&state, None, message, LONG);
         let answered = async {
             let (id, _) = request(&mut mailbox).await;
             assert_eq!(reply(&ctx, id, &answer), CommandResult::Ok);

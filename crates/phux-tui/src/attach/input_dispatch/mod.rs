@@ -9,6 +9,7 @@ mod ctx;
 mod deferred;
 mod dispatch;
 mod effects;
+mod held_typing;
 // The handler modules the action registry's rows name (ADR-0172).
 pub(super) mod organize;
 mod pickers;

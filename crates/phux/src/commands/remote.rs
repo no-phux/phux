@@ -458,7 +458,7 @@ pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
 
 /// Write every field, clearing omitted ones, so re-adding never leaves stale
 /// auth material pointing at a new endpoint.
-fn fill_table(table: &mut Table, new: &NewRemote) {
+pub(crate) fn fill_table(table: &mut Table, new: &NewRemote) {
     let display = |path: &Option<PathBuf>| path.as_ref().map(|path| path.display().to_string());
     table.insert("name", value(&new.name));
     table.insert("endpoint", value(&new.endpoint));

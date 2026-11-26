@@ -1,8 +1,6 @@
 //! Pending snapshots, request ids, and the satellite metadata mirror.
 
-use super::{
-    FrameKind, Outbound, ProxySubscriber, RelaySession, ResourceId, Scope, SnapshotGate, mpsc,
-};
+use super::{FrameKind, ProxySubscriber, RelaySession, ResourceId, Scope, SnapshotGate, mpsc};
 
 impl RelaySession {
     /// Retry one subscriber's retained bootstrap prefix. Returns
@@ -15,9 +13,25 @@ impl RelaySession {
             detach_upstream,
         } = gate
         {
-            return match sub.out_tx.try_send(Outbound::Frame(failure.clone())) {
-                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => (false, false),
-                Err(mpsc::error::TrySendError::Full(_)) => {
+            // A content consumer is bootstrapped afresh: dropped here it kept a
+            // fenced (or empty) pane for good, since nothing tells it to
+            // attach. With no generation to fence, there is nothing to say.
+            let recover = detach_upstream && !sub.retire_after_flush && sub.content.is_some();
+            let delivered = if recover && matches!(failure, FrameKind::Error { .. }) {
+                Ok(())
+            } else {
+                sub.deliver(&failure)
+            };
+            return match delivered {
+                Ok(()) if recover => {
+                    sub.current_generation = None;
+                    if let Some(content) = &mut sub.content {
+                        content.hurry();
+                    }
+                    (false, true)
+                }
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(())) => (false, false),
+                Err(mpsc::error::TrySendError::Full(())) => {
                     if std::time::Instant::now() >= deadline {
                         // Other clones keep the mailbox alive; cancel the
                         // connection itself.
@@ -45,13 +59,13 @@ impl RelaySession {
             return (open, true);
         };
         while let Some(frame) = frames.front() {
-            match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+            match sub.deliver(frame) {
                 Ok(()) => {
                     retained_bytes =
                         retained_bytes.saturating_sub(Self::retained_frame_bytes(frame));
                     frames.pop_front();
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Full(())) => {
                     sub.gate = SnapshotGate::Retained {
                         frames,
                         retained_bytes,
@@ -59,7 +73,7 @@ impl RelaySession {
                     };
                     return (false, true);
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(mpsc::error::TrySendError::Closed(())) => {
                     sub.gate = SnapshotGate::Open;
                     return (false, false);
                 }

@@ -8,8 +8,9 @@ fn scroll_selection_search_and_failed_callbacks_are_view_local() {
         &terminal,
         b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
     );
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     let default = publication.acquire(&terminal).unwrap();
     let b_frame = publication.acquire_view(b).unwrap();
     owner.scroll_view(a, Scroll::Top).unwrap();
@@ -89,8 +90,9 @@ fn hyperlink_flattening_uses_the_installed_viewport() {
     let (owner, publication) = owner();
     let terminal = id(109);
     attach(&owner, &terminal, b"\x1b]8;;https://example.com/history\x1b\\head\x1b]8;;\x1b\\\r\none\r\ntwo\r\nthree\r\nfour\r\nfive");
-    let history = owner.create_view(&terminal).unwrap();
-    let tail = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let history = owner.create_view(&source).unwrap();
+    let tail = owner.create_view(&source).unwrap();
     owner.scroll_view(history, Scroll::Top).unwrap();
     output(&owner, &terminal, 1, b"!");
     let frame = publication.acquire_view(history).unwrap();
@@ -122,7 +124,8 @@ fn replacing_search_preserves_selected_search_anchors() {
     let (owner, _) = owner();
     let terminal = id(103);
     attach(&owner, &terminal, b"one two one");
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let found = owner.search_view(view, "one".into(), true).unwrap();
     owner
         .set_view_selection(view, found[0].start, found[0].end, false)
@@ -142,8 +145,9 @@ fn destroying_a_view_releases_its_share_of_the_document_anchor_budget() {
     let (owner, publication) = owner();
     let terminal = id(111);
     attach(&owner, &terminal, b"text");
-    let crowded = owner.create_view(&terminal).unwrap();
-    let survivor = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let crowded = owner.create_view(&source).unwrap();
+    let survivor = owner.create_view(&source).unwrap();
     let before = publication.view_generation(survivor);
     for _ in 0..config().scrollback_lines {
         owner.track_view_anchor(crowded, point(0, 0)).unwrap();
@@ -165,8 +169,9 @@ fn history_tombstone_reconciles_every_view_without_waiting_for_live_output() {
         (20, 4),
         Some(b"older"),
     );
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     owner.scroll_view(a, Scroll::Top).unwrap();
     let (start, end) = select(&owner, a, 0, 3);
     select(&owner, b, 0, 2);
@@ -205,8 +210,9 @@ fn pruning_one_view_does_not_clear_another_views_recent_selection() {
     // Normal-width pages reach eviction within the bounded loop. Narrow
     // pages can retain thousands of rows despite the requested line limit.
     attach_many_sized(&owner, &[(&terminal, initial.as_bytes())], (80, 4));
-    let old = owner.create_view(&terminal).unwrap();
-    let recent = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let old = owner.create_view(&source).unwrap();
+    let recent = owner.create_view(&source).unwrap();
     owner.scroll_view(old, Scroll::Top).unwrap();
     let oldest = owner.track_view_anchor(old, point(0, 0)).unwrap();
     // Ghostty trims whole pages rather than individual rows. Exercise a real
@@ -240,7 +246,8 @@ fn default_view_returns_to_tail_when_its_anchor_is_evicted() {
         let terminal = id(110);
         attach(&owner, &terminal, "line\r\n".repeat(20).as_bytes());
         if destroy_last_view {
-            let view = owner.create_view(&terminal).unwrap();
+            let source = owner.view_source(&terminal).unwrap();
+            let view = owner.create_view(&source).unwrap();
             owner.destroy_view(view).unwrap();
         }
         owner.scroll(&terminal, Scroll::Top).unwrap();
@@ -269,8 +276,9 @@ fn saturated_search_reserves_viewport_pins_for_every_existing_view() {
     let (owner, publication) = owner();
     let terminal = id(120);
     attach(&owner, &terminal, "needle\r\n".repeat(80).as_bytes());
+    let source = owner.view_source(&terminal).unwrap();
     let views: Vec<_> = (0..4)
-        .map(|_| owner.create_view(&terminal).unwrap())
+        .map(|_| owner.create_view(&source).unwrap())
         .collect();
     let found = owner.search(&terminal, "needle".into(), true).unwrap();
     assert!(!found.is_empty());
@@ -342,8 +350,9 @@ fn prompt_jumps_and_select_all_stay_in_one_view() {
     let (owner, publication) = owner();
     let terminal = id(131);
     attach(&owner, &terminal, b"");
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     // Rows 0, 3 and 6 carry OSC 133 prompts; the 4-row viewport shows 3..=6.
     output(
         &owner,

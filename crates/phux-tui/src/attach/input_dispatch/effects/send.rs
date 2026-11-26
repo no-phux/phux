@@ -223,11 +223,8 @@ pub(super) async fn send_session_rename(
         && let Some(key) = session_key
     {
         let request_id = ctx.take_request_id();
-        let command = phux_client::rename::org_rename_command(
-            phux_client::org::mint_operation(),
-            key,
-            &new_name,
-        );
+        let operation = phux_client::org::mint_operation();
+        let command = phux_client::rename::org_rename_command(operation, key, &new_name);
         conn.send(&FrameKind::Command {
             request_id,
             command,
@@ -240,6 +237,7 @@ pub(super) async fn send_session_rename(
             current: session_name,
             new_name,
             organization: true,
+            operation: Some(operation),
         });
         return Ok(());
     }
@@ -256,6 +254,7 @@ pub(super) async fn send_session_rename(
         current: session_name,
         new_name,
         organization: false,
+        operation: None,
     });
     Ok(())
 }

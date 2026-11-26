@@ -6,7 +6,7 @@ use super::{
     MAX_APPLY_INPUT_COMMAND_BODY, MouseEvent, PasteEvent, PasteTrust, Pending, ResourceId, Status,
     keys,
 };
-use phux_client_core::input_replay::validate_apply_input_batch;
+use phux_client_core::input_replay::{InputSubmission, UserPasteDelivery, user_paste_delivery};
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::MAX_FRAME_LEN;
 
@@ -186,41 +186,33 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, paste(text, PasteTrust::Untrusted))
     }
 
-    /// Deliver the user's own clipboard paste: the same intent boundary as a
-    /// DEC 2004 paste reaching the TUI, or `phux paste`, so it is trusted and
-    /// the server brackets it without refusing multi-line text. A paste that
-    /// fits one `APPLY_INPUT` goes acknowledged (the returned correlation
-    /// resolves [`Event::InputDelivery`]). A larger one, or one for a
-    /// satellite pane (acknowledged input is local-only), goes as one atomic
-    /// `INPUT_PASTE` event, never split (docs/protocol.md#input), and has no receipt:
-    /// `Ok(None)`. Unresolved acknowledged input for the terminal refuses the
-    /// raw event rather than let it reach the PTY first: `Err` carries the
-    /// refusal's receipt, so a caller never reports a refused paste as sent.
-    pub fn apply_user_paste(
-        &mut self,
-        terminal_id: &ResourceId,
-        text: &str,
-    ) -> Result<Option<u64>, u64> {
-        if matches!(terminal_id, ResourceId::Local { .. }) {
-            // The journal's batch rule is the gate that refuses, so it alone
-            // decides; a paste it would refuse goes raw instead.
-            let events = paste(text, PasteTrust::Trusted);
-            if validate_apply_input_batch(&events).is_ok() {
-                return Ok(Some(self.begin_acknowledged_input(terminal_id, events)));
+    /// Submit the user's clipboard paste. The borrowed portable policy chooses
+    /// acknowledged delivery or one atomic raw fallback before copying bytes.
+    /// Local queue acceptance never claims server admission or delivery.
+    pub fn apply_user_paste(&mut self, terminal_id: &ResourceId, text: &str) -> InputSubmission {
+        match user_paste_delivery(
+            text,
+            matches!(terminal_id, ResourceId::Local { .. }),
+            self.input_replay.must_order_after(terminal_id),
+            self.delivery_fenced(terminal_id),
+        ) {
+            UserPasteDelivery::Acknowledged => {
+                self.submit_acknowledged_input(terminal_id, paste(text, PasteTrust::Trusted))
             }
+            UserPasteDelivery::Raw => {
+                if self.send_paste(terminal_id, text.as_bytes().to_vec(), PasteTrust::Trusted) {
+                    InputSubmission::QueuedRaw
+                } else {
+                    InputSubmission::Refused {
+                        delivery_id: self
+                            .refuse_acknowledged_input("delivery to this terminal is fenced"),
+                    }
+                }
+            }
+            UserPasteDelivery::Refused(message) => InputSubmission::Refused {
+                delivery_id: self.refuse_acknowledged_input(message),
+            },
         }
-        if text.len() > MAX_RAW_PASTE {
-            return Err(self.refuse_acknowledged_input("the paste is larger than 16 MB"));
-        }
-        if self.input_replay.must_order_after(terminal_id) {
-            return Err(
-                self.refuse_acknowledged_input("an earlier paste to this terminal is unresolved")
-            );
-        }
-        if !self.send_paste(terminal_id, text.as_bytes().to_vec(), PasteTrust::Trusted) {
-            return Err(self.refuse_acknowledged_input("delivery to this terminal is fenced"));
-        }
-        Ok(None)
     }
 
     /// Atomically flush a draft and press Tab through the acknowledged
@@ -282,6 +274,7 @@ pub fn mint_input_operation_id() -> InputOperationId {
 mod tests {
     use super::*;
     use crate::control::{AgentEvent, ControlOptions, DeliveryOutcome};
+    use phux_client_core::input_replay::validate_apply_input_batch;
     use phux_protocol::wire::DecodeError;
     use phux_protocol::wire::decode::Decoder;
     use phux_protocol::wire::frame::Command;
@@ -422,7 +415,8 @@ mod tests {
             ("apply_paste", ControlPlane::apply_paste, &pasted),
         ];
         for (name, send, text) in sends {
-            let mut control = ControlPlane::new(ControlOptions::default());
+            let mut control =
+                ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
             send(&mut control, &pane, text);
             let message = refusal(&mut control).unwrap_or_else(|| panic!("{name} refused"));
             assert!(
@@ -452,7 +446,7 @@ mod tests {
     /// event stream announced is answerable even with no title sentinel.
     #[test]
     fn an_answer_only_types_into_the_question_it_names() {
-        let mut control = ControlPlane::new(ControlOptions::default());
+        let mut control = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
         let pane = ResourceId::local(7);
         control.apply_answer(&pane, "q1", "yes");
         assert!(refusal(&mut control).is_some(), "no live ask must refuse");

@@ -106,6 +106,29 @@ impl App {
         }
         Ok(())
     }
+    /// Settle actual transport handoffs, not frame construction. Only a
+    /// definitely unhanded suffix may undo the journal's attempt bookkeeping.
+    pub(super) fn flush_input(&self) -> Result<(), String> {
+        let frames = self.session.input_attempts();
+        for (index, frame) in frames.iter().enumerate() {
+            let encoded = crate::session::encode(frame);
+            if let Err((message, attempted)) = self.tx.handoff_input(&encoded) {
+                self.session
+                    .rollback_input_unsent(&frames[index + usize::from(attempted)..]);
+                self.publish_input_reports();
+                return Err(message);
+            }
+        }
+        self.publish_input_reports();
+        Ok(())
+    }
+
+    pub(super) fn publish_input_reports(&self) {
+        for (delivery_id, report) in self.session.take_input_reports() {
+            self.announce(&report.notice_line());
+            publish_input_report(&self.canvas, delivery_id, &report);
+        }
+    }
 
     /// Apply the backend policy before HELLO, without changing codec capabilities.
     pub(super) fn configure_hosted_backend(&mut self, preamble: &JsValue) {
@@ -154,6 +177,10 @@ impl App {
         // working. Painted before the kernel is failed.
         self.paint_badges();
         let pane_pending = self.session.pane_pending();
+        self.session.stop_input_delivery(
+            self.reconnect.borrow().is_some() && !self.session.is_version_refused(),
+        );
+        self.publish_input_reports();
         self.session.fail_protocol(message);
         if pane_pending && !self.session.pane_pending() {
             self.publish_panes();
@@ -177,6 +204,10 @@ impl App {
     }
 
     pub(super) fn dispose(&mut self) {
+        if !self.session.is_failed() {
+            self.session.stop_input_delivery(false);
+            self.publish_input_reports();
+        }
         self.dispose_documents();
         self.bindings.get_mut().dispose();
         self.tx.close();
@@ -253,6 +284,52 @@ impl App {
             );
             self.ctx.restore();
             self.paint_pane_border(&pane, true, &crate::ink::roles_of(grid));
+        }
+    }
+}
+
+pub(super) fn publish_input_report(
+    canvas: &HtmlCanvasElement,
+    delivery_id: u64,
+    report: &phux_client_core::input_replay::ReplayReport,
+) {
+    use phux_client_core::input_replay::ReplayDisposition;
+    let status = match report.disposition {
+        ReplayDisposition::Delivered => "delivered",
+        ReplayDisposition::Refused => "refused",
+        ReplayDisposition::Unknown => "unknown",
+    };
+    let notice = report.notice_line();
+    let _ = canvas.set_attribute("data-phux-input-status", status);
+    let _ = canvas.set_attribute("data-phux-input-delivery-id", &delivery_id.to_string());
+    let _ = canvas.set_attribute("data-phux-input-operation", &report.operation_id);
+    let _ = canvas.set_attribute("data-phux-input-notice", &notice);
+    show_input_notice(canvas, &notice);
+    let detail: JsValue = js_sys::Object::new().into();
+    set_js(&detail, "status", status);
+    set_js(&detail, "deliveryId", delivery_id.to_string());
+    set_js(&detail, "operationId", report.operation_id.clone());
+    set_js(&detail, "message", report.message.clone());
+    let target = canvas.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        dispatch_custom(&target, INPUT_DELIVERY_EVENT, Some(&detail));
+    });
+    if report.disposition != ReplayDisposition::Delivered {
+        web_sys::console::warn_1(&JsValue::from_str(&notice));
+    }
+}
+
+pub(super) fn show_input_notice(canvas: &HtmlCanvasElement, notice: &str) {
+    if let Some(document) = canvas.owner_document() {
+        let node = document.get_element_by_id("phux-input-notice").or_else(|| {
+            let node = document.create_element("output").ok()?;
+            node.set_id("phux-input-notice");
+            node.set_attribute("role", "status").ok()?;
+            canvas.parent_element()?.append_child(&node).ok()?;
+            Some(node)
+        });
+        if let Some(node) = node {
+            node.set_text_content(Some(notice));
         }
     }
 }

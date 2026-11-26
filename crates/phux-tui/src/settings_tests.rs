@@ -26,7 +26,7 @@ fn strict_load_applies_keybinding_and_theme_changes() {
         "##,
     );
     let new = TuiSettings::load_strict(&path).expect("valid config reloads");
-    let kb = new.keybindings.expect("snapshot present");
+    let kb = new.keybindings;
     assert!(
         kb.prefix_table.contains_key("X"),
         "reload must pick up the new prefix-table binding",
@@ -38,7 +38,7 @@ fn strict_load_applies_keybinding_and_theme_changes() {
     );
     // The resolver is built from the same snapshot: the new chord
     // resolves (prefix, then X) to the bound action.
-    let mut resolver = new.resolver.expect("resolver present");
+    let mut resolver = new.resolver;
     let prefix = parse_chord(&kb.prefix).expect("prefix parses");
     assert_eq!(resolver.feed(prefix), Feed::Partial);
     match resolver.feed(parse_chord("X").expect("chord parses")) {
@@ -111,6 +111,7 @@ fn failed_reload_keeps_previous_settings() {
         ..ChromeBreakpoints::DEFAULT
     };
     let old_theme = settings.theme;
+    let old_bindings = settings.keybindings.clone();
     let old_chrome = settings.chrome;
 
     let (_dir, path) = config_file("this is [not valid toml");
@@ -120,8 +121,13 @@ fn failed_reload_keeps_previous_settings() {
     assert!(!err.is_empty(), "error message must be surfaceable");
 
     // Every slot is exactly as it was: nothing half-applied.
-    assert!(settings.keybindings.is_some());
-    assert!(settings.resolver.is_some());
+    assert_eq!(settings.keybindings, old_bindings);
+    let prefix = parse_chord(&settings.keybindings.prefix).expect("prefix");
+    assert_eq!(settings.resolver.feed(prefix), Feed::Partial);
+    assert!(matches!(
+        settings.resolver.feed(parse_chord("d").expect("detach chord")),
+        Feed::Resolved(action) if action.action == "detach"
+    ));
     assert_eq!(settings.theme, old_theme);
     assert_eq!(
         settings.chrome, old_chrome,
@@ -151,7 +157,7 @@ fn reload_refuses_an_unknown_action_and_keeps_the_working_binding() {
         err,
         "keybinding \"c\": unknown action `new-windoww` (did you mean `new-window`?)"
     );
-    let mut resolver = settings.resolver.expect("previous resolver kept");
+    let mut resolver = settings.resolver;
     assert_eq!(
         resolver.feed(parse_chord("C-a").expect("prefix parses")),
         Feed::Partial
@@ -176,7 +182,7 @@ fn strict_build_rejects_a_bad_binding_that_the_tolerant_build_degrades() {
 
     let tolerant = TuiSettings::tolerant_from(&cfg);
     // The lenient resolver survives, and the bar row names the chord.
-    let mut resolver = tolerant.resolver.expect("lenient resolver present");
+    let mut resolver = tolerant.resolver;
     let prefix = parse_chord("C-a").expect("prefix parses");
     assert_eq!(resolver.feed(prefix), Feed::Partial);
     assert!(matches!(
@@ -227,9 +233,9 @@ fn a_config_that_does_not_load_keeps_the_shipped_keys_and_shows_the_error() {
         let err = phux_config::loader::load_from(&path).expect_err("the file must not load");
         let settings = TuiSettings::without_config(&err);
 
-        let kb = settings.keybindings.expect("shipped bindings present");
+        let kb = settings.keybindings;
         assert_eq!(kb.prefix, "C-a", "the shipped prefix survives {broken:?}");
-        let mut resolver = settings.resolver.expect("shipped resolver present");
+        let mut resolver = settings.resolver;
         assert_eq!(
             resolver.feed(parse_chord("C-a").expect("prefix parses")),
             Feed::Partial

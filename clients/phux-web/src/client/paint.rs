@@ -27,12 +27,23 @@ impl App {
         let focused = self.session.focused_pane();
         let mut cursor_rows = Vec::with_capacity(panes.len());
         for (id, rect) in &panes {
+            let identity = self.session.input_presentation(id);
             let active = focused.as_ref() == Some(id);
             if let Some(row) = self.paint_pane(id, rect, active, &grid, &marks) {
                 cursor_rows.push((id.clone(), row));
             }
             if panes.len() > 1 {
                 self.paint_pane_border(rect, active, &roles);
+            }
+            if let Some(identity) = identity.as_ref()
+                && !self.bell_showing()
+                && self.canvas_fully_visible()
+                && let Some(terminal) = self.session.pane_terminal(id)
+            {
+                let drawn = terminal.grid();
+                if drawn.cols <= rect.cols && drawn.rows <= rect.rows {
+                    self.session.present_input(id, identity);
+                }
             }
         }
         if self.bell_showing() {
@@ -46,6 +57,113 @@ impl App {
         self.painted_marks.replace(marks);
         self.publish_title();
         self.place_input_surface();
+        true
+    }
+    /// A hidden, offscreen, clipped, transparent or covered canvas is not
+    /// evidence that the user has seen authoritative output.
+    fn canvas_fully_visible(&self) -> bool {
+        let Some(window) = web_sys::window() else {
+            return false;
+        };
+        let Some(document) = self.canvas.owner_document() else {
+            return false;
+        };
+        if document.hidden() {
+            return false;
+        }
+        let rect = self.canvas.get_bounding_client_rect();
+        let width = window
+            .inner_width()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let height = window
+            .inner_height()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        if rect.width() <= 0.0
+            || rect.height() <= 0.0
+            || rect.left() < 0.0
+            || rect.top() < 0.0
+            || rect.right() > width
+            || rect.bottom() > height
+        {
+            return false;
+        }
+        let mut element = Some(self.canvas.clone().unchecked_into::<web_sys::Element>());
+        while let Some(current) = element {
+            let Ok(Some(style)) = window.get_computed_style(&current) else {
+                return false;
+            };
+            if style.get_property_value("visibility").ok().as_deref() != Some("visible")
+                || style.get_property_value("display").ok().as_deref() == Some("none")
+                || style
+                    .get_property_value("opacity")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .is_none_or(|v| v < 1.0)
+            {
+                return false;
+            }
+            let bounds = current.get_bounding_client_rect();
+            for (property, unmasked) in [
+                ("clip-path", "none"),
+                ("clip", "auto"),
+                ("mask-image", "none"),
+                ("filter", "none"),
+            ] {
+                if style
+                    .get_property_value(property)
+                    .ok()
+                    .is_none_or(|value| value != unmasked)
+                {
+                    return false;
+                }
+            }
+            for (property, start, end, min, max) in [
+                (
+                    "overflow-x",
+                    rect.left(),
+                    rect.right(),
+                    bounds.left(),
+                    bounds.right(),
+                ),
+                (
+                    "overflow-y",
+                    rect.top(),
+                    rect.bottom(),
+                    bounds.top(),
+                    bounds.bottom(),
+                ),
+            ] {
+                if style
+                    .get_property_value(property)
+                    .ok()
+                    .is_none_or(|value| value != "visible")
+                    && (start < min || end > max)
+                {
+                    return false;
+                }
+            }
+            element = current.parent_element();
+        }
+        for (x, y) in [
+            (rect.left() + 0.5, rect.top() + 0.5),
+            (rect.right() - 0.5, rect.top() + 0.5),
+            (rect.left() + 0.5, rect.bottom() - 0.5),
+            (rect.right() - 0.5, rect.bottom() - 0.5),
+            (
+                (rect.left() + rect.right()) / 2.0,
+                (rect.top() + rect.bottom()) / 2.0,
+            ),
+        ] {
+            if document.element_from_point(x as f32, y as f32).as_ref()
+                != Some(self.canvas.unchecked_ref::<web_sys::Element>())
+            {
+                return false;
+            }
+        }
         true
     }
 

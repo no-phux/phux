@@ -6,7 +6,7 @@ use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
     MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeAlloc,
     NativeBootstrapReply, NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner,
-    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration,
     NativePublicationRequest, PendingNativeBootstrap, PendingNativeHistory, ResourceOutput,
     VecDeque, native_step_bytes, reserve_native_bytes, warn,
 };
@@ -41,6 +41,9 @@ fn grow_native_scratch(
 
 impl TerminalActor {
     pub(super) fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
+        if req.reply.is_closed() {
+            return;
+        }
         let owner = req.owner;
         let stream_id = req.stream_id;
         self.invalidate_native_owner(
@@ -48,7 +51,19 @@ impl TerminalActor {
             stream_id,
             phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
         );
-        if let Some(pending) = self.pending_native_bootstrap.as_mut() {
+        let queued = self
+            .publication
+            .pending_native_bootstrap
+            .as_ref()
+            .map_or(0, |pending| pending.waiters.len())
+            + self.publication.native_bootstrap_backlog.len();
+        if self.publication.native_cursor_owners.len() + queued >= MAX_NATIVE_HISTORY_CLIENTS {
+            let _ = req
+                .reply
+                .send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            return;
+        }
+        if let Some(pending) = self.publication.pending_native_bootstrap.as_mut() {
             if pending.limits == req.limits
                 && pending.capture_bytes
                     == req
@@ -66,15 +81,19 @@ impl TerminalActor {
                 pending.waiters.push(req);
                 return;
             }
-            self.native_bootstrap_backlog
+            self.publication
+                .native_bootstrap_backlog
                 .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, Some(stream_id)));
-            self.native_bootstrap_backlog.push_back(req);
+            self.publication.native_bootstrap_backlog.push_back(req);
             return;
         }
         self.start_native_bootstrap(req);
     }
 
     pub(super) fn start_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
+        if req.reply.is_closed() {
+            return;
+        }
         let _timer = crate::perf::BOOTSTRAP_NATIVE_BEGIN.timer();
         let limits = req.limits;
         let chunk_bytes = match usize::try_from(limits.max_chunk_bytes()) {
@@ -136,7 +155,8 @@ impl TerminalActor {
             }
         };
         let scratch_bytes = initial_native_scratch_bytes(scratch_ceiling);
-        let mut scratch = match reserve_native_bytes(&self.native_alloc, scratch_bytes) {
+        let mut scratch = match reserve_native_bytes(&self.publication.native_alloc, scratch_bytes)
+        {
             Ok(scratch) => scratch,
             Err(error) => {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
@@ -147,7 +167,7 @@ impl TerminalActor {
             }
         };
         scratch.resize(scratch_bytes, 0);
-        self.pending_native_bootstrap = Some(PendingNativeBootstrap {
+        self.publication.pending_native_bootstrap = Some(PendingNativeBootstrap {
             capture: Some(capture),
             waiters: vec![req],
             records: Vec::new(),
@@ -170,9 +190,17 @@ impl TerminalActor {
         reason = "one cooperative step of the bootstrap state machine: each arm advances the same `pending` value to the next state and they share the buffer-growth retry, so splitting on an arm boundary would thread that scratch buffer and the pending record through a second signature for no reader benefit"
     )]
     pub(super) fn step_native_bootstrap(&mut self) {
-        let Some(mut pending) = self.pending_native_bootstrap.take() else {
+        let Some(mut pending) = self.publication.pending_native_bootstrap.take() else {
             return;
         };
+        pending.waiters.retain(|waiter| !waiter.reply.is_closed());
+        if pending.waiters.is_empty() {
+            self.fail_native_bootstrap(
+                pending,
+                crate::native_state::NativeStateError::InvalidHandle,
+            );
+            return;
+        }
         let _timer = crate::perf::BOOTSTRAP_NATIVE_STEP.timer();
         if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
             self.fail_native_bootstrap(
@@ -216,9 +244,12 @@ impl TerminalActor {
                 required_bytes,
                 required_rows: 0,
             }) if required_bytes > scratch_len && required_bytes <= step_ceiling => {
-                match grow_native_scratch(&self.native_alloc, &mut pending.scratch, required_bytes)
-                {
-                    Ok(()) => self.pending_native_bootstrap = Some(pending),
+                match grow_native_scratch(
+                    &self.publication.native_alloc,
+                    &mut pending.scratch,
+                    required_bytes,
+                ) {
+                    Ok(()) => self.publication.pending_native_bootstrap = Some(pending),
                     Err(error) => self.fail_native_bootstrap(pending, error),
                 }
                 return;
@@ -243,7 +274,7 @@ impl TerminalActor {
             );
             return;
         }
-        let mut payload = match reserve_native_bytes(&self.native_alloc, record_len) {
+        let mut payload = match reserve_native_bytes(&self.publication.native_alloc, record_len) {
             Ok(payload) => payload,
             Err(error) => {
                 self.fail_native_bootstrap(pending, error);
@@ -266,7 +297,7 @@ impl TerminalActor {
         pending.retained_bytes = retained_bytes;
         pending.chunk_count = chunk_count;
         if !ready {
-            self.pending_native_bootstrap = Some(pending);
+            self.publication.pending_native_bootstrap = Some(pending);
             return;
         }
 
@@ -312,15 +343,16 @@ impl TerminalActor {
     }
 
     pub(super) const fn native_bootstrap_pending(&self) -> bool {
-        self.pending_native_bootstrap.is_some()
+        self.publication.pending_native_bootstrap.is_some()
     }
 
     pub(super) const fn native_work_pending(&self) -> bool {
-        self.pending_native_bootstrap.is_some() || self.pending_native_history.is_some()
+        self.publication.pending_native_bootstrap.is_some()
+            || self.publication.pending_native_history.is_some()
     }
 
     pub(super) fn cooperative_native_step(&mut self) {
-        if self.pending_native_bootstrap.is_some() {
+        if self.publication.pending_native_bootstrap.is_some() {
             self.step_native_bootstrap();
         } else {
             self.step_native_history();

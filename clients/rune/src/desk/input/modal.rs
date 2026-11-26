@@ -27,6 +27,8 @@ pub enum Modal {
     Onboarding,
     FindField,
     Confirm,
+    /// Full exact-recipe review: owns pointer, typing and paste.
+    RawRelaunch,
     /// A popup's command: typing is its own, and few commands reach past it.
     Popup,
     PhonePicker,
@@ -66,6 +68,7 @@ impl Modal {
             | Self::Rename
             | Self::Chief
             | Self::Confirm
+            | Self::RawRelaunch
             | Self::PhoneNavigation
             | Self::PhonePicker => false,
         }

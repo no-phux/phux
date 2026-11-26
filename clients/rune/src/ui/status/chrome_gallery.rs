@@ -16,6 +16,7 @@ use crate::test_support::server::{self, agent, pane, session};
 
 mod attention;
 mod sidebar_focus;
+mod sidebar_hierarchy;
 
 /// The pixel scale every page paints at.
 fn scale() -> f32 {
@@ -111,6 +112,8 @@ fn window(dark: bool) -> Runtime<Desk> {
     // The gallery reviews the strip beside the sidebar.
     desk.settings.tab_bar = phux_config_core::rune::TabBar::Top;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.layout = Some(LayoutNode::Split {
         dir: SplitDir::Horizontal,
         ratio: 0.55,

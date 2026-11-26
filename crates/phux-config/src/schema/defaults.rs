@@ -57,9 +57,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "shell-integration")]
     pub shell_integration: bool,
 
-    /// Give panes a stand-in `BROWSER` that prints a link and copies it to
-    /// the attached person's clipboard, for a machine with no screen. Read
-    /// at server start.
+    /// Give panes a stand-in `BROWSER`, and an `xdg-open` where there is
+    /// none, for a machine with no screen: it asks the person typing in the
+    /// pane to open the link on their machine, else prints it and copies it
+    /// to their clipboard (`docs/ssh.md#opening-links`). Read at server
+    /// start.
     #[serde(rename = "browser-shim")]
     pub browser_shim: bool,
 

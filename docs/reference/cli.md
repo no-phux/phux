@@ -53,6 +53,7 @@ Panes:
   resource      Inspect a resource or wait for its process to exit
   slot          Keep several panes in one layout slot, as tabs
   git           Read the Git checkout a pane is in
+  open-url      Ask to open a link on your own machine
 
 Agents:
   agent         See and drive the agents running in panes
@@ -3066,7 +3067,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3095,7 +3097,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3163,7 +3166,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3205,7 +3209,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3255,7 +3260,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -3307,7 +3313,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4255,7 +4262,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4346,7 +4354,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -4427,7 +4436,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -5106,7 +5116,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -5323,6 +5334,33 @@ Flags:
 
 Global flags:
       --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux open-url`
+
+```text
+Open a link on the machine of the person typing in this pane.
+
+Run inside a phux pane. The attached client that last typed here asks its user,
+showing the whole link; only http and https links are asked about. Exits 0 once
+the link is opened, 1 when it was not: declined, unanswered for 60 seconds, or
+no attached client can ask.
+
+`[defaults] browser-shim` makes panes' programs use it.
+
+Example:
+phux open-url https://phux.sh
+
+Usage: phux open-url <URL>
+
+Arguments:
+  <URL>  The link.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux organize`
@@ -6220,7 +6258,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6337,7 +6376,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6472,17 +6512,20 @@ Global flags:
 ```text
 Start a stopped pane again
 
-Starts a new run of `TARGET` (a pane selector or key `^ab23cd`) with the
-command, directory, and environment it was launched with, in the same session.
-Refused while it still runs, or while a run that a server restart lost track of
-may still be running.
+Starts a new run of `TARGET` through a current trusted host template. An
+archived raw command requires `--approve-raw`: print its exact recipe and
+explicitly confirm it on the local owner socket. Never replaces a running or
+uncertain execution.
 
-Usage: phux relaunch [--json] <TARGET>
+Usage: phux relaunch [--approve-raw] [--json] <TARGET>
 
 Arguments:
   <TARGET>  The pane to start again.
 
 Flags:
+      --approve-raw    Review the complete raw archived recipe and explicitly
+                       approve this one operation interactively. Local owner
+                       only; never implied by --json.
       --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 
@@ -6641,7 +6684,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -6906,16 +6950,21 @@ Relaunch every pane a server restart ended
 
 Starts each pane whose process ended because the server stopped while it ran,
 and each pane imported but never started, in its session, with its directory and
-agent resume. With `SESSION`, only that session's panes. Prints one summary line
-plus one line per pane that was refused (`-v`: every pane).
+agent resume, through a current trusted host template. A saved raw command no
+current template admits is refused and nothing runs; its line names `phux
+relaunch ^KEY --approve-raw`, which prints the exact recipe for an interactive
+yes. With `SESSION`, only that session's panes. Prints one summary line plus one
+line per pane that was refused (`-v`: every pane).
 
-Usage: phux restore [-v --verbose] [--json] [SESSION]
+Usage: phux restore [FLAGS] [SESSION]
 
 Arguments:
   [SESSION]  Only this session's panes.
 
 Flags:
   -v, --verbose        Print one line per pane, not a summary.
+      --dry-run        Print what each pane would run, including an escaped OSC
+                       7577 command, and change nothing.
       --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 
@@ -7820,7 +7869,9 @@ Flags:
                                  resolving the selector again.
       --parent <PANE>            The pane the new one is a child of, folded
                                  under it in lists; `none` for no parent.
-                                 Default: the pane this runs in.
+                                 Default: the pane this runs in. Without
+                                 `--target`, the new pane joins its parent's
+                                 session and starts in its directory.
       --app <NAME>               Run an application in the new pane instead of a
                                  command: launched, mirrored into documents
                                  under the pane, and quit when the pane is
@@ -8265,7 +8316,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8412,7 +8464,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8448,7 +8501,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot
@@ -8631,7 +8685,8 @@ Flags:
                                   registered host is dialed directly over
                                   QUIC or WSS, and an unregistered one is
                                   paired over your ssh trust first and
-                                  remembered (except `upload`, `download`,
+                                  remembered (except `ls`, `version`,
+                                  `whoami`, `doctor`, `upload`, `download`,
                                   and calls with `--json`: these never pair
                                   and refuse unregistered hosts, naming
                                   remedies). PORT defaults to 8788. Cannot

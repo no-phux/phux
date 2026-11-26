@@ -72,11 +72,13 @@ async fn activation_refusal_and_actor_loss_are_not_capture_deadlines() {
     let terminal = handle.terminal().unwrap();
     let activate = activate_native_publication(
         terminal,
-        7,
-        phux_protocol::ids::ResourceId::local(1),
-        two_pump_stream(),
-        two_pump_initial_generation(),
-        [9; 32],
+        phux_terminal_api::actor::NativeCapture::new(
+            7,
+            phux_protocol::ids::ResourceId::local(1),
+            two_pump_stream(),
+            two_pump_initial_generation(),
+            [9; 32],
+        ),
     );
     tokio::pin!(activate);
     let request = tokio::select! {
@@ -100,11 +102,13 @@ async fn activation_refusal_and_actor_loss_are_not_capture_deadlines() {
     drop(requests);
     let result = activate_native_publication(
         terminal,
-        7,
-        phux_protocol::ids::ResourceId::local(1),
-        two_pump_stream(),
-        two_pump_initial_generation(),
-        [9; 32],
+        phux_terminal_api::actor::NativeCapture::new(
+            7,
+            phux_protocol::ids::ResourceId::local(1),
+            two_pump_stream(),
+            two_pump_initial_generation(),
+            [9; 32],
+        ),
     )
     .await;
     assert!(matches!(result, Err(NativeRequestFailure::Unsent)));
@@ -123,11 +127,13 @@ async fn superseded_activation_is_neither_refused_nor_activated() {
     let terminal = handle.terminal().unwrap();
     let activate = activate_native_publication(
         terminal,
-        7,
-        phux_protocol::ids::ResourceId::local(1),
-        two_pump_stream(),
-        two_pump_initial_generation(),
-        [9; 32],
+        phux_terminal_api::actor::NativeCapture::new(
+            7,
+            phux_protocol::ids::ResourceId::local(1),
+            two_pump_stream(),
+            two_pump_initial_generation(),
+            [9; 32],
+        ),
     );
     tokio::pin!(activate);
     let request = tokio::select! {

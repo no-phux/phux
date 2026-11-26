@@ -296,6 +296,9 @@ fn completed_records_survive_natural_exit_screen_expiry_and_server_restart() {
                 phux_server_testkit::spawn_server_with(socket.clone(), None, |config| {
                     config.seed_with_pty = true;
                     config.org_store = phux_server::OrgStoreLocation::Path(store.clone());
+                    // Admit the archived argv as the current trusted template.
+                    config.shell = "./relative-task".into();
+                    config.login_shell = false;
                 });
             let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
             let recovered = invoke("phux_terminal_operation", &socket, lookup).await;

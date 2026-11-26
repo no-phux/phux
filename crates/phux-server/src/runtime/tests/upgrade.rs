@@ -96,7 +96,11 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
             deltas: vec![Delta::PutResource(Box::new(record))],
             ..Transition::default()
         });
-        old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);
+        old.activation_ended(
+            old.activation_token(pane).unwrap(),
+            phux_core::ExitOutcome::exited(5),
+            false,
+        );
         let blob = old.build_upgrade_blob(7).await;
         let resumed = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();

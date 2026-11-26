@@ -133,7 +133,7 @@ pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall
     ctx.overlays
         .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(ctx.keybindings, *ctx.sidebar_enabled),
+            crate::attach::onboarding::hint_lines(Some(ctx.keybindings), *ctx.sidebar_enabled),
             ctx.theme,
         )));
 }
@@ -206,7 +206,7 @@ pub(in crate::attach) fn push_context_menu(ActionCall { ctx, focused, .. }: Acti
     let rect = focused_pane_rect(ctx, focused);
     let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
     let zoomed = ctx.zoomed.is_some();
-    let spec = crate::attach::context_menu::pane_menu(ctx.keybindings, zoomed);
+    let spec = crate::attach::context_menu::pane_menu(Some(ctx.keybindings), zoomed);
     open_context_menu(ctx, spec, anchor);
 }
 

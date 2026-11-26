@@ -60,6 +60,24 @@ pub async fn spawn_on(
     Ok(outcome)
 }
 
+/// Local pane `id` as a spawn's `owner_terminal`, or `None` when it is gone.
+///
+/// The new pane joins the owner's session and starts in its directory. A
+/// program can outlive its pane, and a spawn naming a gone one is refused.
+///
+/// # Errors
+///
+/// Transport failures, or the server's refusal of `GET_STATE`.
+pub async fn owner_pane(socket_path: &Path, id: u32) -> Result<Option<ResourceId>, AttachError> {
+    let view = crate::state::get_state(socket_path).await?;
+    // A partial view is fine: the pane named is local.
+    let snapshot = view.into_snapshot_ignoring_degradation();
+    let owner = ResourceId::local(id);
+    Ok((snapshot.resources.iter())
+        .any(|info| info.id == owner)
+        .then_some(owner))
+}
+
 /// Record local pane `parent` as the `phux.parent/v1` of the pane `child`
 /// just spawned, and confirm it with a read-back: `SET_METADATA` has no
 /// reply. `Ok(false)` when the server refused or kept another value.

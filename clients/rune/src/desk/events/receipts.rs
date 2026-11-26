@@ -17,6 +17,11 @@ pub(in crate::desk) struct Receipts {
 }
 
 impl Receipts {
+    #[cfg(test)]
+    pub(in crate::desk) fn seed_server(&mut self, server: Vec<u8>) {
+        self.server = Some(server);
+    }
+
     pub(in crate::desk) fn waiting(&self) -> bool {
         self.waiting
     }
@@ -63,16 +68,17 @@ impl Desk {
         if self.connection.status.is_terminal() {
             self.connection.receipts.waiting = false;
             self.connection.receipts.deferred.clear();
-            return changed | self.cancel_old_placements();
+            return changed | self.cancel_old_placements(client);
         }
         // server() still reports the old HELLO while Connecting. Attach is
         // the barrier for both the new identity and its organization replica.
         if self.connection.status != Status::Attached {
             return changed;
         }
-        let Some(server) = client.server().map(|info| info.id) else {
+        let Some(server) = self.connection.view_server.clone() else {
             return changed;
         };
+        changed |= self.retire_stale_popup(client);
         if self.connection.receipts.waiting
             && self
                 .connection
@@ -81,7 +87,7 @@ impl Desk {
                 .as_ref()
                 .is_some_and(|old| *old != server)
         {
-            changed |= self.cancel_old_placements();
+            changed |= self.cancel_old_placements(client);
             self.connection.receipts.deferred.clear();
         }
         self.connection.receipts.server = Some(server.clone());
@@ -89,8 +95,13 @@ impl Desk {
         for (origin, event) in std::mem::take(&mut self.connection.receipts.deferred) {
             if origin.as_ref() == Some(&server) {
                 changed |= self.apply(client, event, tx);
+            } else if let Event::TerminalSpawned { request_id, .. } = &event
+                && self.connection.popup.owns_request(*request_id)
+            {
+                self.close_popup(client, false);
+                changed = true;
             } else if self.owns_placement_receipt(&event) {
-                changed |= self.cancel_old_placements();
+                changed |= self.cancel_old_placements(client);
             }
         }
         changed
@@ -101,6 +112,7 @@ impl Desk {
             Event::TerminalSpawned { request_id, .. } => {
                 self.connection.pending_spawns.contains(request_id)
                     || self.connection.pending_splits.contains_key(request_id)
+                    || self.connection.popup.owns_request(*request_id)
             }
             Event::OrganizationOperation { operation, .. } => {
                 self.connection.layout_ops.contains(operation)
@@ -135,7 +147,8 @@ impl Desk {
         changed
     }
 
-    fn cancel_old_placements(&mut self) -> bool {
+    fn cancel_old_placements(&mut self, client: &Client) -> bool {
+        let popup = self.retire_stale_popup(client);
         let quick = self.cancel_quick_move("the server incarnation could not be verified");
         let sidebar = self.cancel_sidebar_moves();
         let pending = !self.connection.pending_spawns.is_empty()
@@ -145,12 +158,15 @@ impl Desk {
         self.connection.pending_spawns.clear();
         self.connection.pending_splits.clear();
         self.connection.resources.starting.clear();
+        self.connection
+            .spawn_servers
+            .retain(|request, _| self.connection.popup.owns_request(*request));
         self.connection.layout_ops.clear();
         self.connection.unplaced_splits.clear();
         self.connection.split_write = None;
         if pending {
             self.say(NoticeKind::Error, "Pending pane/layout actions cancelled: the server incarnation changed or could not be verified. Check the server’s panes in the palette before retrying; a producer may already be running.");
         }
-        pending | quick | sidebar
+        pending | quick | sidebar | popup
     }
 }

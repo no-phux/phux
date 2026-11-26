@@ -147,6 +147,7 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
     desk.connection.status = Status::Attached;
     desk.connection.client = Some(client.clone());
     desk.connection.topology = client.topology();
+    desk.connection.seed_view_sources(vec![1; 16], &[]);
     desk.sidebar_open = true;
     desk.window_laid_out([1100.0, 720.0]);
     desk.connection

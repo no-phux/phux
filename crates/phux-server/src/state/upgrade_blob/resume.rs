@@ -104,13 +104,21 @@ impl<'a> ResumeCx<'a> {
         engine: impl std::future::Future<Output = ()> + 'static,
         exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
     ) -> Result<(), RebuildError> {
+        let activation = self
+            .state
+            .activation_token(core)
+            .ok_or(RebuildError::DanglingRef {
+                kind: "activation",
+                id: wire,
+            })?;
         // Pre-bind so the registration's intern returns the blob's id.
         self.state
             .idspace
             .bind_resource(core, WireResourceId::local(wire));
         self.state
             .spawn_resource_actor(core, handle, token, engine)?;
-        self.exit_watchers.extend(exit_notify.map(|rx| (core, rx)));
+        self.exit_watchers
+            .extend(exit_notify.map(|rx| (core, activation, rx)));
         self.rebuilt.insert(wire, core);
         Ok(())
     }

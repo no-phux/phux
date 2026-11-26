@@ -251,3 +251,43 @@ async fn an_empty_session_paints_at_bootstrap_and_under_a_modal() {
     let text = String::from_utf8_lossy(&out);
     assert!(text.contains("Empty session") && text.contains("Restore sessions"));
 }
+
+/// A pane's prompt paints at once even from a frame whose panes wait for the
+/// pacer (nothing else may ever repaint), and answering it reaches the server.
+#[tokio::test(flavor = "current_thread")]
+async fn a_prompt_from_a_deferred_frame_paints_and_its_answer_is_sent() {
+    use phux_protocol::open_url::OpenUrlOp;
+    use phux_protocol::wire::frame::{AgentEvent, Command};
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.viewport_dims = (80, 24);
+    drop(frames_sent(&mut client, &mut server).await);
+
+    out.clear();
+    let ask = FrameKind::Event {
+        terminal: Some(ResourceId::local(1)),
+        event: AgentEvent::OpenUrl {
+            id: 7,
+            url: "https://id.example/".to_owned(),
+        },
+        stamp: None,
+    };
+    state.handle_frame(&mut out, ask, None, true).unwrap();
+    let painted = crate::test_util::strip_csi(&String::from_utf8_lossy(&out));
+    assert!(painted.contains("id.example"), "{painted}");
+
+    state.overlays.dismiss();
+    state.send_open_url_answers(&mut client).await.unwrap();
+    let sent = frames_sent(&mut client, &mut server).await;
+    let reply = OpenUrlOp::Reply {
+        id: 7,
+        opened: false,
+    };
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command { command: Command::OpenUrl { op, .. }, .. } if *op == reply
+        )),
+        "{sent:?}"
+    );
+}

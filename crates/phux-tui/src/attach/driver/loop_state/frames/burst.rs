@@ -102,6 +102,9 @@ impl super::super::SessionLoop {
         let Some(frame) = self.orphan_kills.observe(frame) else {
             return Ok(None);
         };
+        let Some(frame) = self.take_agent_frame(frame, repaint) else {
+            return Ok(None);
+        };
         if self.coordinate_multistream_frame(conn, &frame).await? {
             self.pending_attach_ready = Some(frame);
             return Ok(None);

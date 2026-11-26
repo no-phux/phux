@@ -72,33 +72,6 @@ pub(crate) enum SnapshotQueue {
     Closed,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_synthesized_bootstrap(
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    terminal_id: phux_protocol::ids::ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    profile: BootstrapStreamProfile,
-    limits: BootstrapLimits,
-    cols: u16,
-    rows: u16,
-    base_seq: u64,
-    payloads: impl IntoIterator<Item = bytes::Bytes>,
-) -> Result<(), ()> {
-    let frames = synthesized_bootstrap_frames(
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        profile,
-        limits,
-        cols,
-        rows,
-        base_seq,
-        payloads,
-    )?;
-    send_frames_contiguously(out_tx, &frames).await
-}
-
 /// Queue a replacement atomically when it fits the mailbox. A fitting gap
 /// replacement gets a bounded wait before deferring without publishing a prefix.
 /// Final generations always wait; natural close waits for the pump to finish.

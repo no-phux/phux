@@ -62,7 +62,10 @@ fn idempotent_reattach_cannot_cancel_a_queued_terminal_close() {
         awaits_snapshot: true,
         ..proxy(9, ClientId(1), new_tx)
     });
-    assert!(matches!(registration, Registration::Idempotent));
+    assert!(matches!(
+        registration,
+        Registration::Existing { regated: false, .. }
+    ));
     assert!(session.subscribers[&9][0].retire_after_flush);
 
     session.flush_pending_snapshots();

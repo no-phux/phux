@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalLicenses, type Crate, electedLicense, renderNotices } from "./third-party.ts";
-import { runeNoticeReader } from "./notice-texts.ts";
+import { identityNotices, runeNoticeReader } from "./notice-texts.ts";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -67,4 +67,22 @@ test("a plain alternative is elected past one with an exception, never past AND"
   expect(electedLicense("Apache-2.0 WITH LLVM-exception")).toBeUndefined();
   expect(electedLicense("MIT AND Unicode-3.0")).toBeUndefined();
   expect(electedLicense("(MIT OR Apache-2.0) AND Unicode-3.0")).toBeUndefined();
+});
+
+test("identity attribution retains the complete bundled MIT text", () => {
+  const license = readFileSync(join(import.meta.dir, "../assets/identity/LICENSE"), "utf8").trim();
+  const notices = identityNotices();
+  expect(notices).toContain("@lobehub/icons");
+  expect(notices).toContain("Claude, Codex and OpenCode");
+  expect(notices).toContain("Copyright (c) 2023 LobeHub");
+  expect(notices).toContain(license);
+  expect(notices).toContain('THE SOFTWARE IS PROVIDED "AS IS"');
+});
+
+test("missing or empty identity license fails without canonical fallback", () => {
+  const { root } = fixture();
+  const path = join(root, "LICENSE");
+  expect(() => identityNotices(path)).toThrow();
+  writeFileSync(path, " \n");
+  expect(() => identityNotices(path)).toThrow("Identity asset LICENSE is empty");
 });

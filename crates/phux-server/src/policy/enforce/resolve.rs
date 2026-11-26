@@ -33,6 +33,8 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
             } => Some(resource),
             phux_protocol::native_agent::NativeRequest::Spawn { .. }
             | phux_protocol::native_agent::NativeRequest::ListIntegrations {}
+            | phux_protocol::native_agent::NativeRequest::PrepareRelaunch { .. }
+            | phux_protocol::native_agent::NativeRequest::ApproveRelaunch { .. }
             | phux_protocol::native_agent::NativeRequest::CurrentQuestions { .. }
             | phux_protocol::native_agent::NativeRequest::RespondQuestion { .. }
             | phux_protocol::native_agent::NativeRequest::QuestionReceipt { .. }
@@ -72,6 +74,7 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
         | Command::ReportAgentState { terminal_id, .. }
         | Command::PutFile { terminal_id, .. }
         | Command::Checkout { terminal_id, .. }
+        | Command::OpenUrl { terminal_id, .. }
         | Command::Transcribe { terminal_id, .. }
         | Command::AppendResourceOutput { terminal_id, .. }
         | Command::PublishResourceState { terminal_id, .. } => Some(terminal_id),
@@ -217,9 +220,12 @@ fn keyed_resource(s: &ServerState, request: Request<'_>) -> Option<Point> {
     };
     match command {
         Command::NativeAgent { request } => match request.request() {
-            phux_protocol::native_agent::NativeRequest::CurrentQuestions {
+            phux_protocol::native_agent::NativeRequest::PrepareRelaunch { resource, .. }
+            | phux_protocol::native_agent::NativeRequest::CurrentQuestions {
                 target: phux_protocol::native_agent::questions::QuestionTarget::Key { resource, .. },
             } => resource_key_point(s, resource),
+            phux_protocol::native_agent::NativeRequest::ApproveRelaunch { approval } =>
+                resource_key_point(s, &approval.resource),
             phux_protocol::native_agent::NativeRequest::RespondQuestion { answer } => {
                 resource_key_point(s, &answer.question.conversation)
             }

@@ -24,6 +24,31 @@ fn timing_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Sets one environment variable and restores the previous value on drop.
+#[must_use]
+struct RestoreEnv(&'static str, Option<std::ffi::OsString>);
+
+impl RestoreEnv {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var_os(key);
+        // SAFETY: `set_var` is process-global. The caller holds `timing_lock`
+        // for this guard's whole life, and Drop restores the previous value
+        // before that lock is released.
+        unsafe { std::env::set_var(key, value) };
+        Self(key, prev)
+    }
+}
+
+impl Drop for RestoreEnv {
+    fn drop(&mut self) {
+        // SAFETY: same as `RestoreEnv::set`. The timing lock outlives this guard.
+        match self.1.take() {
+            Some(value) => unsafe { std::env::set_var(self.0, value) },
+            None => unsafe { std::env::remove_var(self.0) },
+        }
+    }
+}
+
 fn alive(pid: i32) -> bool {
     pid > 0 && unsafe { libc::kill(pid, 0) == 0 }
 }
@@ -466,6 +491,10 @@ fn sidecar_connection_counts_toward_idle_exit() {
 
 #[test]
 fn sidecar_env_cwd_umask_and_stdin() {
+    let _timing = timing_lock();
+    // The server inherits this process. A token set only in the parent proves
+    // the sidecar spawn strips it, which an unset variable would not.
+    let _token = RestoreEnv::set("OSC7577_TOKEN", "leaked-by-a-rex-pane");
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let root = dir(tmp.path(), "plugin");
@@ -497,10 +526,15 @@ fn sidecar_env_cwd_umask_and_stdin() {
         ] {
             assert!(env.contains(key), "{key} missing from\n{env}");
         }
-        for key in ["PHUX_TERMINAL_ID=", "PHUX_PANE=", "PHUX_SESSION="] {
+        for key in [
+            "PHUX_TERMINAL_ID=",
+            "PHUX_PANE=",
+            "PHUX_SESSION=",
+            "OSC7577_TOKEN=",
+        ] {
             assert!(
                 !env.lines().any(|line| line.starts_with(key)),
-                "{key} leaked"
+                "{key} leaked from\n{env}"
             );
         }
         assert_eq!(read("stdin").trim(), "eof");

@@ -39,7 +39,11 @@ impl Desk {
     }
 
     /// Pick a region of the screen for the terminal with the keyboard now.
-    pub(super) fn screenshot(&mut self) {
+    pub(in crate::desk) fn screenshot(&mut self) {
+        // A phone takes its own; what it has is its photos and files.
+        if self.native.is_some() {
+            return self.attach_from_phone();
+        }
         if self.connection.capture.is_some() {
             return self.say(NoticeKind::Info, "A screenshot is already being taken.");
         }

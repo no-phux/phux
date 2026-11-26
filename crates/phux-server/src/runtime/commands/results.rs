@@ -42,10 +42,12 @@ pub(in crate::runtime) fn actor_reply(
     }
 }
 
-/// Why an `ATTACH_RESOURCE` stage failed; `AttachResourceSession::failed`
-/// rolls the partial generation back exactly once.
+/// Why an `ATTACH_RESOURCE` stage failed; pending registration and pump guards
+/// roll back partial publication of the exact generation.
 #[derive(Debug)]
 pub(crate) struct AttachResourceFailure {
+    /// Exact admitted source; stale failures cannot undo a successor.
+    pub(crate) generation: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Wire error code the caller receives.
     pub(crate) code: ErrorCode,
     /// Human-readable explanation attached to that code.
@@ -56,6 +58,7 @@ impl AttachResourceFailure {
     /// An internal fault with a fixed explanation — the dominant shape.
     pub(in crate::runtime) fn internal(message: &str) -> Self {
         Self {
+            generation: None,
             code: ErrorCode::InternalError,
             message: message.to_owned(),
         }

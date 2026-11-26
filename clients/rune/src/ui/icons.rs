@@ -40,6 +40,11 @@ icon!(
     "M6.5 4.5L10 8l-3.5 3.5"
 );
 icon!(
+    BRANCH,
+    "phux-branch",
+    "M5 4.5v7M6.5 8H8a3 3 0 0 0 3-3v-.5M5 1.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M5 11.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M11 1.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3"
+);
+icon!(
     SEARCH,
     "phux-search",
     "M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.5 10.5l3 3"
@@ -60,7 +65,23 @@ icon!(
     "phux-more",
     "M4.5 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM9 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM13.5 8a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"
 );
+icon!(
+    PAPERCLIP,
+    "phux-paperclip",
+    "M14.3 7.4L8.2 13.5a4 4 0 0 1-5.7-5.7L8.6 1.7a2.7 2.7 0 0 1 3.8 3.8L6.3 11.6a1.3 1.3 0 0 1-1.9-1.9L10 4"
+);
 icon!(PROMPT, "phux-prompt", "M3 5l3 3-3 3M8 11.5h5");
+icon!(
+    RESOURCE,
+    "phux-resource",
+    "M8 2l5.5 3v6L8 14l-5.5-3V5zM2.5 5L8 8l5.5-3M8 8v6"
+);
+icon!(
+    DOCUMENT,
+    "phux-document",
+    "M4 2.5h5l3 3v8H4zM9 2.5v3h3M6 8h4M6 10.5h4"
+);
+icon!(TREE, "phux-tree", "M3 3h4v3H3zM9 10h4v3H9zM5 6v5.5h4");
 icon!(
     KEYBOARD,
     "phux-keyboard",

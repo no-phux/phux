@@ -24,6 +24,7 @@ pub(super) fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Res
         app.focus_changed(old_focus);
     }
     app.publish_panes();
+    app.publish_input_reports();
     app.request_paint();
     result.map_err(|message| JsValue::from_str(&message))
 }
@@ -194,15 +195,7 @@ pub(super) fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlT
         .and_then(ClipboardEvent::clipboard_data)
         .and_then(|data| data.get_data("text/plain").ok())
         .unwrap_or_default();
-    match crate::input::paste_event(&text) {
-        Some(paste) => {
-            send_input(app, [InputEvent::Paste(paste)]);
-        }
-        None if !text.is_empty() => web_sys::console::warn_1(&JsValue::from_str(
-            "phux-web: paste larger than the 512 KiB limit was not sent",
-        )),
-        None => {}
-    }
+    let _ = super::handle::submit_user_paste(app, &text);
 }
 
 /// Copy the selection through the browser's copy command, which raises the
@@ -271,20 +264,92 @@ pub(super) fn send_input(
 /// Encode and send input atoms for the focused terminal. Returns whether any
 /// was sent; a transport failure closes the connection.
 fn send_events(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
-    let mut sent = false;
+    use phux_client_core::input_replay::InputSubmission;
+    let mut queued = false;
     for event in events {
-        let mut a = app.borrow_mut();
-        let Some(frame) = a.session.input_frame(event) else {
-            return sent;
-        };
-        if let Err(message) = a.tx.send(&frame) {
-            drop(a);
-            close_with_transport_error(app, &message);
-            return false;
+        let result = submit_event(app, event);
+        match result {
+            Ok(InputSubmission::QueuedRaw | InputSubmission::AwaitingReceipt { .. }) => {
+                queued = true
+            }
+            Ok(_) => return queued,
+            Err(message) => {
+                close_with_transport_error(app, &message);
+                return false;
+            }
         }
-        sent = true;
     }
-    sent
+    queued
+}
+
+pub(super) fn submit_event(
+    app: &Rc<RefCell<App>>,
+    event: InputEvent,
+) -> Result<phux_client_core::input_replay::InputSubmission, String> {
+    use phux_client_core::input_replay::InputSubmission;
+    let mut a = app.borrow_mut();
+    let paste = matches!(&event, InputEvent::Paste(_));
+    let (submission, raw) = a.session.submit_browser_input(event);
+    if let Some(frame) = raw
+        && let Err((message, attempted)) = a.tx.handoff_input(&frame)
+    {
+        if !attempted {
+            let refused = a.session.refuse_browser_input(&message);
+            a.publish_input_reports();
+            return Ok(refused);
+        }
+        a.session.unknown_raw_input(&message);
+        a.publish_input_reports();
+        a.fail(&message);
+        return Err(message);
+    }
+    let status = match submission {
+        InputSubmission::QueuedRaw => "queued-raw",
+        InputSubmission::AwaitingReceipt { .. } => "awaiting-receipt",
+        InputSubmission::Refused { .. } => "refused",
+        InputSubmission::NotQueued => "not-queued",
+    };
+    if paste
+        || matches!(
+            submission,
+            InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. }
+        )
+    {
+        let _ = a.canvas.set_attribute("data-phux-input-status", status);
+        let _ = a.canvas.remove_attribute("data-phux-input-operation");
+        if let InputSubmission::AwaitingReceipt { delivery_id }
+        | InputSubmission::Refused { delivery_id } = submission
+        {
+            let _ = a
+                .canvas
+                .set_attribute("data-phux-input-delivery-id", &delivery_id.to_string());
+        } else {
+            let _ = a.canvas.remove_attribute("data-phux-input-delivery-id");
+        }
+        if paste {
+            let notice = match submission {
+                InputSubmission::QueuedRaw => {
+                    "Paste queued without a delivery receipt; delivery is not confirmed."
+                }
+                InputSubmission::AwaitingReceipt { .. } => {
+                    "Paste queued; awaiting delivery receipt."
+                }
+                InputSubmission::NotQueued => "Paste not queued: terminal input is unavailable.",
+                InputSubmission::Refused { .. } => "Paste refused; nothing was queued.",
+            };
+            let _ = a.canvas.set_attribute("data-phux-input-notice", notice);
+            super::app::show_input_notice(&a.canvas, notice);
+        }
+    }
+    if matches!(
+        submission,
+        InputSubmission::AwaitingReceipt { .. } | InputSubmission::Refused { .. }
+    ) && let Err(message) = a.flush_input()
+    {
+        a.fail(&message);
+        return Err(message);
+    }
+    Ok(submission)
 }
 
 /// Focus reporting (DECSET 1004): while the program asks for it, the input
@@ -395,6 +460,10 @@ pub(super) fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsV
             return;
         }
         if let Err(message) = app.send(outcome.send) {
+            app.fail(&message);
+            return;
+        }
+        if let Err(message) = app.flush_input() {
             app.fail(&message);
             return;
         }

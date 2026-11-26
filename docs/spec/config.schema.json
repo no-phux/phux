@@ -205,7 +205,7 @@
         },
         "browser-shim": {
           "default": false,
-          "description": "Give panes a stand-in `BROWSER` that prints a link and copies it to\nthe attached person's clipboard, for a machine with no screen. Read\nat server start.",
+          "description": "Give panes a stand-in `BROWSER`, and an `xdg-open` where there is\nnone, for a machine with no screen: it asks the person typing in the\npane to open the link on their machine, else prints it and copies it\nto their clipboard (`docs/ssh.md#opening-links`). Read at server\nstart.",
           "type": "boolean"
         },
         "clipboard-read": {
@@ -394,7 +394,7 @@
       "properties": {
         "agent": {
           "default": false,
-          "description": "Broker ssh-agent requests from this server's panes to a client that\nruns `phux forward --agent`. On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
+          "description": "Broker ssh-agent requests from this server's panes to a client that\nserves its agent (`forward-agent` on its `[[remote]]` entry, or\n`phux forward --agent`). On, every pane started afterwards gets\n`SSH_AUTH_SOCK` pointing at the server's broker socket, replacing\nany agent the server's own environment named. Off, the server does\nnot advertise `FORWARD_AGENT`, refuses the commands, and leaves\n`SSH_AUTH_SOCK` alone.",
           "type": "boolean"
         },
         "allow": {
@@ -1030,6 +1030,30 @@
           "description": "Transport endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or\n`ssh://HOST` for the stdio bridge.",
           "type": "string"
         },
+        "forward-agent": {
+          "description": "Serve this machine's ssh-agent to the host's panes while attached to\nit; each signature is asked first (`docs/ssh.md#ssh-agent`). The host\nmust also set `[forward] agent = true`.",
+          "type": "boolean"
+        },
+        "forward-agent-keys": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "forward-agent-keys-append": {
+          "description": "Fingerprints (`SHA256:...`, as `ssh-add -l` prints them) of the only\nkeys the host may list or ask to sign with; absent allows every key\nthe agent holds.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "name": {
           "description": "Local label `phux attach <name>` resolves (not a routable identity).",
           "type": "string"
@@ -1098,7 +1122,7 @@
         },
         "program": {
           "default": [],
-          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed.",
+          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed. Legacy: new programs\nreport with OSC 7577 instead.",
           "items": {
             "$ref": "#/definitions/RestoreProgram"
           },
@@ -1106,9 +1130,54 @@
         },
         "program-append": {
           "default": [],
-          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed.",
+          "description": "`[[restore.program]]`: the command a relaunch runs for a pane whose\nprogram handed over a resume token (OSC 7501 `resume=`), by `app`.\nA program with no entry here is never resumed. Legacy: new programs\nreport with OSC 7577 instead.",
           "items": {
             "$ref": "#/definitions/RestoreProgram"
+          },
+          "type": "array"
+        },
+        "program-resume": {
+          "default": false,
+          "description": "Accept OSC 7577 program-resume reports and, when a record is trusted\nand listed in `[[restore.trust]]`, relaunch that command after a crash\nor reboot. Off by default. A server running as root never resumes one.",
+          "type": "boolean"
+        },
+        "scrollback": {
+          "default": 0,
+          "description": "Lines of each pane's output to keep on disk, at most 10000, and show\nabove a divider when the pane starts again after the server stopped.\n`0`, the default, keeps nothing, and deletes what an earlier setting\nkept when the server next starts. The files are readable by you only\nand not encrypted.",
+          "format": "uint32",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scrollback-exclude": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scrollback-exclude-append": {
+          "default": [],
+          "description": "Panes whose output is never kept: each entry is a session's name, a\npane's name (`phux rename`), or the program a pane was started with.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "default": [],
+          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is the program, a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
+          "items": {
+            "$ref": "#/definitions/RestoreTrust"
+          },
+          "type": "array"
+        },
+        "trust-append": {
+          "default": [],
+          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is the program, a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
+          "items": {
+            "$ref": "#/definitions/RestoreTrust"
           },
           "type": "array"
         }
@@ -1140,6 +1209,20 @@
       },
       "required": [
         "app",
+        "command"
+      ],
+      "type": "object"
+    },
+    "RestoreTrust": {
+      "additionalProperties": false,
+      "description": "One `[[restore.trust]]` entry.",
+      "properties": {
+        "command": {
+          "description": "Program a resume command may relaunch: a bare name or an absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
         "command"
       ],
       "type": "object"
@@ -2111,7 +2194,11 @@
       ],
       "default": {
         "on-start": false,
-        "program": []
+        "program": [],
+        "program-resume": false,
+        "scrollback": 0,
+        "scrollback-exclude": [],
+        "trust": []
       },
       "description": "`[restore]`: whether a starting server relaunches what the last one\nended."
     },

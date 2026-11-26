@@ -47,6 +47,32 @@ fn metadata_refusal_differs_from_unset_and_notices_are_kept() {
     ));
 }
 
+/// An ssh-agent request that comes ahead of a reply is not the reply's to
+/// drop: the next `recv` delivers it.
+#[test]
+fn an_agent_request_outlives_the_reply_it_came_ahead_of() {
+    use phux_protocol::wire::frame::AgentEvent;
+    let request = |id| FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::SshAgentRequest {
+            id,
+            message: vec![11],
+        },
+        stamp: None,
+    };
+    block_on(async {
+        let mut client = scripted(vec![request(1), request(2), metadata_value(7, None)]);
+        let reply = client
+            .request_metadata(7, Scope::Resource(ResourceId::local(1)), "k".to_owned())
+            .await
+            .expect("reply");
+        assert!(reply.interleaved().is_empty());
+        for id in [1, 2] {
+            assert_eq!(client.recv().await.expect("kept"), request(id));
+        }
+    });
+}
+
 #[test]
 fn metadata_keys_round_trip() {
     let reply = block_on(async {

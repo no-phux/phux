@@ -1,9 +1,10 @@
 //! From a resolved registry entry to a dial.
 //!
-//! The CLI's trust rules apply (a routable host needs a pin; a routable
-//! WebSocket also needs `wss://` and a token), with operator-facing wording
-//! for every failure. The token is read just before the dial and dropped
-//! after it. The client TLS identity is the one the registry entry enrolled
+//! The lower native planners share the CLI's route/pin/token decisions.
+//! This adapter resolves addresses, reads token files and words failures.
+//! An in-memory token overrides the file without reading it. The token is
+//! read just before the dial and dropped after it. The client TLS identity
+//! is the one the registry entry enrolled
 //! ([`crate::target::Resolved::client_identity`]), else
 //! [`phux_dial::TlsClientIdentity::None`]; it is never read from the
 //! environment, so an embedder never inherits a launcher shell's workload
@@ -13,9 +14,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use phux_dial::quic::{QuicDial, parse_token_hex};
-use phux_dial::ws::{WsDial, WsTarget};
-use phux_dial::{CertTrust, DialError};
+use phux_dial::DialError;
+pub use phux_dial::quic::{InnerTls, QuicDial};
+use phux_dial::ws::WsDial;
+pub use phux_dial::{CertTrust, PlanRefusal, WsTarget};
 
 use crate::reconnect::HOST_REFUSED_TOKEN;
 use crate::target::{Resolved, read_token};
@@ -101,30 +103,27 @@ pub(crate) async fn plan_quic_with_token(
 ) -> Result<QuicDial, PlanError> {
     let name = resolved.name.as_str();
     let (bare, addr) = resolve_quic_addr(name, authority).await?;
-    let trust = quic_trust(name, resolved, addr.ip().is_loopback())?;
-    let token = match token.or(load_token(resolved)?) {
-        Some(token) => Some(parse_token_hex(&token).map_err(|_| bad_token(resolved))?),
-        None => None,
+    // An in-memory override must not even read a stale/inaccessible token
+    // file (Keychain-backed embedders deliberately have no such file).
+    let token = match token {
+        Some(token) => Some(token),
+        None => load_token(resolved)?,
     };
-    let inner = relayed_session(resolved)?;
-    Ok(QuicDial {
+    let route = resolved
+        .authority
+        .route
+        .as_deref()
+        .or(resolved.tls_server_name.as_deref());
+    QuicDial::plan(
         addr,
-        server_name: resolved
-            .tls_server_name
-            .clone()
-            .unwrap_or_else(|| quic_server_name(bare)),
-        token,
-        trust,
-        // Explicit, so the plan never falls back to the environment. Through
-        // a relay with the server's CA pinned, the identity goes to the
-        // server inside the end-to-end session, and the relay sees none.
-        identity: Some(if inner.is_some() {
-            phux_dial::TlsClientIdentity::None
-        } else {
-            resolved.client_identity.clone()
-        }),
-        inner,
-    })
+        quic_server_name(bare),
+        token.as_deref(),
+        resolved.cert_fingerprint.as_deref(),
+        resolved.authority.ca.as_deref(),
+        route,
+        Some(resolved.client_identity.clone()),
+    )
+    .map_err(|err| native_refusal(resolved, authority, &err).into())
 }
 
 /// The certificate authority the phux server at `authority` (`HOST:PORT`)
@@ -182,26 +181,6 @@ pub fn tailnet_authority_blocking(authority: &str) -> Result<String, String> {
         .block_on(tailnet_authority(authority))
 }
 
-/// The end-to-end session a relayed dial runs to the server (ADR-0180), or
-/// `None` for a direct one. A QUIC dial that offers a TLS server name goes
-/// through a relay route, and it is refused without the server's CA pinned
-/// for that route: the plain relayed stream would be read by the relay.
-fn relayed_session(resolved: &Resolved) -> Result<Option<phux_dial::quic::InnerTls>, String> {
-    let route = resolved
-        .authority
-        .route
-        .as_deref()
-        .or(resolved.tls_server_name.as_deref());
-    let Some(route) = route else {
-        return Ok(None);
-    };
-    resolved
-        .authority
-        .inner(&resolved.client_identity)
-        .map(Some)
-        .ok_or_else(|| unpinned_relay_route(&resolved.name, route))
-}
-
 /// Why a relay route without the server's CA is not dialed, and the fix.
 ///
 /// Transport-neutral: native embedders (phux-mobile through the FFI) get
@@ -238,20 +217,6 @@ async fn resolve_quic_addr<'a>(
     Ok((bare, addr))
 }
 
-/// Pin when the registry carries a fingerprint (the CA beside it when one is
-/// pinned, ADR-0153), trust loopback's dev certificate, and refuse an
-/// unpinned routable dial (the CLI's `quic_trust`).
-fn quic_trust(name: &str, resolved: &Resolved, loopback: bool) -> Result<CertTrust, String> {
-    match resolved
-        .authority
-        .trust(resolved.cert_fingerprint.as_deref())
-    {
-        Some(trust) => Ok(trust),
-        None if loopback => Ok(CertTrust::SkipVerify),
-        None => Err(unpinned(name)),
-    }
-}
-
 /// Conventional SNI for a DNS name; the historical `localhost` for an IP
 /// literal, matching the server's self-signed SANs (as the CLI does).
 fn quic_server_name(bare: &str) -> String {
@@ -271,39 +236,47 @@ pub(crate) fn plan_ws(
 ) -> Result<WsDial, String> {
     let name = resolved.name.as_str();
     let target = WsTarget::parse(url).map_err(|err| format!("{name}: {err}"))?;
-    if !target.is_loopback() {
-        if !target.secure {
-            return Err(format!(
-                "{name}: {url} is plaintext; a routable WebSocket needs wss://"
-            ));
-        }
-        if resolved.cert_fingerprint.is_none() && resolved.authority.ca.is_none() {
-            return Err(unpinned(name));
-        }
-        if token.is_none() {
-            return Err(format!(
-                "{name} has no token file in the registry; re-pair it with `phux host add {name}`"
-            ));
-        }
-    }
-    let token = match token {
-        Some(token) => {
-            parse_token_hex(&token).map_err(|_| bad_token(resolved))?;
-            Some(token.trim().to_owned())
-        }
-        None => None,
-    };
+    let (trust, token) = target
+        .credentials(
+            resolved
+                .authority
+                .trust(resolved.cert_fingerprint.as_deref()),
+            token,
+            resolved.authority.route.as_deref(),
+        )
+        .map_err(|err| native_refusal(resolved, url, &err))?;
     Ok(WsDial {
         url: url.to_owned(),
         token,
-        trust: resolved
-            .authority
-            .trust(resolved.cert_fingerprint.as_deref())
-            .unwrap_or(CertTrust::SkipVerify),
+        trust,
         tls_server_name: resolved.tls_server_name.clone(),
         // Explicit, so the plan never falls back to the environment.
         identity: Some(resolved.client_identity.clone()),
     })
+}
+
+fn native_refusal(resolved: &Resolved, endpoint: &str, error: &PlanRefusal) -> String {
+    let name = &resolved.name;
+    match error {
+        PlanRefusal::Unpinned => unpinned(name),
+        PlanRefusal::BadToken => bad_token(resolved),
+        PlanRefusal::NoToken => format!(
+            "{name} has no token file in the registry; re-pair it with `phux host add {name}`"
+        ),
+        PlanRefusal::Plaintext => {
+            format!("{name}: {endpoint} is plaintext; a routable WebSocket needs wss://")
+        }
+        PlanRefusal::UnpinnedRelay => unpinned_relay_route(
+            name,
+            resolved
+                .authority
+                .route
+                .as_deref()
+                .or(resolved.tls_server_name.as_deref())
+                .unwrap_or(""),
+        ),
+        PlanRefusal::RelayRequiresQuic => format!("{name}: a relay route needs a quic:// endpoint"),
+    }
 }
 
 /// Read the bearer token for this dial. Failures name the file, never bytes.

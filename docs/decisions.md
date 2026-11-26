@@ -26,8 +26,8 @@ and docs, not a quiet rewrite. Retired records are
   missed or a gap marker, never silence.
 - A detached process group is signalled only while its recorded leader
   still matches, never by a reused PID.
-- An upgrade rebuilds resources in `APP_KINDS` order, so a parent's kind
-  comes first.
+- The host upgrade owner rebuilds resources in `KIND_ORDER`, so a parent's
+  kind comes first.
 - A session `ATTACH` never replaces committed `AgentSession` history with an
   unsolicited full cut.
 - A close is planned before it commits. Tab-lock checks run on the plan,
@@ -39,9 +39,9 @@ and docs, not a quiet rewrite. Retired records are
 - Each kind declares its stream contract and spawn rule in its `KindSpec`
   catalog row. A connection that negotiates no Terminal profile is still
   admitted; binding a Terminal stream is refused with `CODEC_UNAVAILABLE`.
-- Stream and input frames reach their resource's `ResourceApp`. A kind that
-  does not serve a frame refuses it with `WRONG_RESOURCE_KIND`, and the
-  connection stays.
+- Kind-owned frame facts reject unsupported stream/input operations; the host
+  routes admitted operations without lending apps generic server state.
+  A wrong-kind frame is refused and the connection stays.
 - Any 1.x client works with any 1.x server. New behavior ships as a feature
   bit or a skippable field; unknown requests get `UNSUPPORTED` and the
   connection stays ([compatibility](./compatibility.md)).
@@ -62,9 +62,20 @@ and docs, not a quiet rewrite. Retired records are
   only loopback plus `[forward] allow` targets and never resolves a client's
   name ([ssh](./ssh.md)).
 - ssh-agent forwarding brokers only key listings and signatures, so nothing
-  can add, remove or lock keys. Both sides opt in (`[forward] agent`,
-  `phux forward --agent`), and the client asks before each signature unless
-  run with `--yes`.
+  can add, remove or lock keys. Both sides opt in (`[forward] agent`; the
+  host's `forward-agent`, or `phux forward --agent`). Attached clients always
+  ask before each signature, default to no, and have no "always allow"; only
+  `phux forward --agent --yes` signs unasked. The newest serving connection
+  answers and the one before it takes over. The pane a question names is a
+  hint for the person, never an authorization.
+- A pane opens a link on a client through a typed request, not an escape
+  sequence: printed bytes must never raise a prompt, nor every viewer see it.
+  It reaches only the client typing in the pane. That client always asks,
+  naming the machine, the pane and the whole `http(s)` link; declining is the
+  default and the answer to 60 s of silence, typing cannot accept, and no
+  host is remembered. A sign-in's loopback port is never forwarded with it.
+  Printing and copying the link, the whole feature until #2973, is the
+  fallback ([ssh](./ssh.md#opening-links)).
 - Slot tabs are trailing fields on the leaf record, not a new node kind,
   because a new kind would break older clients' arrangement reads and older
   servers' store loads ([slot tabs](./organization.md#slot-tabs)).
@@ -109,6 +120,16 @@ and docs, not a quiet rewrite. Retired records are
   command. A relaunch runs only the argv in `[[restore.program]]`, with the
   token as whole arguments and no shell, because any pane writer can set it
   ([program protocol](./program-protocol.md)).
+- Scrollback reaches disk only by opt-in (`[restore] scrollback`), because it
+  holds secrets. The files are owner-only and not encrypted: a key the server
+  can use with nobody present protects little that full-disk encryption does
+  not, so revisit only with platform key stores. They are named by resource
+  key, live beside the organization store that owns those keys (two servers
+  of one profile must not sweep each other's), and end with the record. A
+  file is untrusted input, reduced to text and SGR both ways. Restored lines
+  go to history under a blank screen, so no rule that reads the screen takes
+  them for new output. Alternate screens are never kept
+  ([security](./security.md#kept-scrollback)).
 - One keeper writes each work store, and shared work has one home store.
   Delegated credentials cannot mint ([substrate](./substrate.md)).
 

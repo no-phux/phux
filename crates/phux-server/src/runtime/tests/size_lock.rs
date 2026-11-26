@@ -1,7 +1,7 @@
 //! A view's size lock (`phux.view.size-lock/v1`) against other viewers.
 
 use super::*;
-use crate::runtime::apps::terminal::commands::terminal_input::handle_size_lock;
+use crate::runtime::commands::terminal::terminal_input::handle_size_lock;
 
 fn drain(receiver: &mut StubRx) -> Option<(u16, u16)> {
     let mut last = None;

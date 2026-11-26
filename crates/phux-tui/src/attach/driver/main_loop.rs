@@ -91,6 +91,8 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // Per-identity review status carried across session switches
     // on this connection. Empty on the first attach.
     review: crate::attach::review::ReviewIndex,
+    // This connection's forwarded ssh-agent, if the host has one.
+    agent: Option<std::sync::Arc<crate::attach::agent_forward::AgentLink>>,
 ) -> Result<LoopExit, AttachError> {
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
@@ -110,6 +112,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     session.set_input_replay(input_replay);
     session.set_orphan_kills(orphan_kills);
     session.set_review(review);
+    session.set_agent_link(agent);
     // A switch keeps the previous session's frame up until this one's view
     // is ready, and seeds the sidebar with what the last entry knew.
     if let Some(carry) = carried {

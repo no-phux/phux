@@ -233,10 +233,13 @@ fn viewport_intent_during_attach_flushes_the_latest_once_after_ready() {
 
 #[test]
 fn offline_viewport_intent_replays_in_attach_and_same_size_can_be_reasserted() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::Last),
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::Last),
+            ..ControlOptions::default()
+        },
+    );
     let first = ViewportInfo::new(90, 25);
     plane.resize_viewport(first.cols, first.rows);
     assert!(plane.take_outbound().is_empty());
@@ -272,12 +275,15 @@ fn offline_viewport_intent_replays_in_attach_and_same_size_can_be_reasserted() {
 
 #[test]
 fn session_viewer_casts_viewport_vote_without_exact_subscription_fanout() {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::Last),
-        attach_role: Some(RolePolicy::VIEWER),
-        viewport: (20, 4),
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::Last),
+            attach_role: Some(RolePolicy::VIEWER),
+            viewport: (20, 4),
+            ..ControlOptions::default()
+        },
+    );
     let attach_id = reconnect(&mut plane)
         .iter()
         .find_map(|frame| match frame {

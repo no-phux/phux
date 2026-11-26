@@ -167,7 +167,7 @@ async fn session_panes(
                 id: format!("@{}", info.id.local_id().ok_or("not a local pane")?),
                 tab: format!(
                     "phux-{session_id}-{}",
-                    phux_protocol::api::hex16(&document.groups[group].id)
+                    phux_protocol::ids::hex16(&document.groups[group].id)
                 ),
             },
             tty: child

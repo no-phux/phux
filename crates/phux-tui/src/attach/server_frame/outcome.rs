@@ -180,6 +180,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// applies `defaults.clipboard-read`.
     pub(in crate::attach) clipboard_reads:
         Vec<(ResourceId, phux_client_core::engine::ClipboardSelection)>,
+    /// A link a pane asks to open here: the pane, the request and the link.
+    pub(in crate::attach) open_url: Option<(ResourceId, u64, String)>,
 }
 
 /// Payload-free label for the dispatch span's `kind` field.

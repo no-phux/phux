@@ -1,8 +1,8 @@
 //! Fanning stream frames out to proxy subscribers, live and during bootstrap.
 
 use super::{
-    DeliveryFailure, FanOutFrame, FanOutKind, FrameKind, Outbound, ProxySubscriber, RelaySession,
-    SnapshotGate, VecDeque, mpsc, trace, warn,
+    DeliveryFailure, FanOutFrame, FanOutKind, FrameKind, ProxySubscriber, RelaySession,
+    SnapshotGate, VecDeque, mpsc, stream_frame_generation, trace, warn,
 };
 
 impl RelaySession {
@@ -41,6 +41,7 @@ impl RelaySession {
             terminal: id,
             frame,
             kind,
+            begun_only: self.enforce_bootstrap_flow,
         };
         let mut retained_bytes = self.retained_bytes;
         let mut retained_frames = self.retained_frames;
@@ -64,6 +65,17 @@ impl RelaySession {
         retained_bytes: &mut usize,
         retained_frames: &mut usize,
     ) -> bool {
+        // A consumer that joined mid-generation never got its BEGIN: the rest
+        // of it is not this consumer's, and its READY must not open the gate.
+        if outbound.begun_only
+            && !matches!(outbound.frame, FrameKind::BootstrapBegin { .. })
+            && stream_frame_generation(outbound.frame).is_some_and(|named| {
+                sub.current_generation
+                    .is_none_or(|(stream_id, bootstrap_id, _)| named != (stream_id, bootstrap_id))
+            })
+        {
+            return true;
+        }
         Self::observe_generation(sub, outbound.frame);
         if matches!(sub.gate, SnapshotGate::Retiring { .. }) {
             return Self::flush_pending_snapshot(sub).1;
@@ -107,13 +119,13 @@ impl RelaySession {
         retained_bytes: &mut usize,
         retained_frames: &mut usize,
     ) -> bool {
-        match sub.out_tx.try_send(Outbound::Frame(outbound.frame.clone())) {
+        match sub.deliver(outbound.frame) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(())) => {
                 Self::retain_fan_out_frame(sub, outbound, retained_bytes, retained_frames);
                 true
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
+            Err(mpsc::error::TrySendError::Closed(())) => false,
         }
     }
 
@@ -189,6 +201,17 @@ impl RelaySession {
         connection_frames: &mut usize,
     ) -> bool {
         let frame_bytes = Self::retained_frame_bytes(&frame);
+        let (mut retained_bytes, mut open_after) = (retained_bytes, open_after);
+        if matches!(frame, FrameKind::BootstrapBegin { .. }) {
+            // The older generations it replaces need not be drawn first, and
+            // the gate opens on this one's READY alone.
+            open_after = false;
+            let (bytes, count) = (retained_bytes, frames.len());
+            frames.retain(|kept| stream_frame_generation(kept).is_none());
+            retained_bytes = frames.iter().map(Self::retained_frame_bytes).sum();
+            *connection_bytes = connection_bytes.saturating_sub(bytes - retained_bytes);
+            *connection_frames = connection_frames.saturating_sub(count - frames.len());
+        }
         if Self::retention_exceeded(
             frame_bytes,
             retained_bytes,
@@ -222,7 +245,7 @@ impl RelaySession {
         connection_bytes: &mut usize,
         connection_frames: &mut usize,
     ) -> bool {
-        match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+        match sub.deliver(&frame) {
             Ok(()) => {
                 sub.gate = if open_after {
                     SnapshotGate::Open
@@ -231,7 +254,7 @@ impl RelaySession {
                 };
                 true
             }
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(mpsc::error::TrySendError::Full(())) => {
                 if Self::retention_exceeded(
                     frame_bytes,
                     0,
@@ -251,7 +274,7 @@ impl RelaySession {
                 };
                 true
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(mpsc::error::TrySendError::Closed(())) => {
                 sub.gate = SnapshotGate::Open;
                 false
             }

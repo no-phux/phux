@@ -59,6 +59,14 @@ pub enum CursorShape {
     BlockHollow,
 }
 
+/// Opaque evidence for one exact runtime publication and delivery fence.
+/// Acquisition never acknowledges it. Foreign renderers must retain this
+/// object with the frame and submit it only after visible, unclipped display.
+#[derive(uniffi::Object, Debug, PartialEq, Eq)]
+pub struct PresentationReceipt {
+    pub(crate) evidence: phux_client_runtime::runtime::PresentationEvidence,
+}
+
 /// One immutable projected viewport.
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct GridProjection {
@@ -83,6 +91,9 @@ pub struct GridProjection {
     /// Rows whose line continues on the next row (soft wraps), so a copy
     /// joins them without a newline.
     pub wrapped_rows: Vec<u16>,
+    /// Submit to `RemoteClient.acknowledge_presentation` after actual display,
+    /// not while acquiring/building/painting a hidden or clipped surface.
+    pub presentation_receipt: Option<std::sync::Arc<PresentationReceipt>>,
 }
 
 struct EngineInner {
@@ -345,6 +356,7 @@ impl EngineInner {
         }
         Ok(GridProjection {
             cols,
+            presentation_receipt: None,
             rows,
             cells,
             utf8,
@@ -382,6 +394,7 @@ fn cursor_shape(style: CoreCursorStyle) -> CursorShape {
 pub(crate) fn grid_projection(view: &grid::GridView<'_>, dirty_rows: Vec<u16>) -> GridProjection {
     GridProjection {
         cols: view.cols,
+        presentation_receipt: None,
         rows: view.rows,
         cells: grid::encode_cells(view.cells),
         utf8: view.utf8.to_vec(),

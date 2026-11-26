@@ -19,6 +19,12 @@ pub fn set_attach_role(policy: RolePolicy) {
     ATTACH_ROLE.store(policy.to_u8(), Ordering::Relaxed);
 }
 
+/// Validate before committing work without consuming a one-shot takeover.
+pub(super) fn check_attach_role(conn: &Connection) -> Result<(), AttachError> {
+    let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
+    role_field(policy, advertises_roles(conn)).map(|_| ())
+}
+
 /// Whether this process holds the view size lock: `--lock-size`,
 /// `defaults.lock-size`, or the palette's live switch.
 static SIZE_LOCK: AtomicBool = AtomicBool::new(false);

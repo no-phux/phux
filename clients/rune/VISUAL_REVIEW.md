@@ -129,16 +129,39 @@ claims of Tab-driven focus reveal. Long-filter cases use the keyboard-reduced
 320×340 and 393×480 viewports. Ordinary UIKit Glass remains separate
 from the large-text opaque inline action.
 
+Sessions search recovery cases retain matching, no-match, long and blurred
+filters, standard and AX5 text, both phone widths, full and keyboard-reduced
+native-sized viewports, light/dark and true 2×. Compare the complete Clear search
+target and remaining editor width. Exercise touch, accessibility Click and real
+Tab/Enter/Space: clearing restores the first results, cancels composition and
+keeps replacement typing in the editor. A stale native edit cannot restore the
+old query; a covering modal and cancelled press cannot clear it. Preserve the
+terminal's keyboard preference, selected pane and server arrangement.
+
 ## Review behavior as well as pixels
 
 Sidebar keyboard cases start in a non-leading split pane. Compare idle,
 Focus Sidebar, Shift+Tab to Inbox and Space activation at both desktop sizes,
-light/dark and forced colours, at true 2×. Include a collapsed containing
-session. The keyboard ring must mark the actual grouped row without selecting
+light/dark, forced colours and 140% interface zoom, at true 2×. The keyboard ring
+must mark the actual grouped row without selecting
 another pane or changing its arrangement. Behavioral tests additionally cover
 agent-led identity, missing members, unplaced/document rows, keyless sessions
 and unchanged terminal input. These are desktop keyboard cases; the core phone
 gallery remains surrounding nonregression evidence, not a phone-sidebar claim.
+
+Sidebar hierarchy cases add actual project/linked-worktree sessions, naturally
+visible descendants, flat singles, real inline splits, remote-machine previews
+and empty inventory. `single` and `split` replace obsolete `collapsed` and
+`children` scenes; local folding no longer exists. Retain
+the app's macOS traffic-light reservation, standard and 140% interface zoom,
+forced colours, both desktop widths and real 2× backing scale. Zoom changes
+the logical viewport and effective scale; it must not resize a finished PNG or
+loosen the geometry contract. Compare arrow-free leading edges, section rhythm,
+unboxed attention summaries and the complete machine menu. Check optional
+keep-awake controls, independent session/resource drag ownership, Left/Right split-member navigation,
+focus, and unchanged terminal input and arrangement. A retained but covered
+sidebar element is not a valid pointer target: open the narrow drawer through
+its handler after initial layout and verify the actual hit path.
 
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled
@@ -191,6 +214,18 @@ Require every focused target and its text to fit completely in the scroller,
 including Done and Terminal actions. Exercise both final touch actions,
 hostile-but-valid names, input trapping and unchanged literal arrangement.
 The toolbar remains 44 points: picker typography must not resize the terminal.
+
+Machines colour cases exercise the actual sheet in the desktop-hosted phone,
+not the separate native UIKit connection controller. Compare the open palette
+and keyboard-focused Auto at both desktop widths and both phone widths,
+light/dark, standard/AX5 text, drawn keyboard open/closed and true 2×.
+Each revealed phone radio must have a complete visible and effective touch
+target of at least 44 points, containing its scaled artwork without overlapping
+neighbours. Keyboard reveal must leave the focused Auto above the sheet's edge
+fade, not merely inside its clipping rectangle. Retain desktop sizing and radio names/roles, real touch at the
+enlarged edge, keyboard/accessibility activation, cancelled touches, the field
+draft and terminal input/layout ownership. The inherited large-text sheet
+header and drawn-keyboard clipping are not claimed fixed or native iOS proof.
 
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.

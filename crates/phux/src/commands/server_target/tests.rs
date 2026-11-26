@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use phux_client::attach::{AttachError, CertTrust, Dial};
 
 use super::{
-    ServerSpec, ServerTarget, dial_entry, entry_refusal, ladder_refusal_error, ssh_only_refusal,
+    Bootstrap, ServerSpec, ServerTarget, bootstrap_for, dial_entry, entry_refusal,
+    ladder_refusal_error, ssh_only_refusal,
 };
-use crate::commands::attach::DialRefusal;
+use crate::commands::attach::native::DialRefusal;
 use crate::commands::json_err::codes;
 use crate::commands::remote::RemoteEntry;
 
@@ -327,4 +328,17 @@ fn a_session_ended_in_the_handshake_reads_as_a_refused_machine() {
         "{}",
         refused.remedy
     );
+}
+
+/// Reading from a machine nobody added must not set it up; a verb that changes
+/// something there still may, unless it was asked for JSON.
+#[test]
+fn only_a_verb_that_changes_something_pairs_an_unregistered_host() {
+    for verb in ["ls", "version", "whoami", "doctor", "upload", "download"] {
+        assert_eq!(bootstrap_for(verb, false), Bootstrap::Never, "{verb}");
+    }
+    for verb in ["new", "kill", "rename", "detach", "forward"] {
+        assert_eq!(bootstrap_for(verb, false), Bootstrap::Auto, "{verb}");
+        assert_eq!(bootstrap_for(verb, true), Bootstrap::Never, "{verb}");
+    }
 }

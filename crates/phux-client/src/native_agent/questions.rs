@@ -55,6 +55,23 @@ pub async fn current_on(
     read(dial, NativeRequest::CurrentQuestions { target }).await
 }
 
+/// Observe current questions over an open connection that carries no other
+/// subscription.
+///
+/// # Errors
+/// Transport failure, refusal, or malformed server reply.
+pub async fn current_over(
+    connection: &mut Connection,
+    target: QuestionTarget,
+) -> Result<CurrentQuestions, ClientError> {
+    require_current_questions(connection)?;
+    exchange(
+        connection,
+        prepare(NativeRequest::CurrentQuestions { target })?,
+    )
+    .await
+}
+
 /// Submit the response once; never retry a potentially delivered mutation.
 ///
 /// # Errors
@@ -199,16 +216,21 @@ async fn connect(dial: &Dial) -> Result<Connection, ClientError> {
         .await
         .map_err(|_| ClientError::Protocol("question connection timed out before send".into()))?
         .map_err(ClientError::Transport)?;
-    if !connection
+    require_current_questions(&connection)?;
+    Ok(connection)
+}
+
+fn require_current_questions(connection: &Connection) -> Result<(), ClientError> {
+    if connection
         .server_features_ext()
         .contains(ServerFeatureExt::CurrentQuestions)
     {
-        return Err(ClientError::Refused {
-            code: ErrorCode::Unsupported,
-            message: "server does not advertise current questions".into(),
-        });
+        return Ok(());
     }
-    Ok(connection)
+    Err(ClientError::Refused {
+        code: ErrorCode::Unsupported,
+        message: "server does not advertise current questions".into(),
+    })
 }
 
 async fn exchange<T: DeserializeOwned>(

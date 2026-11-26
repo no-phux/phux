@@ -275,7 +275,7 @@ pub(super) fn handle_set_metadata(
                 return;
             }
             phux_protocol::wire::frame::VIEW_SIZE_LOCK_KEY => {
-                crate::runtime::apps::terminal::commands::terminal_input::handle_size_lock(
+                crate::runtime::commands::terminal::terminal_input::handle_size_lock(
                     state, client_id, &value,
                 );
                 return;

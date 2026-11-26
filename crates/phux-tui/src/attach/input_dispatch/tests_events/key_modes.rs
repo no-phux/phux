@@ -5,15 +5,13 @@ fn mode_env(user: &str) -> Env<'static> {
     let cfg = phux_config::parse_with_defaults(user, std::path::Path::new("config.toml"))
         .expect("config parses");
     let mut env = two_pane_env(&[], (8, 16));
-    env.resolver = Some(phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver"));
-    env.keybindings = Some(cfg.keybindings);
+    env.fx.resolver = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver");
+    env.fx.keybindings = cfg.keybindings;
     env
 }
 
 fn active_mode(env: &Env<'_>) -> Option<String> {
-    env.resolver
-        .as_ref()
-        .and_then(phux_config::keybind::Resolver::active_mode)
+    env.fx.resolver.active_mode()
         .map(str::to_owned)
 }
 
@@ -88,7 +86,6 @@ async fn entering_an_unknown_mode_bells() {
     let mut env = mode_env("");
     let resolved = act("enter-mode", &[("name", "nope".into())]);
     let mut ctx = env.fx.ctx();
-    ctx.resolver = env.resolver.as_mut();
     let effects = super::run_action::run_action(&resolved, &mut ctx, env.focused.as_ref(), &env.panes);
     assert!(effects.bell);
     let effects = super::run_action::run_action(

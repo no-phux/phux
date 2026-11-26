@@ -5,7 +5,7 @@ async fn fold_into(
     client: &mut Connection,
     outcome: FrameOutcome,
 ) -> RepaintAccumulator {
-    state.peers.chrome_dirty = false;
+    state.peer_presentation.chrome_dirty = false;
     let mut repaint = RepaintAccumulator::default();
     state
         .fold_frame_outcome(client, &mut Vec::new(), None, outcome, None, &mut repaint)
@@ -15,7 +15,7 @@ async fn fold_into(
 }
 
 /// Fold one synthetic outcome into a fresh bootstrapped loop; returns the
-/// raised repaint and the loop, whose `peers.chrome_dirty` says whether the
+/// raised repaint and the loop, whose `peer_presentation.chrome_dirty` says whether the
 /// drain owes a peer-chrome refresh.
 fn fold(
     outcome: FrameOutcome,
@@ -86,7 +86,7 @@ async fn fold_raises_the_fleet_and_the_paint_each_outcome_owes() {
         assert_eq!(repaint.level, level, "{case}");
         if let Some(drain_chrome) = drain_chrome {
             assert_eq!(
-                state.peers.chrome_dirty, drain_chrome,
+                state.peer_presentation.chrome_dirty, drain_chrome,
                 "{case}: drain chrome"
             );
         }
@@ -102,7 +102,7 @@ async fn fold_of_a_new_foreign_ask_raises_but_a_repeat_does_not() {
         ..FrameOutcome::default()
     };
     let first = fold_into(&mut state, &mut client, asked()).await;
-    assert!(first.fleet_dirty && state.peers.chrome_dirty);
+    assert!(first.fleet_dirty && state.peer_presentation.chrome_dirty);
     assert_eq!(first.level, RepaintLevel::None);
 
     let repeat = fold_into(&mut state, &mut client, asked()).await;
@@ -111,7 +111,7 @@ async fn fold_of_a_new_foreign_ask_raises_but_a_repeat_does_not() {
         RepaintAccumulator::default(),
         "a repeated ask is not news"
     );
-    assert!(!state.peers.chrome_dirty);
+    assert!(!state.peer_presentation.chrome_dirty);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -34,6 +34,7 @@ impl LoopRig {
             limits: BootstrapLimits::default(),
             server_features: features,
             server_features_ext: features_ext,
+            server_features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
         };
         let state = SessionLoop::new(
             negotiated,
@@ -118,3 +119,4 @@ include!("loop_state_tests/newer_server.rs");
 include!("loop_state_tests/surface_leaves.rs");
 include!("loop_state_tests/kitty_heal.rs");
 include!("loop_state_tests/mouse_hover.rs");
+include!("loop_state_tests/agent_forward.rs");

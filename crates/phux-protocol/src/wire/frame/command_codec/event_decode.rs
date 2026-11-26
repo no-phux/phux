@@ -100,6 +100,18 @@ pub(in crate::wire) fn decode_agent_event(
                 |(id, message)| AgentEvent::SshAgentRequest { id, message },
             )
         }
+        crate::wire::frame::EVENT_TAG_OPEN_URL => {
+            match (body_dec.read_u64_be(), body_dec.read_str()) {
+                (Ok(id), Ok(url)) => AgentEvent::OpenUrl {
+                    id,
+                    url: url.to_owned(),
+                },
+                _ => AgentEvent::Unknown {
+                    tag,
+                    body: body.to_vec(),
+                },
+            }
+        }
 
         // An organization event whose body is malformed or names an unknown
         // enum value is kept opaque rather than failing the frame.

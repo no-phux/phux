@@ -11,7 +11,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::AttachTarget;
 use rune::{Key, KeyEvent, Tx};
 
 use super::{Desk, NoticeKind};
@@ -23,6 +22,7 @@ use crate::onboarding::{
 use crate::system_settings;
 
 mod dock;
+mod migration;
 mod start;
 
 const DONE_KEY: &str = "onboarding_done";
@@ -115,7 +115,7 @@ enum Done {
     Permissions(Result<Permissions, String>),
     Opened(Result<Option<String>, String>),
     Prompt(Result<String, String>),
-    Migrated(String, Result<Migration, String>),
+    Migrated(migration::Reply),
     Service(Result<Vec<u8>, String>),
 }
 
@@ -134,6 +134,8 @@ pub struct Onboarding {
     /// The server's app, to drag into a privacy list.
     pub bundle: Option<PathBuf>,
     pub migrate: Migrate,
+    migration_scope: Option<migration::Scope>,
+    migration_choice: Option<u64>,
     pub copied: bool,
     /// The agent the last step is starting, once its skill is in place.
     pub starting: Option<String>,
@@ -163,6 +165,8 @@ impl Default for Onboarding {
             pending: None,
             bundle: None,
             migrate: Migrate::Choosing,
+            migration_scope: None,
+            migration_choice: None,
             copied: false,
             starting: None,
             keep_alive: true,
@@ -422,52 +426,6 @@ impl Desk {
         });
     }
 
-    /// Start `agent` on the migration, in a phux pane shown beside the step.
-    pub fn migrate_with(&mut self, agent: &'static str) {
-        if matches!(
-            self.onboarding.migrate,
-            Migrate::Starting(_) | Migrate::Running(..)
-        ) {
-            return;
-        }
-        self.onboarding.migrate = Migrate::Starting(agent.to_owned());
-        self.ask(&["migrate", "--json", "--agent", agent], SLOW, move |out| {
-            Done::Migrated(
-                agent.to_owned(),
-                out.and_then(|b| words::parse_migration(&b)),
-            )
-        });
-    }
-
-    /// Stop the agent: its pane closes and the tiles come back.
-    pub fn cancel_migration(&mut self) {
-        if let Migrate::Running(_, Some(pane)) = &self.onboarding.migrate
-            && !self.request_terminal_close(vec![pane.clone()])
-        {
-            return;
-        }
-        self.onboarding.migrate = Migrate::Choosing;
-    }
-
-    fn show_migration(&mut self, agent: String, migration: Migration) {
-        let pane = migration.pane.map(ResourceId::local);
-        match (&pane, migration.session) {
-            (Some(pane), Some(session)) => self.show(pane.clone(), &session),
-            (None, Some(session)) => {
-                if let Some(client) = &self.connection.client {
-                    client.attach_session(AttachTarget::ByName(session.clone()));
-                }
-                self.connection.pending_session = Some(session);
-                self.connection.wanted = None;
-            }
-            (Some(pane), None) => {
-                self.want(pane.clone());
-            }
-            (None, None) => {}
-        }
-        self.onboarding.migrate = Migrate::Running(agent, pane);
-    }
-
     /// Answers from the CLI, and the grant sheet's next ask. True when
     /// anything on screen changed.
     pub(crate) fn pump_onboarding(&mut self, tx: &mut Tx) -> bool {
@@ -517,14 +475,7 @@ impl Desk {
                     tx.copy(prompt);
                     self.onboarding.copied = true;
                 }
-                Done::Migrated(agent, Ok(migration)) => self.show_migration(agent, migration),
-                Done::Migrated(_, Err(error)) => {
-                    self.onboarding.migrate = Migrate::Failed(if unsupported(&error) {
-                        "Update phux to enable this.".to_owned()
-                    } else {
-                        error
-                    });
-                }
+                Done::Migrated(reply) => self.finish_migration(reply),
             }
         }
         if self.onboarding.open && self.onboarding.grant_sheet {

@@ -10,7 +10,7 @@ use tokio::time::Sleep;
 
 use super::{RunLoopState, TerminalActor};
 
-const SERVICE_SLOTS: usize = 14;
+const SERVICE_SLOTS: usize = 15;
 
 #[derive(Default)]
 pub(super) struct ServiceRotation {
@@ -33,6 +33,19 @@ impl TerminalActor {
             let served = match slot {
                 0..6 => !bootstrap_pending && self.try_snapshot_service(slot, state),
                 6..11 => self.try_control_service(slot, state),
+                14 => self
+                    .publication
+                    .next_cancelled()
+                    .now_or_never()
+                    .flatten()
+                    .map(|((), interest)| {
+                        self.service_cancelled_consumer(
+                            &interest,
+                            &mut state.tick,
+                            &mut state.tick_interval,
+                        );
+                    })
+                    .is_some(),
                 _ => {
                     self.try_timer_service(slot, state, resync_deadline.as_mut(), bootstrap_pending)
                 }
@@ -140,6 +153,12 @@ impl TerminalActor {
                 .tick()
                 .now_or_never()
                 .map(|scheduled| self.service_detector_deadline(scheduled, state))
+                .is_some(),
+            14 if self.keep_owed() => state
+                .keep_tick
+                .tick()
+                .now_or_never()
+                .map(|_| self.service_keep())
                 .is_some(),
             _ => false,
         }

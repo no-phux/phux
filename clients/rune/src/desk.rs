@@ -5,22 +5,20 @@
 //! namespace; replacing it leaves window preferences and platform services alone.
 
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use phux_client_core::layout::SplitDir;
 use phux_client_runtime::ViewId;
-use phux_client_runtime::control::ProjectionFence;
-use phux_client_runtime::publication::GridFrame;
-use phux_protocol::ids::{ResourceId, SessionKey};
+use phux_client_runtime::runtime::PresentationEvidence;
+use phux_protocol::ids::ResourceId;
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 pub mod accessibility;
+mod agent_forward;
 mod attach;
 pub(crate) mod bare;
 mod changes;
@@ -52,23 +50,26 @@ pub(crate) mod native_input;
 pub mod news;
 pub mod notice;
 pub mod onboarding;
+pub mod open_url;
 mod palette;
 mod pending;
 mod picks;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod plugin_actions;
 pub use pending::Pending;
+mod archived_relaunch;
 pub mod phone;
 pub mod pitch;
 pub mod pitlane;
 pub mod popup;
+pub mod presence;
 pub mod questions;
 pub mod quick;
 mod quick_look;
 pub mod reef;
 mod reorder;
 pub mod resources;
-mod reveal;
+pub(crate) mod reveal;
 mod scene_host;
 mod screenshot;
 mod seen;
@@ -80,6 +81,7 @@ mod splits;
 pub mod surfaces;
 mod tabs;
 pub mod updates;
+mod view_intent;
 pub(crate) mod window_frame;
 mod worker;
 mod worktree;
@@ -102,11 +104,7 @@ const PREFS_ID: &str = "sh.phux.rune";
 /// The exact frame a view build painted, and the unknown-delivery fence it
 /// may clear once Rune reports it drawn.
 pub struct Painted {
-    pub terminal: ResourceId,
-    pub view: ViewId,
-    pub fence: ProjectionFence,
-    pub frame: Arc<GridFrame>,
-    pub epoch: u64,
+    pub evidence: PresentationEvidence,
 }
 
 /// A size this window asked for: a terminal's cells and the cell's device
@@ -126,6 +124,7 @@ pub struct Desk {
     pub connection: connection::Connection,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
+    pub raw_relaunch: archived_relaunch::Review,
     /// The front toast: what the user was last told, until it expires or
     /// they dismiss it. A terminal opening takes down only what was in
     /// passing. A copy of `toasts`' front for one-line readers; change it
@@ -197,10 +196,6 @@ pub struct Desk {
     pub news: news::News,
     /// Navigation and search belong to this window, never to stored preferences.
     pub settings_ui: settings::SettingsUi,
-    /// Session disclosure belongs to this window, independent of selection.
-    pub sidebar_collapsed: HashSet<SessionKey>,
-    /// Rows whose child panes show; every parent starts folded.
-    pub sidebar_unfolded: HashSet<ResourceId>,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
     pub link: link::Link,
@@ -317,6 +312,7 @@ impl Desk {
         let mut desk = Self {
             connection: connection::Connection::default(),
             pending: None,
+            raw_relaunch: archived_relaunch::Review::default(),
             notice: None,
             toasts: notice::Toasts::default(),
             input_refusals: 0,
@@ -351,8 +347,6 @@ impl Desk {
             onboarding: onboarding::Onboarding::default(),
             news: news::News::load(&prefs),
             settings_ui: settings::SettingsUi::default(),
-            sidebar_collapsed: HashSet::new(),
-            sidebar_unfolded: HashSet::new(),
             updater: updates::Updater::new(&prefs, resolved),
             machines: machines::Machines::new(machine, resolved.phux.clone()),
             link: link::Link::default(),
@@ -423,6 +417,7 @@ impl Desk {
             | self.pump_link()
             | self.pump_links()
             | self.finish_screenshot()
+            | self.pump_raw_relaunch()
             | self.pump_settings(tx)
             | self.follow_host_theme()
             | self.pump_onboarding(tx)
@@ -458,10 +453,12 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.pump_agent(&client);
         changed |= self.take_paths(&client) | self.take_screens();
         changed |= self.take_changes(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
+        changed |= self.tick_open_url(tx);
         changed |= self.tick_playground(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);

@@ -152,6 +152,84 @@ async fn require_paired_refuses_a_quic_listener_that_did_not_ask() {
     );
 }
 
+#[test]
+fn native_relay_planning_keeps_identity_and_server_trust_end_to_end() {
+    let leaf = "ab".repeat(32);
+    let ca = format!("sha256:{}", "cd".repeat(32));
+    let identity = TlsClientIdentity::RequirePaired {
+        certificate: "/not-read-during-planning/device.pem".into(),
+        private_key: "/not-read-during-planning/device.key".into(),
+    };
+    let plan = QuicDial::plan(
+        "192.0.2.1:4433".parse().unwrap(),
+        "unused-default".into(),
+        Some(" ef "),
+        Some(&leaf),
+        Some(&ca),
+        Some("server-route"),
+        Some(identity.clone()),
+    )
+    .expect("pinned relay and end-to-end server");
+    assert_eq!(plan.trust, CertTrust::Pinned(leaf));
+    assert_eq!(plan.identity, Some(TlsClientIdentity::None));
+    assert_eq!(plan.server_name, "server-route");
+    assert_eq!(plan.token, Some(vec![0xef]));
+    let inner = plan.inner.expect("inner TLS");
+    assert_eq!(inner.trust, CertTrust::Authority { ca });
+    assert_eq!(inner.identity, identity);
+    assert_eq!(inner.server_name, "server-route");
+}
+
+#[test]
+fn native_planning_refuses_missing_route_trust_even_in_development() {
+    let ca = format!("sha256:{}", "cd".repeat(32));
+    assert!(
+        matches!(
+            QuicDial::plan(
+                "192.0.2.1:4433".parse().unwrap(),
+                "localhost".into(),
+                None,
+                None,
+                Some(&ca),
+                Some("route"),
+                Some(TlsClientIdentity::None),
+            ),
+            Err(crate::PlanRefusal::Unpinned),
+        ),
+        "a server CA is not the relay pin"
+    );
+    for ca in [None, Some(" ")] {
+        assert!(
+            matches!(
+                QuicDial::plan(
+                    "127.0.0.1:4433".parse().unwrap(),
+                    "localhost".into(),
+                    None,
+                    None,
+                    ca,
+                    Some("route"),
+                    Some(TlsClientIdentity::None),
+                ),
+                Err(crate::PlanRefusal::UnpinnedRelay),
+            ),
+            "even a loopback relay must not read the server session"
+        );
+    }
+    assert!(
+        matches!(
+            crate::WsTarget::parse("wss://192.0.2.1:443")
+                .unwrap()
+                .credentials(
+                    Some(CertTrust::Pinned("ab".repeat(32))),
+                    Some("ef".into()),
+                    Some("route"),
+                ),
+            Err(crate::PlanRefusal::RelayRequiresQuic),
+        ),
+        "WebSocket has no end-to-end relay session"
+    );
+}
+
 /// A relayed dial opens its stream with the inner `ClientHello`, also to a
 /// routable relay address: the connector's first-byte gate refuses any
 /// preamble. Loopback skips the preamble anyway, so the relay is dialed at

@@ -20,7 +20,7 @@ impl Desk {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
-        self.create_session(words::session_name(&folder, &[]));
+        self.ensure_session(words::session_name(&folder, &[]));
     }
 
     fn end_onboarding(&mut self) {
@@ -62,8 +62,7 @@ impl Desk {
             .flat_map(|t| t.sessions.iter().map(|s| s.name.clone()))
             .collect();
         let name = words::session_name(Path::new(&agent), &taken);
-        self.create_session_running(name.clone(), Some(words::agent_argv(&agent)));
-        self.link.keep = Some(name);
+        self.create_persistent_session_running(name, Some(words::agent_argv(&agent)));
     }
 
     /// No agent here: the keys worth knowing, from the palette.

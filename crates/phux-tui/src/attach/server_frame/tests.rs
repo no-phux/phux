@@ -31,6 +31,7 @@ use crate::render::chrome::status_bar::NoticeSeverity;
 
 mod floating;
 mod history;
+mod refused_opens;
 mod splits;
 
 // ---- fixtures --------------------------------------------------------------
@@ -1433,7 +1434,7 @@ fn a_refused_attach_never_kills_a_referenced_pane() {
     held.add_group("edge".to_owned(), edge_pane());
     let picker_open = PendingWindow {
         name: "edge/build".to_owned(),
-        adopt: Some(Adopt::Existing(edge_pane())),
+        adopt: Some(Adopt::existing(edge_pane())),
     };
     for (ws, in_flight, parked) in [
         (held, Vec::new(), 0),
@@ -1485,11 +1486,10 @@ fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
 }
 
 /// Opening an existing satellite session: success opens its window focused
-/// and saved; a refusal (either shape) opens nothing, bells, names the host
-/// and session, and never kills the session's own pane.
+/// and saved (refusals: `refused_opens`).
 #[test]
-fn satellite_session_attach_opens_its_window_or_refuses_cleanly() {
-    let existing = || Adopt::Existing(edge_pane());
+fn satellite_session_attach_opens_its_window() {
+    let existing = || Adopt::existing(edge_pane());
     let ws = || ArrangementDoc::single(tid(1));
     let (outcome, h) = adopt_reply_in(ws(), Vec::new(), "edge/build", existing(), command_ok(9));
     assert_eq!(h.mirror.workspace.groups.len(), 2);
@@ -1504,29 +1504,6 @@ fn satellite_session_attach_opens_its_window_or_refuses_cleanly() {
     assert!(outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes);
     assert!(outcome.notices.is_empty() && !h.belled() && outcome.kill_orphans.is_empty());
     assert!(h.mirror.pending_windows.is_empty());
-
-    for frame in [
-        unreachable_refusal(9),
-        FrameKind::Error {
-            request_id: Some(9),
-            code: ErrorCode::TerminalNotFound,
-            message: "no such terminal".to_owned(),
-        },
-    ] {
-        let (outcome, h) = adopt_reply_in(ws(), Vec::new(), "edge/build", existing(), frame);
-        assert_eq!(h.mirror.workspace.groups.len(), 1);
-        assert_eq!(h.mirror.focused_resource, Some(tid(1)));
-        assert!(!outcome.emit_set_metadata && !outcome.layout_replaced);
-        assert!(h.belled());
-        assert_eq!(outcome.notices.len(), 1);
-        assert!(
-            outcome.notices[0].text.contains("edge/build"),
-            "{}",
-            outcome.notices[0].text
-        );
-        assert!(outcome.kill_orphans.is_empty());
-        assert!(h.mirror.pending_windows.is_empty());
-    }
 }
 
 /// A successful `RESOURCE_SPAWNED` reply to request 9 naming `id`.

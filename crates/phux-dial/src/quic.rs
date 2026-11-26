@@ -85,6 +85,54 @@ pub struct QuicDial {
     pub identity: Option<TlsClientIdentity>,
 }
 
+impl QuicDial {
+    /// Plan a resolved native route without I/O or credential discovery.
+    ///
+    /// `route` denotes a relay, not an ordinary server-name override. Its
+    /// outer handshake pins only the relay leaf and presents no identity;
+    /// the server CA, token and identity belong to the inner session.
+    /// Adapters resolve an environment identity before planning a relay.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unpinned routable endpoints, relays without a server CA, and
+    /// malformed tokens without including their bytes in the error.
+    pub fn plan(
+        addr: SocketAddr,
+        server_name: String,
+        token: Option<&str>,
+        leaf: Option<&str>,
+        ca: Option<&str>,
+        route: Option<&str>,
+        identity: Option<TlsClientIdentity>,
+    ) -> Result<Self, crate::PlanRefusal> {
+        let trust = CertTrust::for_endpoint(
+            CertTrust::from_route_pins(leaf, ca, route),
+            addr.ip().is_loopback(),
+        )?;
+        let token = token
+            .map(parse_token_hex)
+            .transpose()
+            .map_err(|_| crate::PlanRefusal::BadToken)?;
+        let (inner, identity) = if route.is_some() {
+            (
+                InnerTls::for_route(route, ca, identity.unwrap_or(TlsClientIdentity::None))?,
+                Some(TlsClientIdentity::None),
+            )
+        } else {
+            (None, identity)
+        };
+        Ok(Self {
+            addr,
+            server_name: route.map_or(server_name, str::to_owned),
+            token,
+            trust,
+            inner,
+            identity,
+        })
+    }
+}
+
 /// Decode a `phux pair` pairing token (hex, surrounding whitespace allowed).
 ///
 /// # Errors
@@ -128,6 +176,30 @@ pub struct InnerTls {
     pub identity: TlsClientIdentity,
     /// The name offered in the inner handshake (the relay route).
     pub server_name: String,
+}
+
+impl InnerTls {
+    /// Plan the end-to-end server session for a relay route, if present.
+    ///
+    /// # Errors
+    ///
+    /// A relay route with no nonblank server CA is never dialable.
+    pub fn for_route(
+        route: Option<&str>,
+        ca: Option<&str>,
+        identity: TlsClientIdentity,
+    ) -> Result<Option<Self>, crate::PlanRefusal> {
+        let Some(route) = route else {
+            return Ok(None);
+        };
+        let trust = CertTrust::from_pins(None, ca.map(str::to_owned))
+            .ok_or(crate::PlanRefusal::UnpinnedRelay)?;
+        Ok(Some(Self {
+            trust,
+            identity,
+            server_name: route.to_owned(),
+        }))
+    }
 }
 
 /// The end-to-end session over one relayed QUIC stream.

@@ -10,7 +10,7 @@ use super::*;
 impl ServerState {
     /// Assemble the blob's tree from the registry, under the lock: the
     /// tree's identity alone. Each app adds what its engines carry at the
-    /// cut (`runtime::apps::UpgradeCut::carry`), so a busy engine never
+    /// cut (`runtime::upgrade::kinds::UpgradeCut::carry`), so a busy engine never
     /// makes the tree look changed.
     #[allow(clippy::too_many_lines, reason = "one pass per tree level")]
     pub(crate) fn assemble_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {

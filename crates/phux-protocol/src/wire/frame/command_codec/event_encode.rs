@@ -119,6 +119,11 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 super::forward::encode_agent_request(*id, message, &mut body_enc);
                 crate::wire::frame::EVENT_TAG_AGENT_REQUEST
             }
+            AgentEvent::OpenUrl { id, url } => {
+                body_enc.write_u64_be(*id);
+                body_enc.write_str(url);
+                crate::wire::frame::EVENT_TAG_OPEN_URL
+            }
             org @ (AgentEvent::SessionCreated { .. }
             | AgentEvent::SessionRenamed { .. }
             | AgentEvent::SessionProjectSet { .. }

@@ -118,19 +118,29 @@ only if every holder of that right may reach it.
 
 ## ssh-agent
 
-```sh
-phux forward --agent --remote mini
+```toml
+# config.toml here
+[[remote]]
+name = "mini"
+endpoint = "quic://mini:8788"
+forward-agent = true
+# forward-agent-keys = ["SHA256:Xr0..."]   # only these, as ssh-add -l prints them
 ```
 
-Like `ssh -A`: while it runs, `ssh` and `git` in panes on `mini` can use the
-keys in this machine's agent. Each signature is asked about first:
+Like `ssh -A`, but for as long as you are attached: while `phux attach mini`
+or Rune shows `mini`, `ssh` and `git` in its panes can use the keys in this
+machine's agent (`SSH_AUTH_SOCK`; in Rune, `[rune] ssh-agent` first), from
+whichever machine attached last. When that one detaches, the machine attached
+before it answers again. Reconnecting offers again. If `mini` doesn't forward
+agents or there is no agent here, the attach says so once and goes on. With
+`forward-agent-keys`, other keys are neither listed nor signed with.
 
-```text
-phux: let mini sign with SHA256:Xr0... (me@laptop)? [y/N]
-```
-
-Anything but `y` refuses. Without a terminal every signature is refused.
-Listing keys is not asked about. `--yes` signs without asking.
+Each signature is asked first, naming the pane, the host and the key, and
+anything but a deliberate yes refuses: in the TUI, Left then Enter, or a
+click on Sign; in Rune, ⌘Return (Ctrl+Shift+Return on Linux) or the button. A
+question ignores both for half a second, and typing never answers it.
+Unanswered, it is refused after 60 s. There is no "always allow". Listing
+keys is not asked about.
 
 The server must set `[forward] agent = true` (restart to apply). It then
 starts every new pane with `SSH_AUTH_SOCK` pointing at an owner-only broker
@@ -138,17 +148,70 @@ socket beside its own, **replacing** any agent the server inherited, whether
 or not a client is serving. Panes started earlier keep their old value. The
 path survives server restarts. The broker passes on only key listing and
 signing; adding, removing, locking, and extensions are refused on both
-sides, and the client refuses a key its agent does not hold. An unanswered
-request fails after 60 s. The newest serving client wins.
+sides, and the client refuses a key its agent does not hold.
 
-**Once a client serves, any process in any pane on that server, run by
+A request no client answers fails at once when nobody serves, or after 60 s,
+and its pane gets a [note](./scripting.md#notes) saying why, at most every
+five minutes. Only clients that watch the pane see it.
+
+**While a client serves, any process in any pane on that server, run by
 anyone who can reach the server's user account, can ask your agent to
-sign.** The prompt names the server and key, not what is signed or which
-pane asked, so say yes only when you expect a request. `--yes` is exactly
-`ssh -A`. Offering needs `input@global`.
+sign.** The pane in the question is the server's guess from the asking
+process's session and parents: any process of that user can look like
+another pane's, and one that left its pane (a `tmux` server, a daemon)
+shows as `pane unknown` and leaves no note. The question does not say what
+is signed, so say yes only when you expect a request. Offering needs
+`input@global`.
+
+Without an attached client, or to sign without asking:
+
+```sh
+phux forward --agent --remote mini
+```
+
+It serves until Ctrl-C and asks on its terminal; anything but `y` refuses.
+Without a terminal every signature is refused, and `--yes` signs without
+asking, which is exactly `ssh -A`. It obeys `forward-agent-keys`.
+
+```text
+phux: let pane @3 on mini sign with SHA256:Xr0... (me@laptop)? [y/N]
+```
 
 The [audit log](./security.md#audit-log) records each forwarded connection
 and each signature request, never the data. The wire contract (timeouts,
 windows, limits, errors) is
 [`phux-protocol/src/forward.rs`](../crates/phux-protocol/src/forward.rs);
 tags are in [kinds](./reference/kinds.md).
+
+## Opening links
+
+A program on a machine with no screen can ask to open a link on yours:
+
+```sh
+phux open-url https://phux.sh
+```
+
+With `[defaults] browser-shim = true` on the server, panes' programs do it by
+themselves: `BROWSER` is a stand-in that runs `phux open-url`, also last on
+panes' `PATH` as `xdg-open`, so a real one wins. (A login shell that rebuilds
+`PATH` drops it.) When nothing opens the link, the stand-in prints it and
+copies it to your clipboard.
+
+The terminal UI or Rune asks, if it is the client that last typed in the pane:
+it names the machine, the pane and the whole link. **O** opens it, once the
+question has been up for a second with no key pressed; Enter or Esc declines,
+and so does no answer for 60 s. It always asks. Only `http` and `https` links
+with a host and no user name are asked about, with a non-ASCII host in
+punycode. One request per pane waits at a time, eight per server.
+
+Nobody is asked for a pane on a [linked machine](./remote.md#linking-machines),
+from a phone, or from a terminal UI that itself runs over SSH, in a phux pane,
+or without a desktop.
+
+A sign-in that comes back to a `localhost` port comes back to your machine,
+where nothing listens. The question shows the `phux forward -L` command that
+carries the port to a registered machine; run it first.
+
+Asking needs `input` on the pane. The [audit log](./security.md#audit-log)
+records the request and its answer, with the link's host only. The wire
+contract is [`phux-protocol/src/open_url.rs`](../crates/phux-protocol/src/open_url.rs).

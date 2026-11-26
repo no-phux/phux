@@ -12,7 +12,7 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
             .iter()
             .map(|&feature| ServerFeatureExtSet::with(&[feature])),
     ) {
-        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
         plane.connection_opened();
         let _ = plane.take_outbound();
         let mut hello = hello_ok_with(ServerFeature::ALL);
@@ -22,9 +22,11 @@ fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
         plane.feed(hello).unwrap();
         let _ = plane.take_outbound();
         let advertised = |name| {
-            method_named(name)
-                .unwrap()
-                .advertised(ServerFeatureSet::with(ServerFeature::ALL), ext)
+            method_named(name).unwrap().advertised(
+                ServerFeatureSet::with(ServerFeature::ALL),
+                ext,
+                phux_protocol::caps::ServerFeatureExt2Set::new(),
+            )
         };
 
         assert_eq!(

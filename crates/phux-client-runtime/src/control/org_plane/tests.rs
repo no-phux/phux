@@ -7,7 +7,7 @@ use phux_protocol::wire::frame::{
 
 #[test]
 fn external_placed_create_refreshes_the_cached_arrangement_after_the_resource_seed() {
-    let mut control = ControlPlane::new(ControlOptions::default());
+    let mut control = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     let authority = AuthorityId::new([1; 16]).unwrap();
     let session = SessionKey::new([2; 16]).unwrap();
     let arrangement = ArrangementKey::new([3; 16]).unwrap();

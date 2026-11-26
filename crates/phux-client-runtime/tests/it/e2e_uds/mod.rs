@@ -399,7 +399,7 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_for_status(&client, Status::Attached).await;
         let first = client.connection_epoch();
@@ -414,7 +414,7 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
         .await;
         assert_eq!(lost, ());
 
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         wait_for_status(&client, Status::Attached).await;
         assert!(client.attached_once());
         // The handle outlived the socket, so the epoch is what a consumer
@@ -447,7 +447,7 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_for_status(&client, Status::Attached).await;
         let terminal = spawn_cat(&client).await;
@@ -461,7 +461,7 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
         wait_for_status(&client, Status::Connecting).await;
         let while_down = client.apply_line(&terminal, "while-down");
 
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         wait_for_status(&client, Status::Attached).await;
 
         let mut outcomes = std::collections::HashMap::new();

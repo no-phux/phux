@@ -53,10 +53,13 @@ them. At startup the server reconciles recorded activations against the boot
 identity, PID and process start time, or a vouched-for live handoff. It never
 adopts an arbitrary matching PID or implicitly relaunches work. A surviving
 recorded process without its owning engine becomes **Lost**; a process no
-longer matching becomes Completed with an Unobserved outcome. A launch that
-was cut off before any process was recorded becomes Failed with an Unobserved
-outcome; its record carries `launch_interrupted`, so `phux restore` relaunches
-a Terminal in that state but never one whose launch failed. Lost means
+longer matching becomes Completed with an Unobserved outcome. A Starting
+activation with no recorded process is also Lost: a crash can fall between
+the process starting and its identity being recorded, so missing evidence
+never proves the launch did not run. Only a launch whose own effect failed
+while the server was stopping, so no process started, ends Failed with an
+Unobserved outcome; its record carries `launch_interrupted`, so `phux restore`
+relaunches a Terminal in that state but never one whose launch failed. Lost means
 uncertainty, not an inactive pane: removal/relaunch is refused while it may
 still run. The current CLI cannot resolve every Lost activation; follow
 [the recovery limitation and escalation path](./troubleshooting.md#downgrading),

@@ -31,17 +31,27 @@ that reads like a log line.
 
 ## Sidebar
 
-- Rows are pills: one radius, one height, one inset from both edges.
+- Rows share one quiet radius and inset; singles stay flat and compact,
+  while real multi-member tabs fit their inline member names naturally.
 - The selected row is a filled pill; hover is a lighter fill; there are no
   borders on unselected rows.
-- One list of work: each row is a tab (or a terminal no tab holds), one
-  line high, led by its tile and named after its task.
-- The tile is the agent's colour and initial, or the prompt on an outline
-  for a plain terminal; a badge on its corner carries the state's glyph in
-  its tone, and only a state worth telling has one.
-- Group headers are small, dim and medium weight, aligned to the row text.
-  Their close button waits under the pointer.
-- Search is an icon beside the inbox; the list starts under the top edge.
+- One list of work: each row is a tab or screen-addressable resource no tab holds,
+  led by its identity and named after its task.
+- Declared program/config glyphs take precedence, then declared tool logos,
+  then a neutral resource-kind fallback. Only real multi-member tabs show
+  shallow edges behind the identity. A badge carries the state's glyph and
+  tone; only a state worth telling has one.
+- Group headers are small and restrained, aligned to the rows' identity column.
+  Local contents are always visible, without arrows or an empty gutter.
+  Singles share their row with a separately actionable session context.
+  Their close button waits under the pointer; attention summaries are unboxed.
+  Terminal ancestry never invents a split. Other machines open a lazy glance
+  through their labelled name/count, without an arrow.
+- On macOS the machine menu has a readable full-width row below the native
+  controls, with search and Inbox beside it. Native control clearance is not
+  traded for a less-truncated label. Windows without that leading reservation
+  keep a single header row.
+- Search is an icon beside the Inbox; the list starts below the machine header.
 
 ## Popovers, menus and the palette
 

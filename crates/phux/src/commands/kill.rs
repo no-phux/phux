@@ -229,6 +229,8 @@ fn report_selected(
                     "schema_version": KILL_SCHEMA_VERSION,
                     "target": target,
                     "killed": done.killed,
+                    "accepted": true,
+                    "end_observed": false,
                 }));
             }
             if let Some(killed) = done.killed {
@@ -244,6 +246,23 @@ fn report_selected(
                 return report_kill_error_json(err, server, target);
             }
             match err {
+                err @ (KillError::OutcomeUnknown { .. }
+                | KillError::Partial { .. }
+                | KillError::NotSent { .. }) => {
+                    error!("{err}");
+                    if let Some(document) = err.outcome_document() {
+                        hint!(
+                            "{}",
+                            document["error"]["remedy"].as_str().unwrap_or_default()
+                        );
+                        if let Some(operation) =
+                            document["error"]["recovery"]["operation_id"].as_str()
+                        {
+                            hint!("original operation: {operation}");
+                        }
+                    }
+                    ExitCode::from(2)
+                }
                 KillError::NoSuchTarget { target } => {
                     error!("no such target: {target}");
                     hint!("run `phux ls` to see live sessions and panes");
@@ -259,12 +278,6 @@ fn report_selected(
                 }
                 KillError::Unexpected { label, message, .. } => {
                     error!("{label}: {message}");
-                    ExitCode::from(2)
-                }
-                KillError::PaneRefusals { messages, .. } => {
-                    for message in messages {
-                        error!("{message}");
-                    }
                     ExitCode::from(2)
                 }
                 KillError::EmptySessionUnsupported { .. } => {
@@ -291,10 +304,18 @@ pub(crate) const KILL_SCHEMA_VERSION: u8 = 1;
 /// [`report_selected`]'s failure under `--json`: one error document whose
 /// code names the class, with the server's reason in the message.
 fn report_kill_error_json(err: KillError, server: &ServerTarget, target: &str) -> ExitCode {
+    if let Some(mut document) = err.outcome_document() {
+        document["error"]["target"] = serde_json::json!(target);
+        eprintln!("{document}");
+        return ExitCode::from(2);
+    }
     let refused = |code: &'static str, message: String, remedy: &str| {
         json_err::emit(true, &CliError::new(code, message, remedy), 2)
     };
     match err {
+        KillError::OutcomeUnknown { .. }
+        | KillError::Partial { .. }
+        | KillError::NotSent { .. } => unreachable!("projected above"),
         KillError::NoSuchTarget { target } => json_err::emit(
             true,
             &CliError::new(
@@ -318,11 +339,6 @@ fn report_kill_error_json(err: KillError, server: &ServerTarget, target: &str) -
             format!("{label}: {message}"),
             "run `phux ls` to see what was killed",
         ),
-        KillError::PaneRefusals { messages, .. } => refused(
-            "server_error",
-            messages.join("; "),
-            "run `phux ls` to see which panes are still running",
-        ),
         err @ KillError::EmptySessionUnsupported { .. } => refused(
             codes::SERVER_TOO_OLD,
             err.to_string(),
@@ -338,13 +354,12 @@ fn report_kill_error_json(err: KillError, server: &ServerTarget, target: &str) -
     }
 }
 
-/// A session kill's one line: `killed 12 terminals in work`, or `deleted
-/// empty session work` when it had no members.
+/// A session close's one line: accepted intent is not an observed process end.
 fn summary_line(killed: u32, target: &str) -> String {
     match killed {
         0 => format!("deleted empty session {target}\n"),
-        1 => format!("killed 1 terminal in {target}\n"),
-        n => format!("killed {n} terminals in {target}\n"),
+        1 => format!("close accepted for 1 terminal in {target}\n"),
+        n => format!("close accepted for {n} terminals in {target}\n"),
     }
 }
 
@@ -412,8 +427,63 @@ mod tests {
     /// A session kill is one line, however many members it ended.
     #[test]
     fn a_session_kill_reports_one_summary_line() {
-        assert_eq!(summary_line(12, "work"), "killed 12 terminals in work\n");
-        assert_eq!(summary_line(1, "work"), "killed 1 terminal in work\n");
+        assert_eq!(
+            summary_line(12, "work"),
+            "close accepted for 12 terminals in work\n"
+        );
+        assert_eq!(
+            summary_line(1, "work"),
+            "close accepted for 1 terminal in work\n"
+        );
         assert_eq!(summary_line(0, "parked"), "deleted empty session parked\n");
+    }
+
+    #[tokio::test]
+    async fn json_kill_does_not_exit_success_for_an_unreadable_session_outcome() {
+        use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
+        use phux_protocol::wire::frame::{
+            Command, CommandResult, ErrorCode, FrameKind, SessionLifetime,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fixture = OrgFixture::new();
+        fixture.session("work", SessionLifetime::Persistent);
+        let spec = ScriptSpec::new()
+            .organization(fixture)
+            .mutation_reply(CommandResult::Error {
+                code: ErrorCode::UNREADABLE_REPLY,
+                message: "unreadable close outcome".into(),
+            });
+        let (socket, server) = serve_one(dir.path(), spec);
+        let code = tokio::task::spawn_blocking(move || {
+            run_request(
+                Some("work".into()),
+                false,
+                None,
+                true,
+                true,
+                ServerSpec {
+                    socket: Some(socket),
+                    remote: None,
+                },
+            )
+        })
+        .await
+        .expect("CLI");
+        assert_eq!(code, std::process::ExitCode::from(2));
+        let frames = server.await.expect("server");
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: Command::SessionKill { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "no fresh-id retry"
+        );
     }
 }

@@ -49,6 +49,7 @@ pub const MAX_NATIVE_QUESTIONS: usize = 32;
 include!("native_agent/contracts.rs");
 
 pub mod questions;
+pub mod relaunch;
 mod strict;
 
 /// An immutable native request and its admitted canonical wire bytes.

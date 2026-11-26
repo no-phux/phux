@@ -182,6 +182,48 @@ fn delegation_samples(world: &World) -> Vec<FrameKind> {
     ]
 }
 
+/// Raw archived relaunch review: `PREPARE_RELAUNCH`, then `APPROVE_RELAUNCH`
+/// of `alpha`'s record.
+fn relaunch_samples(world: &World) -> [FrameKind; 2] {
+    use phux_protocol::ids::{OperationId, Revision};
+    use phux_protocol::native_agent::relaunch::RelaunchApproval;
+    use phux_protocol::native_agent::{NativeRequest, NativeRequestPayload};
+    let (operation, resource) = (OperationId::new([7; 16]).unwrap(), world.org.resource);
+    let expected = Revision::new(1);
+    let approval = RelaunchApproval {
+        instance: [1; 16],
+        operation,
+        resource,
+        expected,
+        activation: serde_json::Value::Null,
+        recipe: serde_json::json!({"terminal": {"argv": ["sh"]}}),
+        execution: serde_json::json!({"terminal": {"argv": ["sh"]}}),
+    };
+    [
+        NativeRequest::PrepareRelaunch {
+            operation,
+            resource,
+            expected,
+        },
+        NativeRequest::ApproveRelaunch { approval },
+    ]
+    .map(|request| {
+        command(Command::NativeAgent {
+            request: NativeRequestPayload::new(request).unwrap(),
+        })
+    })
+}
+
+/// Owner-socket only: no scoped grant, not even `*@global`, mints or
+/// withdraws a delegation or reviews and approves a raw archived recipe.
+fn owner_socket_rows(world: &World) -> Vec<Row> {
+    delegation_samples(world)
+        .into_iter()
+        .chain(relaunch_samples(world))
+        .map(|frame| row(frame, &[], &[&["*@global"]]))
+        .collect()
+}
+
 /// One sample per organization command, naming `alpha`'s records.
 #[allow(
     clippy::too_many_lines,
@@ -203,6 +245,13 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             cursor: None,
         }),
         command(Command::SessionCreate {
+            operation: op,
+            name: "new".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        }),
+        command(Command::SessionEnsure {
             operation: op,
             name: "new".to_owned(),
             lifetime: SessionLifetime::Persistent,

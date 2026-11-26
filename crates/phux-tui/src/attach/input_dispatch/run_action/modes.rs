@@ -6,7 +6,7 @@ use crate::attach::input_dispatch::args::str_arg;
 use super::ActionCall;
 
 /// `enter-mode { name, once? }`: make `name` the active key mode. Bells when
-/// no such mode exists (or there is no resolver to hold it).
+/// no such mode exists.
 pub(in crate::attach) fn enter_mode(
     ActionCall {
         resolved,
@@ -20,10 +20,8 @@ pub(in crate::attach) fn enter_mode(
         .get("once")
         .and_then(toml::Value::as_bool)
         .unwrap_or(false);
-    let entered = match (ctx.resolver.as_deref_mut(), str_arg(resolved, "name")) {
-        (Some(resolver), Some(name)) => resolver.enter_mode(&name, once),
-        _ => false,
-    };
+    let entered =
+        str_arg(resolved, "name").is_some_and(|name| ctx.resolver.enter_mode(&name, once));
     if entered {
         tracing::debug!(args = ?resolved.args, "key mode entered");
     } else {
@@ -34,9 +32,7 @@ pub(in crate::attach) fn enter_mode(
 
 /// `exit-mode`: leave the active key mode; a no-op outside one.
 pub(in crate::attach) fn exit_mode(ActionCall { ctx, .. }: ActionCall<'_, '_>) {
-    if let Some(resolver) = ctx.resolver.as_deref_mut()
-        && resolver.exit_mode()
-    {
+    if ctx.resolver.exit_mode() {
         tracing::debug!("key mode left");
     }
 }

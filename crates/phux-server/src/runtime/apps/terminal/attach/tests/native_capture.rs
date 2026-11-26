@@ -67,6 +67,7 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
         publication
             .reply
             .send(Ok(phux_terminal::actor::NativePublicationReply {
+                interest: phux_terminal_api::actor::NativeCaptureInterest::default(),
                 replay: Vec::new(),
                 live: output.subscribe(),
             }))

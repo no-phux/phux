@@ -18,6 +18,7 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
             true,
             gate_rx,
             next_seq,
+            CancellationToken::new(),
         )
         .expect("register");
 

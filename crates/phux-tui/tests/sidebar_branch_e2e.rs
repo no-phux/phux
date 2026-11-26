@@ -6,7 +6,7 @@
 #![allow(clippy::panic, reason = "tests")]
 
 use phux_client::snapshot::RenderedFrame;
-use phux_protocol::wire::frame::AttachTarget;
+use phux_protocol::wire::frame::{LaunchSpec, SessionLifetime};
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, run_local, spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
@@ -77,17 +77,29 @@ fn sidebar_branch_line_derives_from_attached_snapshot_cwd() {
         let (shutdown_tx, server_handle) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
         drop(wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await);
 
-        // The cwd reaches the server only via the wire and is applied at
-        // spawn, so the first attach's snapshot already carries it.
-        let target = AttachTarget::CreateIfMissing {
-            name: SESSION.to_owned(),
-            command: Some(vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "read _".to_owned(),
-            ]),
-            cwd: Some(repo_path.display().to_string()),
-        };
+        // Create explicitly before rendering; headless ATTACH only selects.
+        let mut creator = phux_client::attach::connection::Connection::connect(&socket_path)
+            .await
+            .unwrap();
+        let receipt = phux_client::org::create_session(
+            &mut creator,
+            phux_client::org::mint_operation(),
+            SESSION.to_owned(),
+            SessionLifetime::Persistent,
+            Some(Box::new(
+                LaunchSpec::new(vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "read _".to_owned(),
+                ])
+                .with_cwd(Some(repo_path.display().to_string())),
+            )),
+        )
+        .await
+        .expect("explicit session creation");
+        let target = phux_client::org::attach_target_for_receipt(&mut creator, &receipt)
+            .await
+            .expect("exact committed session");
 
         let frame = run_headless_rendered(&socket_path, target, VIEW.0, VIEW.1)
             .await

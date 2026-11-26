@@ -1,8 +1,10 @@
 use super::*;
 use crate::desk::{Shown, quick::Panel};
-use phux_client_runtime::control::{Event, Status};
-use phux_protocol::ids::Revision;
-use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed, ErrorCode, Refusal};
+use phux_client_runtime::control::{ControlPlane, Event, Status};
+use phux_protocol::ids::{Revision, SessionId};
+use phux_protocol::wire::frame::{
+    AttachTarget, CommandResult, CommandValue, Committed, ErrorCode, Refusal,
+};
 use rune::Env;
 use std::sync::{
     Arc,
@@ -17,6 +19,7 @@ fn refused(desk: &mut Desk) -> String {
     let (send, receive) = mpsc::channel();
     desk.adopt_quick(
         terminal(),
+        Some(vec![1; 16]),
         Box::new(move |result| send.send(result).unwrap()),
     );
     let error = receive
@@ -84,6 +87,7 @@ fn queuing_and_unrelated_receipts_do_not_place_or_complete_the_move() {
         let (send, result) = mpsc::channel();
         desk.adopt_quick(
             terminal(),
+            Some(vec![1; 16]),
             Box::new(move |outcome| send.send(outcome).unwrap()),
         );
         result.try_recv().unwrap().unwrap_err()
@@ -239,28 +243,25 @@ fn a_success_before_a_new_connection_waits_for_identity_and_never_hides_on_failu
     let (client, mut desk) = connected();
     let mut tx = rune::Tx::default();
     desk.observe(&client, client.take_activity(), &mut tx);
-    let (_, operation, result) = begin(&mut desk, &client);
-    let mut observation = client.take_activity();
-    observation.connection_epoch += 1;
-    observation.status = Status::Connecting;
-    observation.events = vec![
-        Event::OrganizationOperation {
-            operation,
-            outcome: OrgOutcome::Accepted,
-        },
-        Event::ConnectionOpened {
-            connection_epoch: observation.connection_epoch,
-        },
-    ];
-    desk.observe(&client, observation.clone(), &mut tx);
+    let (request, operation, result) = begin(&mut desk, &client);
+    client
+        .feed(phux_protocol::wire::frame::FrameKind::CommandResult {
+            request_id: request,
+            result: CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+                operation,
+                Revision::new(2),
+            )))),
+        })
+        .unwrap();
+    client.with_control(ControlPlane::connection_opened);
+    desk.observe(&client, client.take_activity(), &mut tx);
     assert!(
         result.try_recv().is_err(),
         "an unverified old success cannot hide the panel"
     );
     assert!(!desk.splits_waiting());
-    observation.status = Status::Failed;
-    observation.events.clear();
-    desk.observe(&client, observation, &mut tx);
+    client.with_control(|control| control.fail("the new connection could not verify its source"));
+    desk.observe(&client, client.take_activity(), &mut tx);
     assert!(
         result
             .try_recv()
@@ -278,9 +279,11 @@ fn an_old_failure_settles_even_while_the_new_connection_is_unverified() {
     let mut tx = rune::Tx::default();
     desk.observe(&client, client.take_activity(), &mut tx);
     let (_, operation, result) = begin(&mut desk, &client);
+    // A real reconnect: a window qualifies an observation by the client's
+    // own epoch, so the new socket must actually exist.
+    client.with_control(ControlPlane::connection_opened);
     let mut observation = client.take_activity();
-    observation.connection_epoch += 1;
-    observation.status = Status::Connecting;
+    assert_eq!(observation.status, Status::Connecting);
     observation.events = vec![
         Event::OrganizationOperation {
             operation,
@@ -315,4 +318,78 @@ fn a_successful_panel_completion_refills_only_after_the_move_receipt() {
     desk.quick_move_finished(Ok(()));
     assert_eq!(desk.connection.pending_spawns.len(), 1);
     assert!(!desk.quick.as_ref().unwrap().moving);
+}
+
+#[test]
+fn an_older_quick_move_completion_preserves_the_newer_pending_focus_intent() {
+    let (client, mut desk) = connected();
+    let (request, operation, result) = begin(&mut desk, &client);
+    let latest = ResourceId::local(8);
+    desk.want(latest.clone());
+    // Even the committed receipt, the only one that places, keeps the choice.
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+            operation,
+            Revision::new(2),
+        )))),
+    );
+    assert!(
+        result
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("newer selection")
+    );
+    assert_eq!(
+        desk.connection.wanted.as_ref().map(|(id, _)| id),
+        Some(&latest)
+    );
+    assert!(!desk.splits_waiting());
+    assert!(desk.connection.quick_move.is_none());
+}
+
+#[test]
+fn a_panel_from_another_original_server_cannot_capture_the_main_windows_reused_id() {
+    let (client, mut desk) = connected();
+    let (finish, result) = mpsc::channel();
+    desk.adopt_quick(
+        terminal(),
+        Some(vec![2; 16]),
+        Box::new(move |outcome| finish.send(outcome).unwrap()),
+    );
+    assert!(
+        result
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("original server view")
+    );
+    assert!(desk.connection.quick_move.is_none());
+    assert!(!desk.splits_waiting());
+    assert!(
+        outbound(&client).is_empty(),
+        "no move, attach or execution close"
+    );
+}
+
+#[test]
+fn admitted_move_without_committed_receipt_does_not_place_or_complete_as_success() {
+    let (client, mut desk) = connected();
+    let (request, operation, result) = begin(&mut desk, &client);
+    let selected = client.selected_session();
+    reply(
+        &mut desk,
+        &client,
+        request,
+        CommandResult::Accepted { operation },
+    );
+    let error = result.try_recv().unwrap().unwrap_err();
+    assert!(error.contains(&phux_protocol::ids::hex16(operation.as_bytes())));
+    assert!(desk.connection.quick_move.is_none());
+    assert!(desk.connection.unplaced_splits.is_empty());
+    assert!(!desk.splits_waiting());
+    assert_eq!(client.selected_session(), selected);
 }

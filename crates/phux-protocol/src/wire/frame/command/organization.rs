@@ -44,6 +44,20 @@ macro_rules! organization_commands {
         /// The first resource's launch, if any.
         launch: Option<Box<LaunchSpec>>,
     },
+    /// Resolve a named session atomically, creating only when absent.
+    /// Requires `features_ext2.SESSION_ENSURE`; never falls back to create.
+    SessionEnsure {
+        /// Retry identity, retained with the exact resolution.
+        operation: OperationId,
+        /// Exact live label.
+        name: String,
+        /// Used only when creating.
+        lifetime: SessionLifetime,
+        /// Descriptive attributes, used only when creating.
+        attrs: Vec<(String, String)>,
+        /// First resource, used only when creating.
+        launch: Option<Box<LaunchSpec>>,
+    },
     /// Rename a session; a label change only.
     SessionRename {
         /// Caller-generated operation id.
@@ -181,8 +195,11 @@ macro_rules! organization_commands {
         /// The resource.
         resource: ResourceKey,
     },
-    /// Start a new activation from the resource's launch; refused while one
-    /// is current or lost.
+    /// Start a new activation through current executing-host admission;
+    /// refused while one is current or lost. Requires
+    /// `features_ext2.ARCHIVED_LAUNCH_ADMISSION`: older peers must not receive
+    /// archived intent. Raw owner approval uses the separate exact review
+    /// request, never an archive trust bit on this command.
     ResourceRelaunch {
         /// Caller-generated operation id.
         operation: OperationId,

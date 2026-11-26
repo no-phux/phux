@@ -157,6 +157,7 @@ pub(in crate::runtime) fn open_org_store(
             let org = crate::state::fresh_org(instance, crate::state::now_stamp());
             s.install_org(store, org, false);
         }
+        crate::runtime::apps::terminal::program_resume::publish_program_resumes(s);
         Ok(())
     })?;
     if let Some(path) = location_path(location) {
@@ -183,25 +184,26 @@ pub(in crate::runtime) fn resume_session_tree(
 ) -> Result<(), ServerError> {
     // Capture composition before taking the mutable registry lock. A rebuild
     // invokes the engine factory while that same lock remains held.
-    let mut resumes = crate::runtime::apps::upgrade::resumes(state);
+    let mut resumes = crate::runtime::upgrade::kinds::resumes(state);
     let rebuilt =
-        state.with_mut(|s| crate::runtime::apps::upgrade::rebuild(s, blob, &mut resumes))?;
+        state.with_mut(|s| crate::runtime::upgrade::kinds::rebuild(s, blob, &mut resumes))?;
     let mut pane_events: std::collections::HashMap<_, _> = resumes
         .iter_mut()
         .flat_map(|resume| resume.start(state))
         .collect();
-    for (resource, exit_notify) in rebuilt.exit_watchers {
+    for (resource, activation, exit_notify) in rebuilt.exit_watchers {
         spawn_resource_exit_watcher(
             state.clone(),
             resource,
+            activation,
             Some(exit_notify),
             root_token.clone(),
             pane_events.remove(&resource),
         );
     }
     // A pane with no exit to watch (no PTY) still drains its events.
-    for (pane, events) in pane_events {
-        spawn_resource_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
+    for (_, events) in pane_events {
+        crate::runtime::connections::pane_events::spawn_pane_event_drain(state.clone(), events);
     }
     // ADR-0124 §6: retained exited panes close with `SERVER_SHUTDOWN`.
     state.with_mut(|s| s.close_upgrade_retained(blob));

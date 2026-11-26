@@ -36,9 +36,10 @@ pub enum WireEvent {
     /// `not_sent`; `unknown` means reconcile before acting again.
     /// `refusal` is the refusal code (`0` unless refused). `undoable` says
     /// the committed receipt is retained for `undo`.
-    /// `created_session_key` is the full base32 key from the committed
-    /// receipt, absent unless this operation created a session. Correlate
-    /// it by `operation`, not by a session name or a topology change.
+    /// `created_session_key` retains its binding name: the exact committed
+    /// session key for create or ensure. `ensured_created` is `Some(false)` for
+    /// an existing session and `Some(true)` for creation; absent for other
+    /// operations. Correlate by operation, not by name or topology changes.
     OrganizationOperation {
         operation: String,
         status: String,
@@ -49,6 +50,7 @@ pub enum WireEvent {
         message: String,
         undoable: bool,
         created_session_key: Option<String>,
+        ensured_created: Option<bool>,
     },
     /// A `kill_session` resolved. `workflow` is the id `kill_session`
     /// returned. `status` is `committed` when the session went away, else
@@ -67,16 +69,20 @@ pub enum WireEvent {
     /// Consumers just wait for the follow-up `TerminalAttached` /
     /// `TopologyChanged`.
     PaneSpawned { terminal_id: String },
-    /// The server answered one of OUR `SPAWN_TERMINAL` requests
-    /// (`TERMINAL_SPAWNED`, correlated by `request_id` — the value
-    /// `spawn_terminal_with_command()` returned). Exactly one of
-    /// `terminal_id` / `error` is set. This is how the hidden utility pane
-    /// for image paste (ADR-0018) learns its target id; the server pumps a
-    /// spawned pane's output to its spawner, so no resync is needed.
+    /// Settlement of our terminal creation, correlated by the `request_id`
+    /// in `WireWorkflowSubmission::Queued` or `Journaled`. A journaled create
+    /// also emits its canonical `OrganizationOperation`, including unknown.
+    /// A terminal id means a live target was returned, not proof of child work.
     TerminalSpawned {
         request_id: u32,
         terminal_id: Option<String>,
         error: Option<String>,
+    },
+    /// Canonical typed settlement for a queued spawn. Such spawns also emit
+    /// the established `TerminalSpawned` compatibility projection.
+    TerminalCreation {
+        request_id: u32,
+        outcome: WireTerminalCreationOutcome,
     },
     /// The server answered one of OUR `ATTACH_TERMINAL` commands
     /// (`COMMAND_RESULT`, correlated by `request_id` — the value
@@ -311,11 +317,12 @@ impl core::fmt::Debug for WireEvent {
             OrganizationUnavailable { message },
             OrganizationOperation {
                 operation, status, refusal, refusal_word, conflict_revision,
-                revision, message, undoable, created_session_key
+                revision, message, undoable, created_session_key, ensured_created
             },
             KillFinished { workflow, status, message, targets },
             PaneSpawned { terminal_id },
             TerminalSpawned { request_id, terminal_id, error },
+            TerminalCreation { request_id, outcome },
             TerminalAttached { request_id, terminal_id, error },
             TerminalDetached { request_id, terminal_id, error },
             TerminalsClosed { request_id, error },

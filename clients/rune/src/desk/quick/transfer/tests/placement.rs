@@ -96,7 +96,7 @@ fn ordinary_queued_tabs_and_splits_also_cancel_instead_of_following_selection() 
     use phux_client_core::layout::SplitDir;
     for place in [None, Some((terminal(), SplitDir::Horizontal))] {
         let (client, mut desk) = connected();
-        desk.place_split(&client, &terminal(), place, Some(session(1)));
+        desk.place_split(&client, &terminal(), place, Some(session(1)), true);
         assert_eq!(desk.connection.unplaced_splits.len(), 1);
         client.attach_session(AttachTarget::ById(SessionId::new(2)));
         install_arrangement(&client, 2);
@@ -276,6 +276,7 @@ fn split_in_flight() -> (Arc<Client>, Desk, u32, OperationId) {
         &ResourceId::local(8),
         Some((terminal(), SplitDir::Horizontal)),
         Some(session(1)),
+        true,
     );
     let (request, operation) = layout_write(&client);
     (client, desk, request, operation)

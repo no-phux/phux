@@ -19,6 +19,7 @@ pub mod keybind;
 pub mod loader;
 pub mod mirror;
 pub mod onboarding;
+pub mod open_url;
 pub mod overlay;
 pub mod plugin;
 pub mod producer;
@@ -63,8 +64,9 @@ pub use schema::{
     MAX_APPROVAL_MAX_PENDING, MAX_APPROVAL_MAX_PENDING_TOTAL, MAX_APPROVAL_TTL_SECS,
     MAX_EVENT_JOURNAL_BYTES, MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES, MAX_RETAIN_ON_EXIT_MAX,
     NotificationsCfg, NotifyMode, NotifyProtocol, ParamAction, PolicyCfg, PolicyMode,
-    RESUME_TOKEN_PLACEHOLDER, RestoreCfg, RestoreProgram, ScrollbackLimits, SidebarCfg,
-    SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+    RESUME_TOKEN_PLACEHOLDER, RestoreCfg, RestoreProgram, RestoreTrust, ScrollbackLimits,
+    SidebarCfg, SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec,
+    WindowSize,
 };
 pub use session_name::{
     NameRng, RANDOM_NAME_PLACEHOLDER, random_name, render_session_name_template_with,

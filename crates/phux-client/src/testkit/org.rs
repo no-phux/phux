@@ -32,6 +32,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 mod answer;
+mod ensure;
 mod mutate;
 
 /// One stored receipt: the command, its result, and how to undo it.

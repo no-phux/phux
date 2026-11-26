@@ -36,6 +36,7 @@ pub mod forward;
 pub mod ids;
 pub mod kinds;
 pub mod native_agent;
+pub mod open_url;
 pub mod policy;
 pub mod scope;
 pub mod service_http;
@@ -48,8 +49,9 @@ pub use caps::{
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_RESOURCE, OutputMode, RESOURCE_KINDS,
-    ResourceKindSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
-    TERMINAL_REPLY, TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
+    ResourceKindSet, ServerFeature, ServerFeatureExt, ServerFeatureExt2, ServerFeatureExt2Set,
+    ServerFeatureExtSet, ServerFeatureSet, TERMINAL_REPLY, TerminalColor, TerminalDefaultColors,
+    select_bootstrap_profile,
 };
 pub use ids::{
     ApprovalId, BootstrapId, ClientId, FileUploadId, FrameId, GroupId, IdempotencyKey,

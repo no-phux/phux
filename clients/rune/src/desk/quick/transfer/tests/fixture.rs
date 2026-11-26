@@ -106,6 +106,7 @@ pub(super) fn connected() -> (Arc<Client>, Desk) {
     desk.connection.status = Status::Attached;
     desk.connection.topology = client.topology();
     desk.connection.client = Some(client.clone());
+    desk.connection.seed_view_sources(vec![1; 16], &[]);
     let _ = client.take_activity();
     outbound(&client);
     (client, desk)
@@ -118,6 +119,7 @@ pub(super) fn begin(
     let (finish, result) = mpsc::channel();
     desk.adopt_quick(
         terminal(),
+        Some(vec![1; 16]),
         Box::new(move |outcome| finish.send(outcome).unwrap()),
     );
     let operation = desk

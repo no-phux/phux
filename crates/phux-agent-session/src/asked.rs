@@ -16,10 +16,12 @@ use std::collections::hash_map::Entry;
 
 use phux_core::ids::ResourceId;
 use phux_protocol::wire::frame::AgentEvent;
+use serde::{Deserialize, Serialize};
 
 /// Where a pending-question report came from, ordered by authority
 /// (ADR-0036 §Decision).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AskedSource {
     /// Passive screen evidence. Advisory only: it fills the gap when nothing
     /// explicit is available and must never outrank an explicit source.
@@ -54,7 +56,7 @@ impl AskedSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskedPayload {
     pub id: String,
     pub question: String,
@@ -91,10 +93,14 @@ impl AskedTransition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AskedState {
-    source: AskedSource,
-    payload: AskedPayload,
+/// One pane's open question and who holds it. Serialized in the upgrade
+/// blob, so its field names are that format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedState {
+    /// The source that may retract it.
+    pub source: AskedSource,
+    /// The question.
+    pub payload: AskedPayload,
 }
 
 #[derive(Debug, Default)]
@@ -159,10 +165,8 @@ impl AskedDetector {
 
     /// Current per-pane evidence, including which source produced it.
     #[must_use]
-    pub fn observation(&self, terminal: ResourceId) -> Option<(AskedSource, &AskedPayload)> {
-        self.states
-            .get(&terminal)
-            .map(|state| (state.source, &state.payload))
+    pub fn observation(&self, terminal: ResourceId) -> Option<&AskedState> {
+        self.states.get(&terminal)
     }
 
     #[cfg(any(test, feature = "test-support"))]

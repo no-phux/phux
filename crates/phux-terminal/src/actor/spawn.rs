@@ -118,6 +118,7 @@ pub(crate) fn spawn_pty(
 
     clear_upgrade_handoff_env(&mut cmd);
     clear_agent_host_env(&mut cmd);
+    clear_osc7577_token(&mut cmd);
     // TERM retains the ncurses-compatible terminfo choice. Truecolor is a
     // separate capability, independent of how the daemon was launched.
     cmd.env("COLORTERM", "truecolor");

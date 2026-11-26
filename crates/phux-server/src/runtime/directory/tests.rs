@@ -246,7 +246,8 @@ async fn one_saturated_satellite_does_not_refuse_another() {
 
     let (healthy, mut mailbox) = RelayHandle::new(SatelliteHost::new("healthy"));
     let satellite = async {
-        let Some(RelayRequest::ListDirectory { path, reply }) = mailbox.requests.recv().await
+        let Some(RelayRequest::ListDirectory { path, reply }) =
+            mailbox.requests.recv().await.map(|queued| queued.request)
         else {
             panic!("the healthy satellite must be asked");
         };

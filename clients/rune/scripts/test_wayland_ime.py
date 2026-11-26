@@ -40,6 +40,31 @@ class WaylandImeTests(WaylandImeFixture, unittest.TestCase):
             self.assertAlmostEqual(end["elapsed"] - start["elapsed"], 0.25)
             self.assertLessEqual(end["timeout"], start["timeout_cap"])
 
+    def test_cold_activation_can_take_longer_than_a_probe_without_replay(self):
+        result, calls, stages, _ = self.run_driver("slow-activation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activation = ["fcitx5-remote", "-o"]
+        self.assertEqual(calls.count(activation), 1)
+        self.assertEqual([c for c in calls if c[0] == "wtype"], [ime.KEYS])
+        start, end = [s for s in stages if s.get("argv") == activation]
+        self.assertAlmostEqual(end["elapsed"] - start["elapsed"], 1.25)
+        self.assertLessEqual(end["timeout"], ime.STARTUP_SECONDS - start["elapsed"])
+        injected = next(s for s in stages if s["stage"] == "injection-start")
+        self.assertLess(injected["elapsed"], ime.STARTUP_SECONDS)
+        self.assertEqual(sum(s["stage"] == "process-reaped" for s in stages), 2)
+
+    def test_activation_cannot_extend_the_shared_startup_deadline(self):
+        result, calls, stages, files = self.run_driver("activation-exceeds-deadline")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[0] == "wtype" for c in calls))
+        failed = next(s for s in stages if s["stage"] == "failure")
+        self.assertEqual(failed["elapsed"], ime.STARTUP_SECONDS)
+        attempts = [s for s in stages if s.get("artifact") == "wayland-ime-activate.log"]
+        self.assertEqual([s["stage"] for s in attempts],
+                         ["command-start", "command-observation-failed"])
+        self.assertEqual(attempts[-1]["status"], "TimeoutExpired")
+        self.assert_failure_evidence(stages, files)
+
     def test_wrong_owners_profile_only_and_failed_commands_never_inject(self):
         cases = {
             "wrong-focus": "keyboard focus", "wrong-app-id": "keyboard focus",

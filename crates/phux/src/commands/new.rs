@@ -1,15 +1,13 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_protocol::ids::IdempotencyKey;
-use phux_protocol::wire::frame::{AttachTarget, SessionLifetime};
+use phux_protocol::wire::frame::SessionLifetime;
 
-use crate::commands::server_target::{ServerSpec, ServerTarget};
-use crate::commands::{
-    attach::client_cwd, attach::interactive_tty_preflight, attach::report_attach_end,
-    attach::run_attach_once, server::ensure_server,
+use crate::commands::attach::{
+    client_cwd, interactive_tty_preflight, report_attach_end, run_attach_once,
 };
+use crate::commands::server_target::{ServerSpec, ServerTarget};
 
 mod create;
 mod empty;
@@ -49,12 +47,16 @@ pub(crate) fn run(args: crate::commands::NewArgs, socket: Option<std::path::Path
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod workflow_tests;
 
-pub(crate) use create::create_session_via_metadata;
+pub(crate) use create::{
+    committed_session_error, create_seeded_session, report_create_session_error,
+};
 pub(crate) use empty::ensure_local_unseeded_server;
 use empty::{run_new_empty_attached, run_new_empty_json};
-use naming::{choose_session_name, report_invalid_session_name, requested_session_name};
 pub(crate) use naming::{existing_session_names, unique_session_name};
+use naming::{report_invalid_session_name, requested_session_name, resolve_session_name};
 
 /// `phux new` — create a *new* session and attach to it.
 pub(crate) fn run_new(
@@ -172,44 +174,18 @@ fn run_new_attached(
     {
         return code;
     }
-    let existing = existing_session_names(rt, target);
-    let name = match choose_session_name(requested, &existing) {
-        Ok(name) => name,
-        Err(code) => return code,
-    };
+    let name = resolve_session_name(rt, target, requested);
 
-    let session_target = if lifetime == SessionLifetime::Persistent {
-        ensure_local_unseeded_server(target, false);
-        let command = if command.is_empty() {
-            None
-        } else {
-            Some(command)
-        };
-        if let Err(code) = rt.block_on(create_session_via_metadata(
-            target,
-            &name,
-            command,
-            seed_cwd(cwd, target.is_remote()),
-            BTreeMap::new(),
-            None,
-            false,
-            None,
-            lifetime,
-            &[],
-        )) {
-            return code;
-        }
-        AttachTarget::ByName(name.clone())
-    } else {
-        // phux-07y: `phux new` never seeds with spawn-on-attach — an
-        // explicitly-created session gets a plain shell (or the `-- CMD`
-        // the user gave, applied per-session via CreateIfMissing).
-        if let Some(path) = target.socket_path()
-            && let Err(err) = ensure_server(path, &name, None, false)
-        {
-            warn!("auto-spawn skipped ({err}). Start a server manually with `phux server`.");
-        }
-        new_session_target(name.clone(), command, seed_cwd(cwd, target.is_remote()))
+    ensure_local_unseeded_server(target, false);
+    let session_target = match rt.block_on(create::create_attached_session(
+        target,
+        &name,
+        command,
+        seed_cwd(cwd, target.is_remote()),
+        lifetime,
+    )) {
+        Ok(target) => target,
+        Err(code) => return code,
     };
 
     // The shared resolver picks the per-dial default: prediction off over
@@ -225,18 +201,16 @@ fn run_new_attached(
             ExitCode::SUCCESS
         }
         Err(err) => {
+            warn!("session '{name}' was created; inspect `phux ls` before retrying the attach");
             target.report_attach_failure(&err, &name);
             ExitCode::FAILURE
         }
     }
 }
 
-/// `phux new --json` — create a session *without* attaching and print its
-/// seed pane's id, via [`phux_client::session::create_session`]: one
-/// `SESSION_CREATE` carrying `lifetime` against a server that advertises
-/// `ORGANIZATION`, else the `phux.session.create/v1` write and its
-/// nonce-correlated read-back. Requires `-s NAME` (clap-enforced); a name in
-/// use is an error.
+/// `phux new --json` creates without attaching. The host's `SESSION_CREATE`
+/// refuses a name collision atomically; an uncertain receipt never permits a
+/// fresh automatic create. Requires `-s NAME` (clap-enforced).
 #[allow(
     clippy::too_many_arguments,
     reason = "one argument per `phux new` input; bundling them hides which the JSON path reads"
@@ -263,7 +237,7 @@ pub(crate) fn run_new_json(
     };
     let env = env.into_iter().collect();
 
-    match rt.block_on(create_session_via_metadata(
+    match rt.block_on(create_seeded_session(
         target,
         name,
         command,
@@ -300,18 +274,4 @@ fn seed_cwd(explicit: Option<PathBuf>, remote: bool) -> Option<String> {
         return explicit;
     }
     explicit.or_else(client_cwd)
-}
-
-/// Build the `CreateIfMissing` target from a resolved seed cwd; the server
-/// falls back to its default directory for an unusable path.
-fn new_session_target(name: String, command: Vec<String>, cwd: Option<String>) -> AttachTarget {
-    AttachTarget::CreateIfMissing {
-        name,
-        command: if command.is_empty() {
-            None
-        } else {
-            Some(command)
-        },
-        cwd,
-    }
 }

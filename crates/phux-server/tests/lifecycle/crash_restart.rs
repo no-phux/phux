@@ -43,10 +43,12 @@ fn crashed_run(store_path: &Path) -> (Orphan, ResourceKey, ResourceKey) {
             .spawn()
             .unwrap(),
     );
-    let mut gone = Command::new("true").spawn().unwrap();
+    let mut gone = Command::new("sleep").arg("300").spawn().unwrap();
     let gone_pid = pid(&gone);
     // Read its identity while it exists, then let it end.
-    let gone_identity = phux_server::reconcile::proc_identity(gone_pid);
+    let gone_identity =
+        Some(phux_server::reconcile::proc_identity(gone_pid).expect("live child identity"));
+    gone.kill().unwrap();
     gone.wait().unwrap();
 
     let mut state = ServerState::new();
@@ -65,7 +67,10 @@ fn crashed_run(store_path: &Path) -> (Orphan, ResourceKey, ResourceKey) {
             &Actor::owner(),
         )
         .unwrap();
-    state.activation_started(alive, phux_server::reconcile::proc_identity(pid(&orphan.0)));
+    state.activation_started(
+        state.activation_token(alive).unwrap(),
+        phux_server::reconcile::proc_identity(pid(&orphan.0)),
+    );
     let (_, dead) = state
         .create_terminal(
             TerminalTarget::Session(session),
@@ -74,7 +79,7 @@ fn crashed_run(store_path: &Path) -> (Orphan, ResourceKey, ResourceKey) {
             &Actor::owner(),
         )
         .unwrap();
-    state.activation_started(dead, gone_identity);
+    state.activation_started(state.activation_token(dead).unwrap(), gone_identity);
     let keys = (
         state.registry().resource_key(alive).unwrap(),
         state.registry().resource_key(dead).unwrap(),
@@ -262,5 +267,87 @@ fn restarted_projections_refuse_wire_relaunch_without_starting_a_default_shell()
         }
         drop(client);
         join_after_shutdown(shutdown, handle).await;
+    });
+}
+
+#[test]
+fn a_crash_losing_start_evidence_cannot_prove_the_process_was_never_launched() {
+    run_local(async {
+        let dir = TempDir::new().unwrap();
+        let store_path = dir.path().join("org.sqlite3");
+        let mut orphan = Orphan(
+            Command::new("sleep")
+                .arg("300")
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut state = ServerState::new();
+        // Create the schema, then refuse only the later start transition;
+        // admission inserts the row as `starting` and so still commits.
+        drop(SqliteOrgStore::open(&store_path).unwrap());
+        let db = rusqlite::Connection::open(&store_path).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER reject_start BEFORE UPDATE ON resources WHEN NEW.exec_state <> 'starting' BEGIN SELECT RAISE(FAIL, 'test lost start'); END;",
+        ).unwrap();
+        // Open the writer only after that schema change: a store fences any
+        // write it did not make, the trigger included.
+        let store = SqliteOrgStore::open(&store_path).unwrap();
+        state.install_org(
+            Box::new(store),
+            fresh_org(state.instance_id(), now_stamp()),
+            false,
+        );
+        state.persist_first_start().unwrap();
+        let (_, pane) = state
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "ambiguous",
+                    lifetime: SessionLifetime::Persistent,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Retain,
+                &Actor::owner(),
+            )
+            .unwrap();
+        let producer = state.activation_token(pane).unwrap();
+        let proc =
+            phux_server::reconcile::proc_identity(pid(&orphan.0)).expect("live process identity");
+        state.activation_started(producer, Some(proc));
+        assert!(state.activation_persistence_pending(producer.resource));
+        assert_eq!(
+            state_of(&load(&store_path), producer.resource),
+            (ExecState::Starting, None)
+        );
+        drop(state); // Hard crash: the queued process identity is genuinely lost.
+        db.execute_batch("DROP TRIGGER reject_start;").unwrap();
+        drop(db);
+
+        restart(dir.path(), &store_path).await;
+        let after = load(&store_path);
+        assert_eq!(state_of(&after, producer.resource), (ExecState::Lost, None));
+        let record = after
+            .resources
+            .iter()
+            .find(|r| r.key == producer.resource)
+            .unwrap();
+        assert!(record.activation.as_ref().unwrap().host_proc.is_none());
+        let revision = record.revision;
+        assert!(
+            orphan.0.try_wait().unwrap().is_none(),
+            "the unrecorded process can still be alive"
+        );
+        restart(dir.path(), &store_path).await;
+        let again = load(&store_path);
+        assert_eq!(state_of(&again, producer.resource), (ExecState::Lost, None));
+        assert_eq!(
+            again
+                .resources
+                .iter()
+                .find(|r| r.key == producer.resource)
+                .unwrap()
+                .revision,
+            revision
+        );
     });
 }

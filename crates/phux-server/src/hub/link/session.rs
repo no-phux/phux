@@ -35,6 +35,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
         relay_rx,
         unsub_rx,
         cancel: &cancel,
+        resume: crate::hub::relay::RelayResume::default(),
     };
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
@@ -73,6 +74,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     conn,
                     &mut inbox.relay_rx,
                     &mut inbox.unsub_rx,
+                    &mut inbox.resume,
                     &cancel,
                     journal.as_ref(),
                     &operations,
@@ -163,15 +165,17 @@ pub(super) async fn refuse_link(
 /// between connections, and hands to [`run_relay_session`] during one.
 pub(super) struct LinkInbox<'a> {
     pub(super) host: &'a SatelliteHost,
-    pub(super) relay_rx: tokio::sync::mpsc::Receiver<crate::hub::relay::RelayRequest>,
-    pub(super) unsub_rx: tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::Unsubscribe>,
+    pub(super) relay_rx: tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    pub(super) unsub_rx: tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
     pub(super) cancel: &'a CancellationToken,
+    /// What the last connection left the next one.
+    pub(super) resume: crate::hub::relay::RelayResume,
 }
 
 impl LinkInbox<'_> {
     /// Await `until` while no link is up to carry relay traffic: every
-    /// relay request fails fast with `why`, and unsubscribes are dropped
-    /// (there is no registry to withdraw from). `None` means the supervisor
+    /// relay request fails fast with `why`, and unsubscribes withdraw what
+    /// the next connection would resume. `None` means the supervisor
     /// should exit: `cancel` fired, or every relay or unsubscribe handle was
     /// dropped.
     #[allow(
@@ -188,10 +192,11 @@ impl LinkInbox<'_> {
             tokio::select! {
                 () = self.cancel.cancelled() => return None,
                 request = self.relay_rx.recv() => {
-                    crate::hub::relay::fail_fast(request?, self.host, why);
+                    crate::hub::relay::fail_fast(request?.request, self.host, why);
                 }
                 unsubscribe = self.unsub_rx.recv() => {
-                    let _dropped: crate::hub::relay::Unsubscribe = unsubscribe?;
+                    // Removal only, so a withdrawal pinned to any link applies.
+                    self.resume.withdraw(&unsubscribe?.unsubscribe);
                 }
                 output = &mut until => return Some(output),
             }
@@ -210,28 +215,28 @@ impl LinkInbox<'_> {
 pub(super) async fn run_relay_session<C: LinkConn>(
     host: &SatelliteHost,
     conn: C,
-    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::RelayRequest>,
-    unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::Unsubscribe>,
+    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::hub::relay::QueuedUnsubscribe>,
+    resume: &mut crate::hub::relay::RelayResume,
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
     operations: &crate::hub::operation_fence::OperationFence,
     resource_kinds: crate::hub::relay::ResourceKindCatalog,
 ) -> Option<String> {
+    if cancel.is_cancelled() {
+        return None;
+    }
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
         Err(error) => return Some(error),
     };
     session.set_resource_kinds(resource_kinds);
     session.set_journal(journal.cloned());
-    // ADR-0127: publish what this satellite advertised for dispatch.
-    if let Some(journal) = journal {
-        let features = session.satellite_features();
-        journal.with_mut(|s| {
-            s.federation_mut()
-                .set_satellite_features(host.clone(), features);
-        });
+    if resume.satellite_restarted(session.incarnation()) {
+        forget_restarted_satellite(host, relay_rx, journal);
     }
     session.set_operation_fence(operations.clone());
+    session.resume(std::mem::take(resume));
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));
@@ -259,7 +264,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frames = prepare_relay_request(&mut session, request);
+                let frames = session.handle_queued_request(request);
                 if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
@@ -270,7 +275,7 @@ pub(super) async fn run_relay_session<C: LinkConn>(
                 let Some(unsubscribe) = unsubscribe else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frames = session.handle_unsubscribe(unsubscribe);
+                let frames = session.handle_queued_unsubscribe(unsubscribe);
                 if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
@@ -296,16 +301,33 @@ pub(super) async fn run_relay_session<C: LinkConn>(
             }
             _ = delivery_retry.tick() => {
                 session.flush_pending_snapshots();
-                let detaches = session.take_delivery_detaches();
-                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(detaches)) {
+                let mut frames = session.take_delivery_detaches();
+                frames.extend(session.settle_undrawn());
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
             }
         }
     };
     drop(write_tx);
-    session.teardown(&reason);
+    *resume = session.teardown(&reason);
     lost.then_some(reason)
+}
+
+/// The satellite is another process: its terminal ids name other panes. Typing
+/// a consumer attached under the old ids must land in none of them, queued or
+/// still to come.
+fn forget_restarted_satellite(
+    host: &SatelliteHost,
+    relay_rx: &mut tokio::sync::mpsc::Receiver<crate::hub::relay::QueuedRelayRequest>,
+    journal: Option<&crate::state::SharedState>,
+) {
+    while let Ok(queued) = relay_rx.try_recv() {
+        crate::hub::relay::fail_fast(queued.request, host, "the satellite restarted");
+    }
+    if let Some(journal) = journal {
+        journal.with_mut(|s| s.federation_mut().forget_satellite_proxy_attaches(host));
+    }
 }
 
 pub(super) fn negotiated_relay_session<C: LinkConn>(
@@ -316,10 +338,12 @@ pub(super) fn negotiated_relay_session<C: LinkConn>(
     let limits = conn.bootstrap_limits()?;
     let features = conn.server_features()?;
     let features_ext = conn.server_features_ext()?;
+    let features_ext2 = conn.server_features_ext2()?;
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
     let mut session =
         crate::hub::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
     session.set_satellite_features_ext(features_ext);
+    session.set_satellite_features_ext2(features_ext2);
     session.set_incarnation(conn.satellite_incarnation());
     Ok(session)
 }
@@ -419,15 +443,4 @@ pub(super) fn maintain_relay_session(
     session.check_detach_deadlines()?;
     session.prune_abandoned();
     Ok(())
-}
-
-pub(super) fn prepare_relay_request(
-    session: &mut crate::hub::relay::RelaySession,
-    request: crate::hub::relay::RelayRequest,
-) -> Vec<Vec<u8>> {
-    let mut frames = session.prepare_request(&request);
-    if let Some(frame) = session.handle_request_checked(request) {
-        frames.push(frame);
-    }
-    frames
 }

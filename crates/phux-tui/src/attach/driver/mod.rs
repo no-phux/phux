@@ -21,6 +21,7 @@ pub mod native;
 mod orphans;
 mod overlay_paint;
 mod session_io;
+mod session_switch;
 mod subscriptions;
 mod terminal;
 #[cfg(test)]

@@ -31,7 +31,7 @@ async fn arm_foreground_pane(
     )
     .expect("build actor");
     let actor = bundle.actor;
-    let pty = actor.pty.as_ref().expect("test actor has PTY");
+    let pty = actor.process.pty.as_ref().expect("test actor has PTY");
     let shell_group =
         i32::try_from(pty.child.process_id().expect("shell pid")).expect("shell pid fits i32");
     let pane_cleanup = FixturePane(shell_group);

@@ -20,8 +20,9 @@ const GATED: [(Shortcut, &str, &str); 4] = [
 /// The feature `action` needs when `server` didn't advertise it.
 pub fn too_old(server: &ServerInfo, action: Shortcut) -> Option<&'static str> {
     let (_, method, words) = GATED.iter().find(|(gated, ..)| *gated == action)?;
-    let advertised = method_named(method)
-        .is_some_and(|method| method.advertised(server.features, server.features_ext));
+    let advertised = method_named(method).is_some_and(|method| {
+        method.advertised(server.features, server.features_ext, server.features_ext2)
+    });
     (!advertised).then_some(*words)
 }
 

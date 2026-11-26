@@ -62,6 +62,22 @@ one terminal, never a subtree.
   [`phux slot next|prev`](./reference/cli.md#phux-slot). An attached client's
   keys ([keys](./reference/keys.md)) change only what that client shows.
 
+## Ensuring a named session
+
+`SESSION_ENSURE { operation, name, lifetime, attrs, launch }` requires the
+`SESSION_ENSURE` capability and current create authority. The host resolves
+the name and journals the exact result under its organization serialization.
+`COMMITTED.session` is the exact durable key; `ensured_created` distinguishes
+an existing session from one created by this operation.
+
+An existing session is never reseeded or given a different lifetime or attributes. A new
+session and optional first launch intent commit atomically. Exact create
+remains separate: `SESSION_CREATE` still refuses an occupied name.
+Replaying the same operation returns its original resolution, even after
+deletion or name reuse; a different request or actor cannot adopt the receipt.
+Current connection policy still applies before replay. Older peers are
+unsupported, never a reason to fall back to local lookup followed by create.
+
 ## Close intents
 
 | Request | Target | Reply |
@@ -128,22 +144,51 @@ and applied by [`mission_project.rs`](../crates/phux/src/commands/mission_projec
 ## Restore and executable authority
 
 Importing dormant records is not permission to run them. Restore creates a new
-execution; it never resurrects the old PTY or scrollback.
+execution; it never resurrects the old PTY.
 
-- **Terminal `agent_session` resume** stores a bounded native id and the
-  owning integration. Resume argv comes from the currently enabled, trusted
-  integration template; an ownership mismatch refuses, and option-shaped ids
-  are rejected.
-- **ACP `native_launch` restore** runs the archived `SpawnNativeAgent` recipe
-  (argv, cwd, environment) without consulting current integrations. **Treat
-  the archive as executable input.** The provider starts before the
-  `loadSession` check, so a failed restore may still have run it
-  ([ACP](./acp.md)).
+- **Plain shell restore** admits only the current host's default-shell argv
+  and its current injected defaults. Matching records return to the semantic
+  shell template; a changed shell binary, extra task arguments or foreign
+  environment requires exact raw approval.
+- **Terminal `agent_session` resume** keeps inert integration provenance and
+  native identity. The executing host resolves its currently enabled template;
+  a disabled template, changed owner, invalid identity or archived environment
+  cannot fall back to the archived argv.
+  The native identity environment variable is derived from that current
+  template; matching archived identity data is not arbitrary environment trust.
+- **ACP `native_launch` restore** must match the exact argv, cwd, backend and
+  provider of a current enabled host template, with no archived environment
+  additions. A changed or disabled template refuses the saved executable.
+- **Raw intent** requires a distinct local-owner decision. `phux relaunch
+  TARGET --approve-raw` prints the complete archived and concrete execution
+  recipes, then asks interactively (no `--yes` bypass). Rune's **Review Archived
+  Raw Execution…** command opens the complete scrollable recipe and a separate
+  approval button. The local FFI `RawRelaunchReview` exposes the same
+  prepare/document/explicit exact-document approval lifetime.
+- Preparation is inert. The server retains one exact proposal on its original
+  non-delegated Unix-owner connection, binding operation, resource, revision,
+  current host incarnation, argv, cwd, environment, structured native spec and
+  resume identity. Altered content, another operation/target, disconnect,
+  cold restart or changed revision cannot reuse it. Import and readiness never
+  grant executable trust. A remote/phone/browser/delegated caller cannot approve
+  raw intent; unsupported peers refuse rather than replaying it as a fresh spawn.
+  `HELLO_OK.server_caps.features_ext2.ARCHIVED_LAUNCH_ADMISSION` is required
+  before sending an ordinary archived relaunch. Missing proof means no send,
+  not a client-side raw fallback. On peer replacement, previously possible
+  sends remain Unknown; never-sent intents report NotSent.
+  A hub additionally checks the current executing satellite connection's proof.
+  Its own advertised capability never stands in for the satellite's. Exact
+  owner reviews are not forwarded, and actorless archived forwarding is refused.
+- An accepted relaunch reports admission, not successful execution. Retry the
+  exact operation only for reconciliation; never replay an unknown effect as a
+  fresh operation. Existing live engines carried by a real hot handoff are not
+  cold relaunches. Provider permission requests still require their own explicit
+  interactive answers; recipe approval does not answer them.
 
-Owned by [`runtime/organization.rs`](../crates/phux-server/src/runtime/organization.rs),
-[`session/acp.rs`](../crates/phux-agent-host/src/session/acp.rs) and
-[`commands/archive.rs`](../crates/phux/src/commands/archive.rs). Options are in
-the [CLI reference](./reference/cli.md#phux-restore).
+Enforced by the host's
+[`launch_admission`](../crates/phux-server/src/runtime/organization/launch_admission.rs)
+and native relaunch transaction, not by an archive trust flag. Fresh explicitly
+requested shell/argv launches remain separate authorized operations.
 
 ## Durable inspection
 

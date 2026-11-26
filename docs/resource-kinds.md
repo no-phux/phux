@@ -203,14 +203,15 @@ machine. Who may watch and control which class is in
 
 A kind's engine owns its semantics and codecs. phux owns negotiation,
 stream and bootstrap identity, ordering and fences, bounds, routing and
-tombstones. A kind supplies its `ResourceApp` (state, codec, frames and
-commands, what crosses `phux upgrade`) and one `KindSpec` row in the catalog:
-gate, methods, events, metadata keys, its stream contract (codec tags,
-[delivery mode](#delivery-modes), geometry, cursor resume) and its spawn
-contract (parent, `provider` and `native_id`, refused fields, its own
-checks, `scoped_child`). The decoder, authorization classifier, hub relay,
-session attach and client kernel read those contracts instead of matching
-on kinds.
+tombstones. A kind supplies capture/bootstrap capabilities and frame-validity
+facts through `ResourceApp`, plus one `KindSpec` row in the catalog: gate,
+methods, events, metadata keys, stream contract (codec tags,
+[delivery mode](#delivery-modes), geometry, cursor resume), and spawn contract
+(parent, `provider`, `native_id`, refused fields and `scoped_child`).
+Private host command, spawn and upgrade owners interpret authority and
+resource evidence; kind engines receive their exact inputs and retain their
+engine-thread ownership. The decoder, authorization classifier, hub relay,
+session attach and client kernel consume the catalog contracts.
 Wire `terminal_id` fields carry any kind's resource id.
 
 ## Delivery modes

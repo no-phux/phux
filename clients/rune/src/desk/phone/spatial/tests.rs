@@ -284,14 +284,6 @@ fn returning_keeps_real_views_scroll_selection_and_only_focused_pane_is_fit_or_s
     );
     assert_eq!(rt.state.connection.fitted.len(), 1);
     assert_eq!(rt.state.connection.areas.len(), 1);
-    assert!(
-        rt.state
-            .connection
-            .painted
-            .borrow()
-            .as_ref()
-            .is_none_or(|p| p.terminal == id(1))
-    );
     rt.update(|d, _| d.focus_pane(&id(2)));
     settle(&mut rt);
     assert_eq!(
@@ -416,7 +408,7 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
 }
 
 #[test]
-fn a_reconnect_reopens_all_retained_views_and_forgets_the_old_gesture() {
+fn a_reconnect_keeps_all_retained_views_and_forgets_the_old_gesture() {
     let (client, mut rt) = fixture(true);
     let before = rt.state.connection.shown.as_ref().unwrap().view;
     let old_other = rt.state.connection.others[&id(2)];
@@ -430,8 +422,9 @@ fn a_reconnect_reopens_all_retained_views_and_forgets_the_old_gesture() {
     touch(&mut rt, Ended, x - 70.0, y);
     settle(&mut rt);
     assert_eq!(focus(&rt), id(1));
-    assert_ne!(rt.state.connection.shown.as_ref().unwrap().view, before);
-    assert_ne!(rt.state.connection.others[&id(2)], old_other);
+    // A transport epoch is not a publication replacement: the views stay.
+    assert_eq!(rt.state.connection.shown.as_ref().unwrap().view, before);
+    assert_eq!(rt.state.connection.others[&id(2)], old_other);
     assert_eq!(rt.state.connection.others.len(), 3);
     assert!(!rt.state.layout_is_stale());
     no_input(&client);

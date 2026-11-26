@@ -28,6 +28,8 @@ fn window(dark: bool, theme: Option<&'static Theme>, waiting: bool) -> Runtime<D
     let mut desk = crate::test_support::window();
     desk.settings.theme = theme;
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),
     ));

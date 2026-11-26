@@ -67,8 +67,9 @@ impl ControlPlane {
     /// connection, queue, and authority checks. Unknown methods fail closed.
     pub(super) fn method_advertised(&self, name: &str) -> bool {
         self.server.as_ref().is_some_and(|server| {
-            phux_protocol::kinds::method_named(name)
-                .is_some_and(|method| method.advertised(server.features, server.features_ext))
+            phux_protocol::kinds::method_named(name).is_some_and(|method| {
+                method.advertised(server.features, server.features_ext, server.features_ext2)
+            })
         })
     }
 
@@ -122,7 +123,7 @@ impl ControlPlane {
                 next_offset: 0,
                 attempted: false,
                 in_flight: None,
-                created_at: Instant::now(),
+                created_at: self.observed_time(),
             },
         );
         self.extensions.upload_order.push_back(transfer_id);
@@ -159,7 +160,11 @@ impl ControlPlane {
             .extensions
             .uploads
             .iter()
-            .filter(|(_, upload)| upload.created_at.elapsed() >= INPUT_RETRY_HORIZON)
+            .filter(|(_, upload)| {
+                self.observed_time()
+                    .saturating_duration_since(upload.created_at)
+                    >= INPUT_RETRY_HORIZON
+            })
             .map(|(transfer_id, _)| *transfer_id)
             .collect::<Vec<_>>();
         for transfer_id in &expired {

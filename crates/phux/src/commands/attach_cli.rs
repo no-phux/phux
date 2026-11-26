@@ -38,7 +38,7 @@ pub(crate) fn relay_hop(
     quic: Option<&str>,
     tls_server_name: Option<&str>,
     ca_fingerprint: Option<String>,
-) -> Result<Option<commands::attach::RelayHop>, String> {
+) -> Result<Option<commands::attach::native::RelayHop>, String> {
     let ca = ca_fingerprint
         .map(|pin| {
             phux_config::known_authorities::canonical_authority(&pin).ok_or_else(|| {
@@ -49,7 +49,7 @@ pub(crate) fn relay_hop(
         })
         .transpose()?;
     match (quic, tls_server_name) {
-        (Some(_), Some(route)) => Ok(Some(commands::attach::RelayHop {
+        (Some(_), Some(route)) => Ok(Some(commands::attach::native::RelayHop {
             route: route.to_owned(),
             ca,
         })),
@@ -189,7 +189,7 @@ pub(crate) fn run(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCo
         return attach_remote_target(&target, session, code.as_deref(), no_enroll, rec_spec);
     }
     match (quic, ws) {
-        (Some(addr), None) => commands::attach::run_attach_quic(
+        (Some(addr), None) => commands::attach::remote::run_attach_quic(
             session,
             addr,
             token,
@@ -198,7 +198,7 @@ pub(crate) fn run(args: commands::AttachArgs, socket: Option<PathBuf>) -> ExitCo
             None,
             rec_spec,
         ),
-        (None, Some(url)) => commands::attach::run_attach_ws(
+        (None, Some(url)) => commands::attach::remote::run_attach_ws(
             session,
             url,
             token,

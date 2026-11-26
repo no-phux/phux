@@ -8,24 +8,6 @@ use super::{
 };
 
 impl super::SessionLoop {
-    /// Fold a peer layout reply, then sync that peer's agent-record watches.
-    pub(super) async fn fold_peer_layout(
-        &mut self,
-        conn: &mut Connection,
-        request_id: u32,
-        value: Option<&[u8]>,
-        repaint: &mut RepaintAccumulator,
-    ) -> Result<(), AttachError> {
-        let Some(session) = self.peers.foreign_layout_pending.remove(&request_id) else {
-            return Ok(());
-        };
-        self.peers.apply_layout_reply(session, value);
-        self.reconcile_peer_agents(conn).await?;
-        self.peers.chrome_dirty = true;
-        repaint.raise_fleet();
-        Ok(())
-    }
-
     /// Prune and re-sync the foreign agent watches against the live foreign
     /// terminal set (from persisted layouts, or the server graph).
     pub(super) async fn reconcile_peer_agents(
@@ -33,7 +15,12 @@ impl super::SessionLoop {
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
         self.peers
-            .sweep_agents(conn, &mut self.next_request_id, &self.review)
+            .sweep_agents(
+                conn,
+                &mut self.next_request_id,
+                &self.review,
+                &self.peer_presentation,
+            )
             .await?;
         self.watch_notify_modes(conn).await
     }
@@ -94,7 +81,7 @@ impl super::SessionLoop {
             || cleared_folded
             || outcome.foreign_pane_set_dirty
         {
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
             repaint.raise_fleet();
         }
         Ok(())

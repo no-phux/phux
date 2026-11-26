@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use super::client::ClientId;
 use crate::mailbox::Outbound;
 
+mod leases;
 mod spawns;
 
 /// One hub-side satellite input lease: the holding hub consumer and its
@@ -49,6 +50,8 @@ pub(crate) struct Federation {
     /// What each satellite advertised on its current link (ADR-0127), set by
     /// the link's relay session when it negotiates.
     satellite_features: Vec<(SatelliteHost, phux_protocol::caps::ServerFeatureSet)>,
+    /// Exact negotiated link owning every host-local fact below.
+    link_epochs: HashMap<SatelliteHost, u64>,
     /// Where the QUIC listener hands satellites that dial in (ADR-0182); it
     /// accepts none until an `inbound://` link registers.
     adopter: crate::hub::adopt::SatelliteAdopter,
@@ -64,9 +67,12 @@ pub(crate) struct Federation {
     /// exact `(client, host, terminal)` entry, so a consumer cannot address
     /// a satellite pane it never attached.
     proxy_attaches: HashSet<(ClientId, SatelliteHost, u32)>,
+    /// One attachment lifetime per consumer, cancelled by whole-client detach.
+    consumer_registrations: HashMap<ClientId, tokio_util::sync::CancellationToken>,
     /// Satellite terminals with an `ACQUIRE_INPUT` relay in flight; see
     /// [`Self::mirror_satellite_lease_event`].
-    acquire_pending: HashSet<SatelliteTerminal>,
+    acquire_pending: HashMap<SatelliteTerminal, (u64, ClientId)>,
+    next_acquire: u64,
     /// The satellite's `seq` of the last mirrored Acquired/Seized per
     /// terminal, when the link carries stamps.
     last_mirrored_seq: HashMap<SatelliteTerminal, u64>,
@@ -183,22 +189,27 @@ impl Federation {
         next: crate::hub::HubTable,
         journal: &super::SharedState,
     ) -> crate::hub::TableDiff {
-        let (Some(table), Some(links)) = (self.table.as_mut(), self.links.as_mut()) else {
+        let Some(table) = self.table.as_ref() else {
             return crate::hub::TableDiff::default();
         };
-        let diff = table.diff(&next);
-        // A changed endpoint may be another server: forget what the old
-        // link advertised until the new one negotiates (ADR-0127).
-        for host in diff.removed.iter().chain(&diff.changed) {
-            links.stop(host);
-            self.satellite_features.retain(|(known, _)| known != host);
+        if self.links.is_none() {
+            return crate::hub::TableDiff::default();
         }
-        for host in diff.added.iter().chain(&diff.changed) {
-            if let Some(entry) = next.get(host) {
-                links.start(host, entry, journal);
+        let diff = table.diff(&next);
+        for host in diff.removed.iter().chain(&diff.changed) {
+            self.clear_satellite_link(host);
+        }
+        if let Some(links) = self.links.as_mut() {
+            for host in diff.removed.iter().chain(&diff.changed) {
+                links.stop(host);
+            }
+            for host in diff.added.iter().chain(&diff.changed) {
+                if let Some(entry) = next.get(host) {
+                    links.start(host, entry, journal);
+                }
             }
         }
-        *table = next;
+        self.table = Some(next);
         diff
     }
 
@@ -234,10 +245,44 @@ impl Federation {
             .unwrap_or_default()
     }
 
+    /// Replace all negotiated facts together; configured routing survives.
+    pub(crate) fn begin_satellite_link(
+        &mut self,
+        host: SatelliteHost,
+        epoch: u64,
+        features: phux_protocol::caps::ServerFeatureSet,
+    ) {
+        self.clear_satellite_link(&host);
+        self.link_epochs.insert(host.clone(), epoch);
+        self.set_satellite_features(host, features);
+    }
+
+    pub(crate) fn satellite_link_epoch(&self, host: &SatelliteHost) -> Option<u64> {
+        self.link_epochs.get(host).copied()
+    }
+    pub(crate) fn satellite_link_is_current(&self, host: &SatelliteHost, epoch: u64) -> bool {
+        self.link_epochs.get(host) == Some(&epoch)
+    }
+
+    pub(crate) fn end_satellite_link(&mut self, host: &SatelliteHost, epoch: u64) {
+        if self.satellite_link_is_current(host, epoch) {
+            self.clear_satellite_link(host);
+        }
+    }
+
+    fn clear_satellite_link(&mut self, host: &SatelliteHost) {
+        self.link_epochs.remove(host);
+        self.satellite_features.retain(|(known, _)| known != host);
+        self.proxy_attaches.retain(|(_, known, _)| known != host);
+        self.leases.retain(|(known, _), _| known != host);
+        self.acquire_pending.retain(|(known, _), _| known != host);
+        self.last_mirrored_seq.retain(|(known, _), _| known != host);
+    }
+
     /// Record what `host` advertised on its newest link (ADR-0127), from the
     /// link's relay session when it negotiates, replacing any earlier
     /// link's.
-    pub(crate) fn set_satellite_features(
+    fn set_satellite_features(
         &mut self,
         host: SatelliteHost,
         features: phux_protocol::caps::ServerFeatureSet,
@@ -296,6 +341,16 @@ impl Federation {
 
 // -- satellite proxy attach registrations ---------------------------------
 impl Federation {
+    pub(crate) fn consumer_registration(
+        &mut self,
+        client: ClientId,
+    ) -> tokio_util::sync::CancellationToken {
+        self.consumer_registrations
+            .entry(client)
+            .or_default()
+            .clone()
+    }
+
     /// Whether `client` holds a proxied attach over `(host, terminal)`;
     /// every relayed frame is gated on it.
     #[must_use]
@@ -319,6 +374,12 @@ impl Federation {
         self.proxy_attaches.insert((client, host, terminal));
     }
 
+    /// Drop every proxy registration on `host`: its terminal ids now name
+    /// other panes.
+    pub(crate) fn forget_satellite_proxy_attaches(&mut self, host: &SatelliteHost) {
+        self.proxy_attaches.retain(|(_, held, _)| held != host);
+    }
+
     /// Drop one proxy registration. Idempotent.
     pub(crate) fn unregister_satellite_proxy_attach(
         &mut self,
@@ -328,150 +389,5 @@ impl Federation {
     ) {
         self.proxy_attaches
             .remove(&(client, host.clone(), terminal));
-    }
-}
-
-// -- hub-side satellite leases ----------------------------------
-impl Federation {
-    /// The hub consumer holding the satellite lease, if any.
-    #[must_use]
-    pub(crate) fn satellite_lease_holder(
-        &self,
-        host: &SatelliteHost,
-        terminal: u32,
-    ) -> Option<ClientId> {
-        self.leases
-            .get(&(host.clone(), terminal))
-            .map(|lease| lease.holder)
-    }
-
-    /// Record `client` (and mailbox) as the satellite lease holder after the
-    /// satellite acked, returning the evicted lease to notify when a
-    /// different consumer held it.
-    pub(crate) fn set_satellite_lease(
-        &mut self,
-        host: SatelliteHost,
-        terminal: u32,
-        client: ClientId,
-        out_tx: mpsc::Sender<Outbound>,
-    ) -> Option<SatelliteLease> {
-        let prior = self.leases.insert(
-            (host, terminal),
-            SatelliteLease {
-                holder: client,
-                out_tx,
-            },
-        );
-        prior.filter(|lease| lease.holder != client)
-    }
-
-    /// Release the satellite lease over `(host, terminal)` if `client` holds
-    /// it; `true` when an entry was removed.
-    pub(crate) fn release_satellite_lease(
-        &mut self,
-        host: &SatelliteHost,
-        terminal: u32,
-        client: ClientId,
-    ) -> bool {
-        let key = (host.clone(), terminal);
-        if self.leases.get(&key).map(|lease| lease.holder) != Some(client) {
-            return false;
-        }
-        self.leases.remove(&key);
-        true
-    }
-
-    /// Every satellite lease `client` holds (for disconnect relays).
-    #[must_use]
-    pub(crate) fn satellite_leases_held_by(&self, client: ClientId) -> Vec<SatelliteTerminal> {
-        self.leases
-            .iter()
-            .filter(|(_, lease)| lease.holder == client)
-            .map(|(key, _)| key.clone())
-            .collect()
-    }
-
-    /// Drop every satellite lease `client` holds (its detach, after the
-    /// runtime relayed the releases).
-    pub(super) fn release_satellite_leases_for(&mut self, client: ClientId) {
-        self.leases.retain(|_, lease| lease.holder != client);
-    }
-
-    /// Mark an `ACQUIRE_INPUT` relay in flight. Clear it on failure; on
-    /// success the next mirrored event clears it.
-    pub(crate) fn mark_satellite_lease_acquire_pending(
-        &mut self,
-        host: SatelliteHost,
-        terminal: u32,
-    ) {
-        self.acquire_pending.insert((host, terminal));
-    }
-
-    /// Clear the pending mark set by
-    /// [`Self::mark_satellite_lease_acquire_pending`] after a failed relay.
-    pub(crate) fn clear_satellite_lease_acquire_pending(
-        &mut self,
-        host: &SatelliteHost,
-        terminal: u32,
-    ) {
-        self.acquire_pending.remove(&(host.clone(), terminal));
-    }
-
-    /// Forget the mirror-ordering bookkeeping for a satellite terminal that
-    /// closed; no event for it can arrive again. Without this the maps keep
-    /// one entry per satellite terminal that ever held a lease, for the
-    /// hub's lifetime, and a satellite naming fresh ids grows them at will.
-    pub(crate) fn forget_satellite_lease_terminal(&mut self, host: &SatelliteHost, terminal: u32) {
-        let key = (host.clone(), terminal);
-        self.last_mirrored_seq.remove(&key);
-        self.acquire_pending.remove(&key);
-    }
-
-    /// Entries in the satellite lease-mirror ordering state.
-    #[cfg(test)]
-    pub(crate) fn satellite_lease_mirror_entries(&self) -> usize {
-        self.last_mirrored_seq.len() + self.acquire_pending.len()
-    }
-
-    /// Mirror a satellite `terminal_control` into the hub ledger (the
-    /// satellite owns the timer). `is_end` is true for Released/Expired.
-    /// Returns the evicted holder when an end was applied.
-    ///
-    /// The acquire reply can beat an earlier Released/Expired over the link:
-    ///
-    /// * **Pending**: the first event after a relayed acquire consumes the
-    ///   mark; an end arriving then is stale and swallowed.
-    /// * **Seq**: otherwise an end applies only if its `seq` is newer than
-    ///   the last mirrored Acquired/Seized.
-    ///
-    /// A lost confirming event could let one genuine end be swallowed, but
-    /// only once.
-    pub(crate) fn mirror_satellite_lease_event(
-        &mut self,
-        host: &SatelliteHost,
-        terminal: u32,
-        is_end: bool,
-        seq: Option<u64>,
-    ) -> Option<ClientId> {
-        let key = (host.clone(), terminal);
-        let was_pending = self.acquire_pending.remove(&key);
-        if was_pending && is_end {
-            return None;
-        }
-        if !was_pending
-            && is_end
-            && let Some(seq) = seq
-            && let Some(last) = self.last_mirrored_seq.get(&key)
-            && seq <= *last
-        {
-            return None;
-        }
-        if !is_end {
-            if let Some(seq) = seq {
-                self.last_mirrored_seq.insert(key, seq);
-            }
-            return None;
-        }
-        self.leases.remove(&key).map(|lease| lease.holder)
     }
 }

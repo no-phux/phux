@@ -35,7 +35,7 @@ impl TerminalActor {
         operation_id: Option<phux_protocol::ids::IdempotencyKey>,
     ) {
         let event = AgentEvent::TerminalControl {
-            lifecycle: self.lifecycle,
+            lifecycle: self.process.lifecycle,
             exit_status: None,
             input_holder,
             action,
@@ -56,7 +56,7 @@ impl TerminalActor {
     /// Whether this actor drives a PTY child, the precondition for an agent
     /// detector (a no-PTY pane has no foreground process to identify).
     pub const fn has_pty(&self) -> bool {
-        self.pty.is_some()
+        self.process.pty.is_some()
     }
 
     /// Subscribe to authoritative OSC 7501 state before starting this actor.
@@ -73,6 +73,29 @@ impl TerminalActor {
         &mut self,
     ) -> tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>> {
         self.resume.subscribe()
+    }
+
+    /// Subscribe to OSC 7577 record changes before starting this actor.
+    pub fn subscribe_program_resume(
+        &mut self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<phux_core::ProgramResumeUpdate> {
+        self.program_resume.subscribe()
+    }
+
+    pub(crate) fn set_program_resume_token(&mut self, token: String) {
+        self.program_resume.set_token(token);
+    }
+
+    pub(crate) fn seed_program_resume_clock(&mut self, pid: u32, time: u64) {
+        self.program_resume.seed_clock(pid, time);
+    }
+
+    pub(super) fn observe_program_resume(&mut self, bytes: &[u8]) {
+        let trusted = self.process.reporter_trusted();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        self.program_resume.observe(bytes, now, trusted);
     }
 
     /// Subscribe to OSC 9 / OSC 777 notifications before starting this
@@ -226,10 +249,12 @@ impl TerminalActor {
             None
         };
         let master_fd = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.master.lock().ok().and_then(|m| m.as_raw_fd()));
         let pane_child_pid = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id().and_then(|pid| i32::try_from(pid).ok()));
@@ -271,7 +296,8 @@ impl TerminalActor {
     /// path.
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
-        self.resume.observe(chunk);
+        self.observe_resume(chunk);
+        self.observe_program_resume(chunk);
         self.observe_icon(chunk);
         self.vt_write_for_test(chunk);
         self.source_events();
@@ -337,19 +363,17 @@ impl TerminalActor {
     fn observe_effects(&mut self, effects: &[effects::Effect]) {
         let mut changed = false;
         for effect in effects {
-            self.prompt.observe(effect);
+            self.process.prompt.observe(effect);
             match effect {
                 effects::Effect::Progress(progress) => self.last_progress.clone_from(progress),
                 effects::Effect::ProgramStatus(update) => {
                     changed |= self.program_status.apply(update.clone());
                 }
-                // ponytail: the write was scanned for `resume=` before its
-                // effects, so a token reported after a prompt in the same
-                // write is forgotten until the program reports again. Order
-                // the two when the engine reports the key itself.
+                // A prompt expires working and blocked records. It does not
+                // clear `resume=`: a prompt in the same write used to, and a
+                // forged OSC 133 `A` must not wipe a stored token.
                 effects::Effect::PromptStart => {
                     changed |= self.program_status.expire_active();
-                    self.resume.forget();
                 }
                 effects::Effect::Note(note) => {
                     if let Some(sink) = &self.program_note_sink {
@@ -361,7 +385,7 @@ impl TerminalActor {
         }
         self.flush_icon();
         // A native cut can replay the child's last bytes after EOF was observed.
-        if self.exit.is_some() {
+        if self.process.exit.is_some() {
             changed |= self.program_status.expire_active();
         }
         if changed {
@@ -370,7 +394,7 @@ impl TerminalActor {
     }
 
     /// Re-derive the ask marker from the title and ship the edge.
-    fn source_ask_marker(&mut self) {
+    pub(super) fn source_ask_marker(&mut self) {
         let current_ask = AskMarker::parse(&self.last_title);
         if current_ask == self.last_ask {
             self.ask_retry_owed = false;
@@ -411,7 +435,7 @@ impl TerminalActor {
     /// on a change. Best-effort; the first successful observation always
     /// emits so the starting directory is announced.
     pub(super) fn check_cwd_changed(&self) {
-        let Some(pid) = self.pty.as_ref().and_then(|p| p.child.process_id()) else {
+        let Some(pid) = self.process.pty.as_ref().and_then(|p| p.child.process_id()) else {
             return;
         };
         let query_started = std::time::Instant::now();

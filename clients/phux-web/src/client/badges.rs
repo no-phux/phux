@@ -219,7 +219,7 @@ impl App {
     }
 
     /// Say `text` once on the polite announcement node beside the canvas.
-    fn announce(&self, text: &str) {
+    pub(super) fn announce(&self, text: &str) {
         let Some(document) = self.canvas.owner_document() else {
             return;
         };

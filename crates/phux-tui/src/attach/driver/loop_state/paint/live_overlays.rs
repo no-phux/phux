@@ -16,7 +16,7 @@ impl super::super::SessionLoop {
             return;
         }
         let items = crate::attach::input_dispatch::session_picker_rows(
-            &self.peers.inputs(&self.review),
+            &self.peers.inputs(&self.review, &self.peer_presentation),
             &self.mirror.workspace,
         );
         let key = crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY;
@@ -35,10 +35,10 @@ impl super::super::SessionLoop {
         if !self.overlays.is_active() {
             return;
         }
-        let peers = self.peers.inputs(&self.review);
+        let peers = self.peers.inputs(&self.review, &self.peer_presentation);
         let items = crate::attach::input_dispatch::palette_rows(
             &crate::attach::input_dispatch::PaletteSources {
-                keybindings: self.settings.keybindings.as_ref(),
+                keybindings: &self.settings.keybindings,
                 plugin_actions: &self.settings.plugin_actions,
                 plugin_panes: &self.settings.plugin_panes,
                 workspace: &self.mirror.workspace,
@@ -68,7 +68,7 @@ impl super::super::SessionLoop {
             &crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel),
             &self.mirror.agent_meta.records,
             &mut self.vcs,
-            &self.peers.inputs(&self.review),
+            &self.peers.inputs(&self.review, &self.peer_presentation),
         );
         let key = crate::attach::fleet::FLEET_LIVE_KEY;
         self.refresh_live_overlay(out, sidebar, key, &items);

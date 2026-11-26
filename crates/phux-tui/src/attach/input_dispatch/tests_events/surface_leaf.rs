@@ -6,7 +6,6 @@ fn surface_leaf_env() -> Env<'static> {
     let mut fx = CtxFixture::default();
     fx.workspace = two_pane_workspace();
     let mut env = Env::new(fx)
-        .with_default_bindings()
         .published(&[(&tid(1), 39, 24, b"")]);
     learn_kind(&mut env.fx, tid(2), phux_protocol::ResourceKind::Document);
     env

@@ -54,6 +54,8 @@ pub struct Resources {
     pub(super) clipboard_reads: super::clipboard_read::ClipboardReads,
     /// OSC 52 writes: this window's policy and held question.
     pub(super) clipboard_writes: super::clipboard_write::ClipboardWrites,
+    /// When a pane's link was last declined.
+    pub(super) link_declined: Option<std::time::Instant>,
 }
 
 struct PendingDocument {

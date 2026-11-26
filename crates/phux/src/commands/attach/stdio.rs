@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use phux_client::attach::{AttachError, Dial};
 
+use super::home::{fallback_lookup_name, requested_attach_target};
 use super::{
-    attach_with_reconnect, fallback_lookup_name, finalize_recording, predictive_config_for,
-    report_attach_end, requested_attach_target, resolved_default_session_name,
+    attach_with_reconnect, finalize_recording, predictive_config_for, report_attach_end,
+    resolved_default_session_name,
 };
 use crate::commands::rec::RecordSpec;
 

@@ -289,10 +289,11 @@ fn a_kind_with_only_a_catalog_row_is_decoded_validated_admitted_and_classified()
     let none = crate::caps::ServerFeatureSet::new();
     let gated = crate::caps::ServerFeatureExtSet::from_wire(FIXTURE_GATE.mask());
     let ungated = crate::caps::ServerFeatureExtSet::new();
-    assert!(spec.stream.admits(9, false, none, gated));
-    assert!(!spec.stream.admits(9, false, none, ungated));
-    assert!(!spec.stream.admits(9, true, none, gated));
-    assert!(!spec.stream.admits(10, false, none, gated));
+    let ext2 = crate::caps::ServerFeatureExt2Set::new();
+    assert!(spec.stream.admits(9, false, none, gated, ext2));
+    assert!(!spec.stream.admits(9, false, none, ungated, ext2));
+    assert!(!spec.stream.admits(9, true, none, gated, ext2));
+    assert!(!spec.stream.admits(10, false, none, gated, ext2));
 
     // Spawn validation: a projection's launch fields are refused.
     let validate = crate::wire::decode::validate_spawn_for_kind_in;

@@ -17,7 +17,7 @@ const fn generation(raw: u64) -> (StreamId, BootstrapId) {
 /// A plane past `HELLO_OK` with `surface()` attached and one document
 /// published at bootstrap 1.
 fn published_surface() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.connection_opened();
     plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
     let request_id = plane.attach_terminal(&surface());

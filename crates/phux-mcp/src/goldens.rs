@@ -29,7 +29,9 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::spawn_record;
 
+mod lifecycle;
 mod residue;
+mod selection;
 mod spawn;
 mod sweep;
 
@@ -367,29 +369,6 @@ async fn in_process_tools_produce_the_same_documents_as_the_former_subprocess_pa
     );
 }
 
-/// A kill that hits under a partial fleet view still succeeds (the CLI
-/// warns and continues). The shared builder is what prints that warning.
-#[tokio::test]
-async fn kill_under_a_partial_view_still_kills() {
-    const NOTICE: &str = "satellite build-box is unreachable: link is down";
-    let dir = tempfile::tempdir().expect("temp dir");
-    let spec = || ScriptSpec::new().state(state()).degradation_notice(NOTICE);
-    let (socket, server) = testkit::spawn_serve_every(dir.path(), spec);
-    let result = crate::tools::dispatch(
-        "phux_kill",
-        &json!({
-            "target": "@2",
-            "confirm": true,
-            "socket": socket.to_string_lossy(),
-        }),
-    )
-    .await;
-    server.abort();
-    let value = result.expect("partial-view kill");
-    assert_eq!(value["killed"], json!(true));
-    assert_eq!(value["target"], "@2");
-}
-
 /// [`state`] and [`screen`], with `@1` carrying `record` as its
 /// `phux.agent/v1` record.
 fn agent_spec(record: &AgentRecord) -> ScriptSpec {
@@ -426,135 +405,4 @@ fn contract_code(err: &crate::tools::ToolError) -> String {
         .as_str()
         .expect("error.code")
         .to_owned()
-}
-
-/// ADR-0075 point 5 on MCP: `phux_send_keys` and `phux_paste` deliver input,
-/// so a `%name` whose record has the withdrawn shape (a `kind`, `state:
-/// unknown`) is refused as `agent_withdrawn`, exactly as the CLI input verbs
-/// refuse it. Read tools still resolve it, and an identity-only record (no
-/// `kind`) is the resting value of a declaration, not a withdrawal.
-#[tokio::test]
-async fn input_tools_refuse_a_withdrawn_name_that_read_tools_still_resolve() {
-    let withdrawn = || {
-        agent_spec(&AgentRecord {
-            name: "build".to_owned(),
-            kind: Some("codex".to_owned()),
-            state: AgentMetaState::Unknown,
-            ..AgentRecord::default()
-        })
-    };
-    for (tool, args) in [
-        (
-            "phux_send_keys",
-            json!({ "target": "%build", "keys": ["rm -rf .", "Enter"] }),
-        ),
-        (
-            "phux_paste",
-            json!({ "target": "%build", "text": "rm -rf ." }),
-        ),
-    ] {
-        let err = dispatch_against(tool, args, withdrawn)
-            .await
-            .expect_err("a withdrawn name must not receive input");
-        assert_eq!(contract_code(&err), "agent_withdrawn", "{tool}: {}", err.0);
-    }
-
-    let read = dispatch_against("phux_snapshot", json!({ "target": "%build" }), withdrawn)
-        .await
-        .expect("a read tool skips the write guard");
-    assert_eq!(read["lines"][0], "the quick");
-    let waited = dispatch_against(
-        "phux_wait",
-        json!({ "target": "%build", "until": "brown fox", "timeout_secs": 5 }),
-        withdrawn,
-    )
-    .await
-    .expect("a read tool skips the write guard");
-    assert_eq!(waited["outcome"], "met");
-
-    let identity_only = || {
-        agent_spec(&AgentRecord {
-            name: "build".to_owned(),
-            kind: None,
-            state: AgentMetaState::Unknown,
-            ..AgentRecord::default()
-        })
-    };
-    for (tool, args) in [
-        (
-            "phux_send_keys",
-            json!({ "target": "%build", "keys": ["ls"] }),
-        ),
-        ("phux_paste", json!({ "target": "%build", "text": "ls" })),
-    ] {
-        let sent = dispatch_against(tool, args, identity_only)
-            .await
-            .unwrap_or_else(|err| panic!("{tool}: identity-only must resolve: {}", err.0));
-        assert_eq!(sent["sent"], true, "{tool}");
-        assert_eq!(sent["pane"], "@1", "{tool}");
-    }
-}
-
-/// ADR-0075 point 3 on the MCP set-valued and placement tools: `%name`
-/// reaches `phux_tag`, `phux_kill`, and `phux_spawn` placement through the
-/// agent resolver, and a refusal is typed rather than "no such target".
-#[tokio::test]
-async fn percent_name_reaches_tag_kill_and_spawn_placement() {
-    let named = || {
-        agent_spec(&AgentRecord {
-            name: "build".to_owned(),
-            state: AgentMetaState::Working,
-            ..AgentRecord::default()
-        })
-    };
-    let tagged = dispatch_against(
-        "phux_tag",
-        json!({ "action": "add", "target": "%build", "tags": ["ci"] }),
-        named,
-    )
-    .await
-    .expect("tag %build");
-    assert_eq!(tagged["terminals"][0]["terminal"], "@1");
-
-    // Two panes sharing a name, as an older server stored a kind name.
-    let constant = || {
-        let record = AgentRecord {
-            name: "claude".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: AgentMetaState::Working,
-            ..AgentRecord::default()
-        };
-        agent_spec(&record).stored_metadata(
-            Scope::Resource(ResourceId::local(2)),
-            RESOURCE_AGENT_KEY,
-            record.encode(),
-        )
-    };
-    for (tool, args, want) in [
-        (
-            "phux_kill",
-            json!({ "target": "%claude", "confirm": true }),
-            "selector_not_single",
-        ),
-        (
-            "phux_tag",
-            json!({ "action": "ls", "target": "%claude" }),
-            "selector_not_single",
-        ),
-        (
-            "phux_spawn",
-            json!({ "target": "%claude", "split": "vertical" }),
-            "selector_not_single",
-        ),
-        (
-            "phux_spawn",
-            json!({ "target": "%ghost", "split": "vertical" }),
-            "no_such_target",
-        ),
-    ] {
-        let err = dispatch_against(tool, args, constant)
-            .await
-            .expect_err("a refused name does nothing");
-        assert_eq!(contract_code(&err), want, "{tool}: {}", err.0);
-    }
 }

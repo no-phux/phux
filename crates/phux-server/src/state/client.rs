@@ -277,6 +277,7 @@ impl ServerState {
         {
             gate.cancel();
         }
+        self.open_urls.withdraw(client_id);
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases. Each local release opens a new epoch.
         self.release_all_input_leases(client_id);
@@ -312,6 +313,7 @@ impl ServerState {
     /// peer identity would break the local `SHUTDOWN` gate. Idempotent.
     pub fn forget_connection(&mut self, client_id: ClientId) {
         self.detach(client_id);
+        self.resources.forget_bootstrap_ids(client_id);
         // `VIEWER` marks last until the connection ends (ADR-0127).
         self.clients.viewers.remove(&client_id);
         self.clients.layers.remove(&client_id);

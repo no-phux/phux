@@ -162,14 +162,20 @@ pub fn set_agent(socket: std::path::PathBuf) {
     let _ = AGENT.set(socket);
 }
 
+/// The agent socket [`set_agent`] named.
+#[must_use]
+pub fn agent() -> Option<&'static Path> {
+    AGENT.get().map(std::path::PathBuf::as_path)
+}
+
 /// Whether a login from this process can reach an agent at all.
 fn agent_known() -> bool {
-    AGENT.get().is_some() || std::env::var_os("SSH_AUTH_SOCK").is_some()
+    agent().is_some() || std::env::var_os("SSH_AUTH_SOCK").is_some()
 }
 
 /// Point `command`, an ssh that logs in, at the agent from [`set_agent`].
 fn use_agent(command: &mut tokio::process::Command) {
-    agent_env(command, AGENT.get().map(std::path::PathBuf::as_path));
+    agent_env(command, agent());
 }
 
 fn agent_env(command: &mut tokio::process::Command, socket: Option<&Path>) {

@@ -231,6 +231,7 @@ impl Desk {
 
     /// Move the keyboard to a pane in the active layout, keeping its view.
     pub fn focus_pane(&mut self, id: &ResourceId) {
+        self.connection.view_choice += 1;
         if self
             .connection
             .shown
@@ -458,3 +459,6 @@ mod tests {
         assert_eq!(leaves(&kept), vec![ResourceId::local(2)]);
     }
 }
+
+#[cfg(test)]
+mod source_admission;

@@ -14,8 +14,9 @@ use super::trace::{self, AttemptTrace};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Transport, Wake, lock};
 use crate::reconnect::{earned_immediate, ladder_for};
 
-use crate::control::{ControlError, ControlPlane, Status};
+use crate::control::{ControlError, Status};
 
+pub(crate) mod frames;
 mod ping;
 
 /// How long an attached session may sit with no inbound bytes before a probe.
@@ -170,7 +171,12 @@ fn expiry_wait(shared: &Shared) -> Duration {
 }
 
 fn expire_operations(shared: &Shared, wake: &Wake) {
-    if lock(shared).expire_operations() {
+    let expired = {
+        let mut control = lock(shared);
+        control.observe_time(std::time::Instant::now());
+        control.expire_operations()
+    };
+    if expired {
         wake();
     }
 }
@@ -218,6 +224,7 @@ async fn within_initial_budget(
 
 fn fail(shared: &Shared, message: Option<String>, wake: &Wake) {
     let mut control = lock(shared);
+    control.observe_time(std::time::Instant::now());
     let message = message
         .or_else(|| control.last_error().map(str::to_owned))
         .unwrap_or_else(|| "connect: no answer within the initial budget".to_owned());
@@ -233,6 +240,7 @@ fn finish_attempt(
     initial_attempts: u32,
 ) -> Decision {
     let mut control = lock(shared);
+    control.observe_time(std::time::Instant::now());
     match end {
         ConnectionEnd::Closed => {
             control.close();
@@ -380,8 +388,13 @@ impl<'a> Pump<'a> {
     async fn open(&mut self) -> Result<(), ConnectionEnd> {
         let opening = {
             let mut control = lock(self.shared);
+            control.observe_time(std::time::Instant::now());
             control.connection_opened();
-            control.set_attempt_trace(AttemptTrace::current());
+            *self
+                .signals
+                .trace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = AttemptTrace::current();
             control.take_outbound()
         };
         self.write_all(opening).await?;
@@ -481,6 +494,7 @@ impl<'a> Pump<'a> {
     async fn expire_inputs(&mut self) -> Result<(), ConnectionEnd> {
         let (expired, frames) = {
             let mut control = lock(self.shared);
+            control.observe_time(std::time::Instant::now());
             let expired = control.expire_operations();
             (expired, control.take_outbound())
         };
@@ -509,7 +523,7 @@ impl<'a> Pump<'a> {
         // The lock is released across engine round trips: a reconnect
         // replays a snapshot per terminal, and holding it through that
         // apply stalled every reader, a consumer's UI thread included.
-        let fed = ControlPlane::feed_shared_unlocked(self.shared, frames);
+        let fed = frames::feed_shared_unlocked(self.shared, frames);
         let outbound = lock(self.shared).take_outbound();
         self.write_all(outbound).await?;
         // Edge-triggered: a frame flood costs one callback, not one per

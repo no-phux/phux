@@ -194,8 +194,19 @@ macro_rules! supervisory_commands {
         /// Open, read, write, or close; or an ssh-agent offer or reply.
         op: crate::forward::ForwardOp,
     },
+    /// Ask the person typing into `terminal_id` to open a link on their
+    /// machine, or answer such a request; gated on `features_ext.OPEN_URL`
+    /// (`docs/ssh.md#opening-links`).
+    OpenUrl {
+        /// The Terminal the request comes from.
+        terminal_id: ResourceId,
+        /// The request, or its answer.
+        op: crate::open_url::OpenUrlOp,
+    },
     /// Report that an agent in `terminal_id` is blocked on a question
-    /// (ADR-0036); the server emits [`AgentEvent::Asked`].
+    /// (ADR-0036); the server emits [`AgentEvent::Asked`]. An empty question
+    /// with an id withdraws the question reported under that id, and does
+    /// nothing when the pane no longer holds it.
     ReportAsked {
         /// The Terminal/pane that owns the blocked agent.
         terminal_id: ResourceId,

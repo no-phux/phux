@@ -113,13 +113,7 @@ impl IdempotencyKey {
     /// Ordinary debug formatting remains redacted.
     #[must_use]
     pub fn to_hex(self) -> String {
-        use core::fmt::Write as _;
-        let mut text = String::with_capacity(32);
-        for byte in self.0 {
-            // Formatting a primitive into a String cannot fail.
-            let _ = write!(text, "{byte:02x}");
-        }
-        text
+        super::hex16(&self.0)
     }
 
     /// Construct a non-zero key.

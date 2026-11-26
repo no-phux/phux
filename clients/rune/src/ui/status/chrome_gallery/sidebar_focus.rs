@@ -3,7 +3,7 @@ use super::*;
 
 mod tests;
 
-fn focus_sidebar(rt: &mut Runtime<Desk>) {
+pub(super) fn focus_sidebar(rt: &mut Runtime<Desk>) {
     let event = rune::KeyEvent {
         key: rune::Key::Command('b'),
         mods: rune::Mods {
@@ -53,11 +53,8 @@ fn split_window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
             right: Box::new(LayoutNode::Leaf(ResourceId::local(2))),
         });
     });
-    if mode == "collapsed" {
-        rt.update(|d, _| {
-            d.sidebar_collapsed
-                .insert(SessionKey::new([1; 16]).unwrap());
-        });
+    if mode == "large" {
+        rt.update(|d, _| d.set_interface_size(Some(140)));
     }
     if mode == "forced" {
         rt.set_system_contrast(Some(crate::test_support::visual::forced_colors(dark)));
@@ -66,7 +63,7 @@ fn split_window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
     rt
 }
 
-fn capture(
+pub(super) fn capture(
     gpu: &rune::render::Gpu,
     renderer: &mut rune::render::Renderer,
     rt: &mut Runtime<Desk>,
@@ -98,7 +95,7 @@ fn sidebar_focus_visual_review_frames() {
     let gpu = rune::render::Gpu::headless();
     for size in [(1100, 720), (640, 360)] {
         for (dark, theme) in [(true, "dark"), (false, "light")] {
-            for mode in ["normal", "forced", "collapsed"] {
+            for mode in ["normal", "forced", "large"] {
                 let mut rt = split_window(size, dark, mode);
                 // Each runtime's glyph uploads belong to its retained renderer.
                 let format = rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix();

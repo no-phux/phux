@@ -274,17 +274,18 @@ pub(crate) fn probe_within(
 ) -> Result<(), String> {
     let rt = crate::commands::build_cli_runtime()
         .map_err(|err| format!("could not build a runtime: {err}"))?;
-    let plan = super::super::attach::plan_quic_dial(
+    let plan = super::super::attach::native::plan_quic_dial(
         &rt,
         target,
-        Some(token.to_owned()),
-        cert_fingerprint.map(str::to_owned),
+        super::super::attach::native::RemoteCredentials {
+            name: None,
+            token: Some(token.to_owned()),
+            cert_fingerprint: cert_fingerprint.map(str::to_owned),
+            authority: authority.clone(),
+            identity,
+        },
         None,
     )
-    .and_then(|plan| {
-        plan.with_identity(identity)
-            .with_authority(target, authority)
-    })
     .map_err(|refusal| format!("{refusal:?}"))?;
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LaunchCommand {
     argv: Vec<OsString>,
     env: BTreeMap<OsString, OsString>,
@@ -78,6 +78,31 @@ impl LaunchCommand {
     #[must_use]
     pub const fn get_controlling_tty(&self) -> bool {
         self.controlling_tty
+    }
+}
+
+impl std::fmt::Debug for LaunchCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<_> = self
+            .env
+            .iter()
+            .map(|(key, value)| {
+                let shown = if key == OSC7577_TOKEN {
+                    std::ffi::OsStr::new("[redacted]")
+                } else {
+                    value.as_os_str()
+                };
+                (key, shown)
+            })
+            .collect();
+        formatter
+            .debug_struct("LaunchCommand")
+            .field("argv", &self.argv)
+            .field("env", &env)
+            .field("removed", &self.removed)
+            .field("cwd", &self.cwd)
+            .field("controlling_tty", &self.controlling_tty)
+            .finish()
     }
 }
 
@@ -207,6 +232,41 @@ fn integrate(command: &mut LaunchCommand, shell: &str, dir: &std::path::Path) {
 pub fn apply_term(command: &mut LaunchCommand, term: &str) {
     command.env("TERM", term);
 }
+/// Environment variable a pane's first process uses to authenticate OSC 7577.
+pub const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
+
+/// Characters a token may contain. 64 symbols, so a uniform byte maps without bias.
+const TOKEN_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+
+/// How long a minted token is. The spec allows 22 to 64 characters.
+const TOKEN_LEN: usize = 32;
+
+/// A fresh per-pane token. Random, not derived from a clock, a counter, or a pid.
+///
+/// # Panics
+///
+/// When the operating system cannot provide random bytes. A token that is not
+/// random would not protect the pane, so there is no fallback.
+#[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "a program-resume token that is not from the OS CSPRNG is not a token"
+)]
+pub fn mint_program_resume_token() -> String {
+    let mut bytes = [0u8; TOKEN_LEN];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable for a program-resume token");
+    bytes
+        .iter()
+        .map(|byte| TOKEN_ALPHABET[usize::from(*byte) % TOKEN_ALPHABET.len()] as char)
+        .collect()
+}
+
+/// Set `OSC7577_TOKEN` on the pane's first process. The value is not logged.
+pub fn apply_program_resume_token(command: &mut LaunchCommand, token: &str) {
+    command.env(OSC7577_TOKEN, token);
+}
+
 pub fn apply_terminal_id(command: &mut LaunchCommand, wire: &phux_protocol::ids::ResourceId) {
     if let Some(id) = wire.local_id() {
         command.env("PHUX_TERMINAL_ID", id.to_string());
@@ -247,6 +307,30 @@ pub fn shell_command(shell: &str, text: &str, login: bool) -> LaunchCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_panes_get_distinct_tokens_and_debug_hides_them() {
+        let first = mint_program_resume_token();
+        let second = mint_program_resume_token();
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' })
+        );
+        let mut command = LaunchCommand::new("sh");
+        apply_program_resume_token(&mut command, &first);
+        let rendered = format!("{command:?}");
+        assert!(!rendered.contains(&first));
+        assert!(rendered.contains("[redacted]"));
+        assert_eq!(
+            command
+                .get_env(OSC7577_TOKEN)
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(first)
+        );
+    }
 
     #[test]
     fn pane_variables_reach_every_launch() {

@@ -118,14 +118,11 @@ impl Fixture {
         pumps: &mut JoinSet<()>,
         future: impl Future<Output = ()> + 'static,
     ) {
-        crate::runtime::pump::spawn_tracked(
-            &self.state,
-            client,
-            self.pane,
-            Some(pumps),
-            drain,
-            future,
-        );
+        let reservation = crate::runtime::apps::StreamHost::new(&self.state, client)
+            .reserve_next(self.pane, &CancellationToken::new())
+            .unwrap();
+        assert!(reservation.lease.spawn(Some(pumps), drain, future,));
+        assert!(reservation.published(|| true));
     }
 
     fn reap(&self) -> ReapAndNotify {
@@ -141,6 +138,7 @@ fn start() -> OutputPumpStart {
         published_cut: 0,
         replay: Vec::new(),
         live: None,
+        interest: None,
     }
 }
 
@@ -468,3 +466,6 @@ async fn a_native_final_checkpoint_is_decodable_before_close() {
     })
     .await;
 }
+
+#[path = "natural_close_publication_tests.rs"]
+mod publication;

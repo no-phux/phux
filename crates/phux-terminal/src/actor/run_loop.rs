@@ -38,6 +38,18 @@ mod tests;
 mod tests_service;
 
 #[cfg(test)]
+#[path = "tests_consumer_cancellation.rs"]
+mod tests_consumer_cancellation;
+
+#[cfg(test)]
+#[path = "tests_native_reply_lifetime.rs"]
+mod tests_native_reply_lifetime;
+
+#[cfg(test)]
+#[path = "tests_process_lifetime.rs"]
+mod tests_process_lifetime;
+
+#[cfg(test)]
 impl TerminalActor {
     #[allow(
         clippy::future_not_send,
@@ -135,95 +147,9 @@ impl BootstrapPump {
     }
 }
 
-/// One claim on the debounced resync: why, and for a gap, which pump.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct OwedResync {
-    /// Why the requester's generation cannot continue.
-    pub(super) reason: ResyncReason,
-    /// The pump that fell behind; `None` means every subscriber.
-    pub(super) target: Option<ResyncTarget>,
-}
-
-/// The resync a debounce window owes: why, and to whom.
-struct Owed {
-    /// Why the resync was armed; broadcast when the deadline fires.
-    reason: ResyncReason,
-    /// Every subscriber is owed the resync, whatever `targets` says.
-    everyone: bool,
-    /// Pumps owed a gap resync, deduplicated.
-    targets: Vec<ResyncTarget>,
-}
-
-/// The debounced post-resize resync. Re-armed per resize; on fire, one
-/// snapshot at the settled size. A reflow is owed to everyone, a gap only to
-/// the pumps that asked; all share one deadline and one synthesis.
-pub(super) struct ResyncDebounce {
-    /// The resync owed once the deadline lands, if any.
-    owed: Option<Owed>,
-}
-
-impl ResyncDebounce {
-    /// Nothing owed.
-    pub(super) const fn idle() -> Self {
-        Self { owed: None }
-    }
-
-    /// Whether a resync is owed.
-    pub(super) const fn is_owed(&self) -> bool {
-        self.owed.is_some()
-    }
-
-    /// Whether the owed snapshot may fire (none is blocked by a bootstrap).
-    const fn may_fire(&self, bootstrap_pending: bool) -> bool {
-        self.is_owed() && !bootstrap_pending
-    }
-
-    /// Owe a resync for `reason` and (re)start the debounce.
-    ///
-    /// An already-owed gap resync does not push the deadline out: N pumps
-    /// retrying independently would otherwise keep resetting it and livelock.
-    /// Resizes always re-arm (the last size wins). The audience is recorded
-    /// first either way.
-    fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
-        let coalesce_gap = self.is_owed() && owed.reason == ResyncReason::OutboundGap;
-        self.include(owed);
-        if coalesce_gap {
-            return;
-        }
-        deadline.reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
-    }
-
-    /// Fold `owed` into the audience without touching the deadline (PTY EOF:
-    /// the snapshot is about to fire). A gap joining an owed resync keeps
-    /// that resync's reason.
-    fn include(&mut self, owed: OwedResync) {
-        let debt = self.owed.get_or_insert_with(|| Owed {
-            reason: owed.reason,
-            everyone: false,
-            targets: Vec::new(),
-        });
-        match owed.target {
-            None => debt.everyone = true,
-            Some(target) if !debt.targets.contains(&target) => debt.targets.push(target),
-            Some(_) => {}
-        }
-        if owed.reason != ResyncReason::OutboundGap {
-            debt.reason = owed.reason;
-        }
-    }
-
-    /// Clear the owed resync, returning its reason and audience.
-    fn take(&mut self) -> Option<(ResyncReason, ResyncAudience)> {
-        self.owed.take().map(|debt| {
-            let audience = if debt.everyone {
-                ResyncAudience::Everyone
-            } else {
-                ResyncAudience::Only(debt.targets.into())
-            };
-            (debt.reason, audience)
-        })
-    }
-}
+#[path = "run_loop_resync.rs"]
+mod resync;
+pub(super) use resync::{OwedResync, ResyncDebounce};
 
 /// Loop-local timers and ingress preference owned by [`TerminalActor::run`].
 struct RunLoopState {
@@ -237,6 +163,8 @@ struct RunLoopState {
     detect_tick: tokio::time::Interval,
     /// False after intentional disarming: the first resumed deadline is stale.
     detect_deadline_valid: bool,
+    /// Polls for a due scrollback save; armed only while one is owed.
+    keep_tick: tokio::time::Interval,
     /// Debounced post-resize / gap resync owed to subscribers.
     resync: ResyncDebounce,
     /// Next combined ingress prefers native control when true.
@@ -257,8 +185,9 @@ impl TerminalActor {
     async fn shutdown_from_cancel(&mut self, resync: &mut ResyncDebounce) {
         let _ = self.flush_final_gap_resync(resync);
         self.land_native_cuts();
+        self.keep_now();
         debug!("TerminalActor cancellation token fired");
-        self.shutdown_pty().await;
+        self.process.shutdown_pty().await;
     }
 
     /// Drain queued gap-resync requests and fire any owed snapshot now, so
@@ -288,7 +217,10 @@ impl TerminalActor {
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     async fn flush_exit_resync_if_needed(&mut self, resync: &mut ResyncDebounce) {
-        if self.pty_rx.is_some() || self.core.exit_notify.is_none() || self.exit.is_none() {
+        if self.process.pty_rx.is_some()
+            || self.core.exit_notify.is_none()
+            || self.process.exit.is_none()
+        {
             return;
         }
         let _ = self.flush_final_gap_resync(resync);
@@ -300,7 +232,7 @@ impl TerminalActor {
         // the canonical terminal; starting one earlier would loan it again.
         self.start_next_native_bootstrap();
         tokio::task::yield_now().await;
-        if let Some(exit) = self.exit.as_ref() {
+        if let Some(exit) = self.process.exit.as_ref() {
             self.core.notify_exit(phux_core::process::ExitOutcome {
                 status: exit.status,
                 signal: exit.signal,
@@ -398,8 +330,16 @@ impl TerminalActor {
         tick: &mut tokio::time::Interval,
         tick_interval: &mut std::time::Duration,
     ) {
-        let ConsumerDetachRequest { client_id, reply } = req;
-        self.unregister_consumer(client_id);
+        let ConsumerDetachRequest {
+            client_id,
+            generation,
+            reply,
+        } = req;
+        if let Some((stream_id, bootstrap_id)) = generation {
+            self.unregister_consumer_generation(client_id, stream_id, bootstrap_id);
+        } else {
+            self.unregister_consumer(client_id);
+        }
         trace!(
             ?client_id,
             "consumer detached: per-consumer RenderState freed"
@@ -407,6 +347,34 @@ impl TerminalActor {
         // Losing the fastest consumer can slow the shared cadence.
         Self::rearm_tick(tick, tick_interval, self.adaptive_tick_interval());
         let _ = reply.send(());
+    }
+
+    fn service_cancelled_consumer(
+        &mut self,
+        interest: &super::sync::PublicationCancellation,
+        tick: &mut tokio::time::Interval,
+        tick_interval: &mut std::time::Duration,
+    ) {
+        match *interest {
+            super::sync::PublicationCancellation::Consumer(client, stream, bootstrap) => {
+                self.unregister_consumer_generation(client, stream, bootstrap);
+            }
+            super::sync::PublicationCancellation::Native(key, bootstrap, ref cursor) => {
+                if self
+                    .publication
+                    .native_cursor_owners
+                    .get(&key)
+                    .is_some_and(|binding| {
+                        binding.bootstrap_id == bootstrap
+                            && binding.cursor == *cursor
+                            && binding.cancellation.is_cancelled()
+                    })
+                {
+                    self.release_native_binding(key);
+                }
+            }
+        }
+        Self::rearm_tick(tick, tick_interval, self.adaptive_tick_interval());
     }
 
     /// Fold one `FRAME_ACK` into its consumer; rebuild the shared tick only
@@ -448,13 +416,13 @@ impl TerminalActor {
         if self.in_output_burst {
             return true;
         }
-        if !self.native_cursor_owners.is_empty() {
+        if !self.publication.native_cursor_owners.is_empty() {
             return true;
         }
-        if self.consumer_tick_emits {
+        if self.publication.force_tick {
             return true;
         }
-        self.consumer_states.values().any(|state| {
+        self.publication.consumers.values().any(|state| {
             state.wants_state_sync
                 && (self.terminal_dirty_since_tick || state.sync.must_walk_when_clean())
         })
@@ -481,7 +449,7 @@ impl TerminalActor {
     /// sink and a non-empty rule set get one.
     fn install_agent_detector(&mut self) {
         let rules = crate::agent_detect::rules::global();
-        if self.pty.is_some() && self.agent_state_sink.is_some() && !rules.is_empty() {
+        if self.process.pty.is_some() && self.agent_state_sink.is_some() && !rules.is_empty() {
             let mut detector = AgentDetector::new(rules, std::time::Instant::now());
             // ADR-0103 §5: only the spawn path can ask about a live
             // `AgentSession` child; without a probe the answer is "no".
@@ -506,7 +474,7 @@ impl TerminalActor {
         } else {
             self.handle_resize(req.cols, req.rows, req.cell_px)
         };
-        let tombstoned = std::mem::take(&mut self.reflow_tombstoned);
+        let tombstoned = std::mem::take(&mut self.publication.reflow_tombstoned);
         if !req.resync_clients {
             return tombstoned
                 .into_iter()

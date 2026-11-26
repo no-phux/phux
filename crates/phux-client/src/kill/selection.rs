@@ -18,11 +18,84 @@ pub struct Selected {
     /// How many members a `SESSION_KILL` ended, when the server said (a
     /// replayed kill does not).
     pub killed: Option<u32>,
+    /// Original operation evidence when the accepted close has an identity.
+    pub recovery: Option<crate::recovery::Recovery>,
+}
+
+/// The request identity actually observed, not an eagerly formatted recovery document.
+/// Certainty belongs to the outcome variant; the scope and safe next action are fixed.
+#[derive(Debug, Default)]
+pub struct KillIdentity {
+    /// Original operation bytes, absent for an unkeyed close.
+    pub operation: Option<IdempotencyKey>,
+    /// Actual organization authority identity, never inferred from a handle or path.
+    pub authority: Option<Box<str>>,
+}
+
+impl KillIdentity {
+    pub(super) const fn new(operation: Option<IdempotencyKey>) -> Self {
+        Self {
+            operation,
+            authority: None,
+        }
+    }
+
+    pub(super) fn recovery(
+        &self,
+        certainty: crate::recovery::EffectCertainty,
+    ) -> crate::recovery::Recovery {
+        use crate::recovery::{NextAction, Recovery, ScopeKind};
+        Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            self.operation.map(IdempotencyKey::to_hex),
+            certainty,
+            NextAction::Reconcile,
+        )
+        .with_scope_id(self.authority.as_deref())
+    }
 }
 
 /// Why [`selected`] did not kill the target.
 #[derive(Debug, thiserror::Error)]
 pub enum KillError {
+    /// The authority proved this close was not sent.
+    #[error("kill not sent for {target}: {message}")]
+    NotSent {
+        /// Original selector.
+        target: String,
+        /// Original identity; non-application is established by this variant.
+        identity: KillIdentity,
+        /// Authority's reason.
+        message: String,
+        /// Notices from the request.
+        interleaved: Vec<String>,
+    },
+    /// A possibly sent close whose end was not observed. Never retry with a fresh identity.
+    #[error("kill outcome unknown for {target}: {message}")]
+    OutcomeUnknown {
+        /// Original target, not a replacement operation.
+        target: String,
+        /// Original identity; uncertainty is established by this variant.
+        identity: KillIdentity,
+        /// Transport or protocol evidence.
+        message: String,
+        /// Cold aggregate evidence is owned once, without copying or serializing the JSON.
+        results: Option<Box<serde_json::Value>>,
+        /// Notices received before the failure.
+        interleaved: Vec<String>,
+    },
+    /// A federated close returned per-target results; some targets did not close.
+    #[error("kill returned partial results for {target}: {results}")]
+    Partial {
+        /// Original selector.
+        target: String,
+        /// Cold per-host evidence is owned once, without copying or serializing the JSON.
+        results: Box<serde_json::Value>,
+        /// Original identity, independent of the mixed per-host outcomes.
+        identity: KillIdentity,
+        /// Notices from the request.
+        interleaved: Vec<String>,
+    },
     /// The selector matched nothing against a complete view, or a named
     /// session is absent (hub-local, so a partial fleet cannot hide it).
     #[error("no such target: {target}")]
@@ -51,6 +124,8 @@ pub enum KillError {
         message: String,
         /// Interleaved notices from that round trip.
         interleaved: Vec<String>,
+        /// Original identity; non-application is established by this variant.
+        identity: KillIdentity,
     },
     /// The server answered a whole-target kill with an unexpected shape.
     #[error("{label}: {message}")]
@@ -60,14 +135,6 @@ pub enum KillError {
         /// The unexpected-reply sentence from [`crate::explain`].
         message: String,
         /// Interleaved notices from that round trip.
-        interleaved: Vec<String>,
-    },
-    /// One or more per-pane kills were refused; others may have landed.
-    #[error("{}", messages.join("\n"))]
-    PaneRefusals {
-        /// One sentence per refused pane, without a `phux:` prefix.
-        messages: Vec<String>,
-        /// Interleaved notices collected across the loop.
         interleaved: Vec<String>,
     },
     /// The session has no members and the server predates `SESSION_KILL`,
@@ -93,14 +160,89 @@ pub enum KillError {
 }
 
 impl KillError {
+    /// Lossless error projection shared by CLI and MCP.
+    #[must_use]
+    pub fn outcome_document(&self) -> Option<serde_json::Value> {
+        use crate::recovery::EffectCertainty;
+        let (code, target, recovery, results) = match self {
+            Self::NotSent {
+                target, identity, ..
+            } => (
+                "not_sent",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::NotApplied)),
+                None,
+            ),
+            Self::OutcomeUnknown {
+                target,
+                identity,
+                results,
+                ..
+            } => (
+                "outcome_unknown",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::Unknown)),
+                results.as_deref(),
+            ),
+            Self::Partial {
+                target,
+                results,
+                identity,
+                ..
+            } => (
+                "partial_results",
+                Some(target.as_str()),
+                Some(identity.recovery(EffectCertainty::Unknown)),
+                Some(results.as_ref()),
+            ),
+            Self::Refused {
+                label, identity, ..
+            } => (
+                "refused",
+                Some(label.as_str()),
+                Some(identity.recovery(EffectCertainty::NotApplied)),
+                None,
+            ),
+            Self::Org(error) => (error.code(), None, Some(error.recovery()), None),
+            _ => return None,
+        };
+        Some(serde_json::json!({
+            "schema_version": 1,
+            "error": {
+                "code": code,
+                "interleaved": self.interleaved(),
+                "message": self.to_string(),
+                "target": target,
+                "recovery": recovery,
+                "results": results,
+                "remedy": "reconcile authoritative state before retrying",
+            },
+            "exit_code": 2,
+        }))
+    }
+
     /// Interleaved notices from a kill command that still produced an error.
     #[must_use]
     pub fn interleaved(&self) -> &[String] {
         match self {
             Self::Refused { interleaved, .. }
+            | Self::NotSent { interleaved, .. }
             | Self::Unexpected { interleaved, .. }
-            | Self::PaneRefusals { interleaved, .. } => interleaved,
+            | Self::OutcomeUnknown { interleaved, .. }
+            | Self::Partial { interleaved, .. } => interleaved,
             _ => &[],
+        }
+    }
+
+    /// Move notices to an aggregate outcome instead of copying their strings.
+    pub(super) fn take_interleaved(&mut self) -> Vec<String> {
+        match self {
+            Self::Refused { interleaved, .. }
+            | Self::NotSent { interleaved, .. }
+            | Self::Unexpected { interleaved, .. }
+            | Self::OutcomeUnknown { interleaved, .. }
+            | Self::Partial { interleaved, .. } => std::mem::take(interleaved),
+            _ => Vec::new(),
         }
     }
 }
@@ -110,9 +252,8 @@ impl KillError {
 /// A whole-session target runs [`kill_session`] (an empty session is simply
 /// deleted), or one atomic `KILL_RESOURCES` when the snapshot carries no
 /// session key; a group, pane, `@id`, or
-/// `#tag` target kills each resolved Terminal with `KILL_RESOURCE`. A clean
-/// disconnect after a kill is the server self-exiting once its last session
-/// was reaped: success.
+/// `#tag` target kills each resolved Terminal with `KILL_RESOURCE`. A
+/// disconnect cannot establish whether a close was applied.
 ///
 /// With `key`, the kill is one keyed command (`KILL_RESOURCE` for one
 /// Terminal, `KILL_RESOURCES` for several). An `@N` / `host/@N` target is
@@ -139,9 +280,14 @@ pub async fn selected(
     }
     let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
     if let Some(session) = selector::whole_session_name(selector, &snapshot) {
-        if let Some(key) = session_key_named(&snapshot, &session) {
+        if let Some(session_key) = session_key_named(&snapshot, &session) {
             notices.extend(degradation.notices().iter().cloned());
-            return kill_session(conn, key, &session).await;
+            return match key {
+                Some(operation) => {
+                    super::session::kill_session_keyed(conn, session_key, &session, operation).await
+                }
+                None => kill_session(conn, session_key, &session).await,
+            };
         }
         let ids = selector::resolve(selector, &snapshot);
         if ids.is_empty() && session_is_empty(&snapshot, &session) {
@@ -162,7 +308,7 @@ pub async fn selected(
     notices.extend(degradation.notices().iter().cloned());
     match key {
         Some(key) => kill_keyed(conn, target, terminals, key).await,
-        None => kill_each_terminal(conn, terminals).await,
+        None => kill_each_terminal(conn, terminals, target).await,
     }
 }
 

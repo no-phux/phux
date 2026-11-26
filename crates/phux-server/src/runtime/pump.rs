@@ -45,38 +45,6 @@ pub(super) fn try_send_frame(
     }
 }
 
-/// Spawn an owned output task from any subscription path. Completion guards
-/// are captured before spawning, so even abort-before-first-poll resolves the
-/// detach fence. A `JoinSet` owner additionally retains whole-session teardown.
-pub(super) fn spawn_tracked(
-    state: &crate::state::SharedState,
-    client: crate::state::ClientId,
-    terminal: phux_core::ResourceId,
-    tasks: Option<&mut tokio::task::JoinSet<()>>,
-    drain: Option<tokio_util::sync::CancellationToken>,
-    future: impl std::future::Future<Output = ()> + 'static,
-) {
-    let done = tokio_util::sync::CancellationToken::new();
-    let guard = done.clone().drop_guard();
-    let task = async move {
-        let _guard = guard;
-        future.await;
-    };
-    let abort = match tasks {
-        Some(tasks) => {
-            // Completed SPAWN pumps must not accumulate in the connection's
-            // JoinSet during create/detach churn.
-            while tasks.try_join_next().is_some() {}
-            tasks.spawn_local(task)
-        }
-        None => tokio::task::spawn_local(task).abort_handle(),
-    };
-    state.with_mut(|s| {
-        s.resources_mut()
-            .track_output_pump(client, terminal, abort, done, drain);
-    });
-}
-
 /// Stop all output tasks for a subscription, including tasks blocked inside
 /// bootstrap publication or a send to a full consumer mailbox.
 pub(super) async fn stop_output(
@@ -84,7 +52,10 @@ pub(super) async fn stop_output(
     client: crate::state::ClientId,
     terminal: phux_core::ResourceId,
 ) {
-    let completions = state.with_mut(|s| s.resources_mut().stop_output_pumps(client, terminal));
+    let completions = state.with_mut(|s| {
+        s.resources_mut().cancel_pump(client, terminal);
+        s.resources_mut().stop_output_pumps(client, terminal)
+    });
     for done in completions {
         done.cancelled().await;
     }

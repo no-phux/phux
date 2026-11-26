@@ -113,7 +113,10 @@ fn a_native_tap_runs_the_controls_press_and_a_covering_page_hides_it() {
     assert!(crate::mobile::press(&mut rt, "phone-back"));
     settle(&mut rt);
     assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
-    settle(&mut rt);
+    // The drawer slides in over the top bar: let it land.
+    for _ in 0..90 {
+        rt.frame(1.0 / 60.0);
+    }
     // The page covers the top bar: its glass would float over the page.
     let now = ids(&rt);
     assert!(!now.iter().any(|id| TOP.contains(&id.as_str())), "{now:?}");

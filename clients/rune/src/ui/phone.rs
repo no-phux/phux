@@ -1,7 +1,7 @@
 //! The phone form: a live terminal with touch chrome outside its viewport:
 //! a top bar, navigation toolbar, tabs, accessory bar and keyboard. What
 //! Rune can't do on a phone yet (safe areas, the system keyboard) is drawn
-//! here instead; clients/rune/MOBILE.md lists each piece and what replaces it.
+//! here instead; clients/rune/MOBILE_GAPS.md lists each piece and what replaces it.
 //!
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock,
@@ -181,7 +181,14 @@ fn edge_fill(desk: &Desk, p: &Look) -> Color {
     if desk.settings_open {
         p.roles.layer.sidebar.paint()
     } else if desk.phone_page().is_some() {
-        p.roles.layer.ground.paint()
+        // The layer the drawer's glass is tinted with, which it reads as
+        // over the terminal it blurs; its ground where it is opaque.
+        let glass = p.glass(super::tokens::GlassSurface::PhoneBar, p.glass_tint_layer());
+        if glass.is_some() {
+            p.glass_tint_layer().paint()
+        } else {
+            p.roles.layer.ground.paint()
+        }
     } else {
         terminal_ground(desk)
     }
@@ -222,7 +229,6 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .min_h(0.0)
         .min_w(0.0)
-        .px(if desk.settings_open { 0.0 } else { p.space.s1 })
         .child(if desk.settings_open {
             settings::view(desk, p)
         } else {
@@ -327,16 +333,6 @@ pub(super) fn glyph(icon: &'static rune::Icon, size: f32, color: Color) -> El {
 /// none for a plain shell. The bell is its own tone and mark.
 pub(super) fn state_of(mark: Mark) -> Option<State> {
     (mark != Mark::None).then(|| super::sidebar::state_of(mark))
-}
-
-/// `mark` drawn: colour, mark and (as its accessible name) word, never
-/// colour alone.
-pub(super) fn status_mark(mark: Mark, size: f32, p: &Look) -> Option<El> {
-    if mark == Mark::Bell {
-        let tone = p.status.tone(phux_design::Tone::Bell);
-        return Some(glyph(&icons::BELL, size, tone.ink).label(mark.word()));
-    }
-    state_of(mark).map(|state| badge::mark(p, state, size))
 }
 
 /// `mark`'s ink, or quiet ink for a plain shell.

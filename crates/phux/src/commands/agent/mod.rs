@@ -40,7 +40,7 @@ pub(crate) use self::action::AgentAction;
 pub(crate) use self::notify::{run_notify, run_notify_mode};
 pub(crate) use self::record::fetch_agent_index;
 pub(crate) use self::seen::run_seen;
-pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
+pub(crate) use self::session::{PreparedAgentSession, prepare_for_launch};
 
 #[allow(
     clippy::too_many_lines,

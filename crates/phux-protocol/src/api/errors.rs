@@ -32,7 +32,7 @@ codes! {
     TimedOut => "timed_out", Unknown => "unknown",
 }
 impl ErrorCode {
-    /// Refusal mapping also owns `Refusal::as_str`; no separate discovery registry.
+    /// Project a wire refusal outward into the public workflow vocabulary.
     #[must_use]
     pub const fn from_refusal(refusal: &crate::wire::frame::Refusal) -> Self {
         use crate::wire::frame::Refusal as R;

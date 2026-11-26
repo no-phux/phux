@@ -174,6 +174,8 @@ fn subscribe_via_hub(
         );
         return;
     };
+    let owner = state.with_mut(|s| s.federation_mut().consumer_registration(client_id));
+    let relay = relay.for_consumer(owner);
     let change = state.with_mut(|s| {
         s.subscribe_satellite_events(
             client_id,

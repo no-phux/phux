@@ -34,8 +34,12 @@ impl From<AttachError> for ToolError {
     }
 }
 
-fn kill_error(err: phux_client::kill::KillError) -> ToolError {
+fn kill_error(err: phux_client::kill::KillError, target: &str) -> ToolError {
     use phux_client::kill::KillError;
+    if let Some(mut document) = err.outcome_document() {
+        document["error"]["target"] = json!(target);
+        return ToolError::with_document(document.to_string(), document);
+    }
     match err {
         KillError::Unresolved {
             target,
@@ -119,4 +123,37 @@ pub(crate) fn render_transport_error(
     pid: Option<i32>,
 ) -> ToolError {
     refusal_error(&transport_refusal(err, socket, verb, pid), 1)
+}
+
+#[cfg(test)]
+mod kill_projection_tests {
+    use super::*;
+
+    #[test]
+    fn partial_close_retains_exact_host_results_and_operation_evidence() {
+        use phux_client::kill::KillIdentity;
+        use phux_protocol::ids::IdempotencyKey;
+        let results = json!({
+            "schema_version": 1,
+            "killed": ["@1"],
+            "not_found": ["archive/@7"],
+            "failed": [{"id": "build/@2", "code": 107, "message": "link is down"}],
+        });
+        let operation = IdempotencyKey::new([29; 16]).expect("operation");
+        let identity = KillIdentity {
+            operation: Some(operation),
+            authority: Some("observed-authority".into()),
+        };
+        let error = kill_error(phux_client::kill::KillError::Partial {
+            target: "work".into(), results: Box::new(results.clone()), identity,
+            interleaved: vec!["build host has an incomplete view".into()],
+        }, "work");
+        let document = error.document();
+        assert_eq!(document["error"]["code"], "partial_results");
+        assert_eq!(document["error"]["results"], results);
+        assert_eq!(document["error"]["recovery"]["operation_id"], operation.to_hex());
+        assert_eq!(document["error"]["recovery"]["scope"]["id"], "observed-authority");
+        assert_eq!(document["error"]["interleaved"], json!(["build host has an incomplete view"]));
+        assert!(document.get("killed").is_none());
+    }
 }

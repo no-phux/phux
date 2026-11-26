@@ -8,11 +8,11 @@ async fn pixel_only_resize_updates_winsize_without_resync() {
     on_local!(async {
         let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
             .expect("spawn");
-        let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+        let master = std::sync::Arc::clone(&bundle.actor.process.pty.as_ref().expect("pty").master);
         let handle = bundle.handle.clone();
         let mut out = handle.output.subscribe();
         let token = bundle.token;
-        let input_snapshot = bundle.actor.input_snapshot_tx.subscribe();
+        let input_snapshot = bundle.actor.process.input_snapshot_tx.subscribe();
         let join = tokio::task::spawn_local(bundle.actor.run());
 
         resize(

@@ -156,6 +156,10 @@ impl ServerState {
         tx: mpsc::Sender<Outbound>,
     ) -> SatelliteScopeChange {
         let gap = after_seq.and_then(|after| self.journal.gap_without_replay(after));
+        let link_epoch = match &terminal {
+            WireResourceId::Satellite { host, .. } => self.federation.satellite_link_epoch(host),
+            WireResourceId::Local { .. } => None,
+        };
         let sub = self.clients.event_subscription(client_id, tx);
         let prior = sub
             .scopes
@@ -165,13 +169,36 @@ impl ServerState {
             sub.owe_gap(first, last);
             sub.fill(&self.journal);
         }
-        SatelliteScopeChange { terminal, prior }
+        SatelliteScopeChange {
+            terminal,
+            prior,
+            subscription_epoch: sub.epoch,
+            link_epoch,
+        }
     }
 
     /// Undo a refused satellite subscribe: restore the prior filter or
     /// remove the scope; an owed gap is kept.
     pub fn restore_satellite_scope(&mut self, client_id: ClientId, change: SatelliteScopeChange) {
-        let SatelliteScopeChange { terminal, prior } = change;
+        let SatelliteScopeChange {
+            terminal,
+            prior,
+            subscription_epoch,
+            link_epoch,
+        } = change;
+        if self
+            .clients
+            .event_subscriptions
+            .get(&client_id)
+            .is_none_or(|sub| sub.epoch != subscription_epoch)
+        {
+            return;
+        }
+        if let WireResourceId::Satellite { host, .. } = &terminal
+            && self.federation.satellite_link_epoch(host) != link_epoch
+        {
+            return;
+        }
         let Some(prior) = prior else {
             self.clients
                 .unsubscribe_resource_events(client_id, &terminal);
@@ -198,6 +225,22 @@ impl ServerState {
         };
         sub.owe_gap(seq, seq);
         sub.fill(&self.journal);
+    }
+
+    /// Retire every cursor/scope owned by an ended or replaced host link.
+    pub(crate) fn interrupt_satellite_host(&mut self, host: &phux_protocol::ids::SatelliteHost) {
+        for sub in self.clients.event_subscriptions.values_mut() {
+            let before = sub.scopes.len();
+            sub.scopes.retain(|scope, _| {
+                !matches!(scope, EventScope::Terminal(WireResourceId::Satellite { host: known, .. }) if known == host)
+            });
+            for _ in sub.scopes.len()..before {
+                if let Some(seq) = self.journal.allocate_seq() {
+                    sub.owe_gap(seq, seq);
+                    sub.fill(&self.journal);
+                }
+            }
+        }
     }
 
     /// Claim `client_id`'s event pump, once; `None` without a subscription

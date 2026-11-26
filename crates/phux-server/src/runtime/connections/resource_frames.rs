@@ -1,8 +1,10 @@
 //! Connection admission and routing for reply-less resource frames. Apps see
 //! only their own local resources; absent and satellite ids stay in the host.
 
+mod clipboard_read;
 mod input;
 mod relay;
+mod terminal;
 #[cfg(test)]
 mod tests;
 
@@ -13,8 +15,29 @@ use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason};
 
 use super::dispatch::{FrameFlow, direction_invalid};
 use super::frames::frame_resource;
-use crate::runtime::apps::{FrameAdmission, ResourceFrame, app_for};
+use crate::runtime::apps::ConnectionLane;
+use crate::runtime::apps::{FrameAdmission, app_for};
+use crate::runtime::connections::hello::NegotiatedConnection;
+use crate::runtime::connections::plumbing::ClientPlumbing;
+use crate::state::{ClientId, SharedState};
 use crate::state::{Outbound, ResolvedOwned};
+use tokio_util::sync::CancellationToken;
+/// One client's stream or input frame about a resource, with what the
+/// connection it arrived on lends the app to serve it.
+pub(crate) struct ResourceFrame<'a> {
+    /// Server state.
+    pub(crate) state: &'a SharedState,
+    /// The sending connection.
+    pub(crate) client_id: ClientId,
+    /// The connection's cancellation.
+    pub(crate) token: &'a CancellationToken,
+    /// The connection's place on the input lane, when it has one.
+    pub(crate) lane: Option<&'a mut ConnectionLane>,
+    /// The connection's mailboxes: control, and a bound stream per resource.
+    pub(crate) plumbing: &'a ClientPlumbing,
+    /// What `HELLO` negotiated, once it has.
+    pub(crate) negotiated: Option<NegotiatedConnection>,
+}
 
 /// Route only after the production policy guard has authorized the frame.
 pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow {
@@ -35,7 +58,23 @@ pub(super) async fn serve(ctx: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow
             if !input::admit(&ctx, admission, local.id) {
                 return FrameFlow::Continue(());
             }
-            app.frame(ctx, frame).await
+            if let Some((code, message)) = app.frame_error(&frame) {
+                if local.handle.kind == phux_core::ResourceKind::AgentSession {
+                    let _ = ctx
+                        .plumbing
+                        .out_tx
+                        .try_send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code,
+                            message,
+                        }));
+                } else {
+                    crate::runtime::send_error(&ctx.plumbing.out_tx, code, &message).await;
+                }
+                FrameFlow::Continue(())
+            } else {
+                terminal::serve_frame(ctx, frame).await
+            }
         }
         ResolvedOwned::Remote(route) => {
             // A reply and a history request have never relayed. In particular,
@@ -63,7 +102,7 @@ fn note_activity(ctx: &ResourceFrame<'_>, frame: &FrameKind) {
         _ => false,
     };
     if used {
-        crate::runtime::apps::terminal::commands::handle_client_activity(ctx.state, ctx.client_id);
+        crate::runtime::commands::terminal::handle_client_activity(ctx.state, ctx.client_id);
     }
 }
 

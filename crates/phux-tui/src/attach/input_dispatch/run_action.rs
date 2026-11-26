@@ -94,6 +94,8 @@ pub(super) fn run_action(
         tracing::debug!(action = %resolved.action, "unhandled resolved action");
         return effects;
     };
+    // The user moved on from a pane still opening; opening one holds anew.
+    ctx.hold_typing(false);
     (spec.run)(ActionCall {
         resolved,
         ctx,

@@ -20,27 +20,30 @@ pub(super) struct AttachPublication<'a> {
     pub(super) state: &'a SharedState,
     pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     pub(super) cancellation: &'a CancellationToken,
+    pub(super) connection: &'a CancellationToken,
     pub(super) client_id: ClientId,
     pub(super) attach_id: u32,
 }
 
 impl AttachPublication<'_> {
     async fn queue(&self, frame: FrameKind) -> bool {
-        let sent = tokio::select! {
+        let permit = tokio::select! {
             biased;
-            () = self.cancellation.cancelled() => {
-                publication_phase("session_bootstrap_queue", "cancelled");
-                false
-            },
-            result = self.out_tx.send(Outbound::Frame(frame)) => result
-                .inspect_err(|_| publication_phase("session_bootstrap_queue", "outbound_closed"))
-                .is_ok(),
+            () = self.cancellation.cancelled() => return false,
+            () = self.connection.cancelled() => return false,
+            permit = self.out_tx.reserve() => permit,
         };
-        if sent {
-            return true;
-        }
-        crate::runtime::connections::detach_and_release_consumer_state(self.state, self.client_id);
-        false
+        let Ok(permit) = permit else {
+            publication_phase("session_bootstrap_queue", "outbound_closed");
+            return false;
+        };
+        self.state.with(|_| {
+            if self.cancellation.is_cancelled() || self.connection.is_cancelled() {
+                return false;
+            }
+            permit.send(Outbound::Frame(frame));
+            true
+        })
     }
 
     pub(super) async fn publish(

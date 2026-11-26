@@ -95,18 +95,19 @@ impl StreamContract {
         resumes: bool,
         features: crate::caps::ServerFeatureSet,
         features_ext: crate::caps::ServerFeatureExtSet,
+        features_ext2: crate::caps::ServerFeatureExt2Set,
     ) -> bool {
         let codec_gate = match self.codec(tag) {
             Some(codec) => codec.gate,
             None => return false,
         };
         let codec_ok = match codec_gate {
-            Some(gate) => gate.advertised(features, features_ext),
+            Some(gate) => gate.advertised(features, features_ext, features_ext2),
             None => true,
         };
         let resume_ok = match (resumes, self.resume) {
             (false, _) => true,
-            (true, Some(gate)) => gate.advertised(features, features_ext),
+            (true, Some(gate)) => gate.advertised(features, features_ext, features_ext2),
             (true, None) => false,
         };
         codec_ok && resume_ok

@@ -23,7 +23,8 @@ fn expired_hold() -> (EngineHandle, Arc<Publication>, ResourceId, Arc<GridFrame>
 #[test]
 fn synchronized_redraw_keeps_committed_default_and_view_frames() {
     let (owner, publication, terminal) = committed();
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let first = publication.acquire(&terminal).unwrap();
     let view_first = publication.acquire_view(view).unwrap();
     for (seq, bytes) in [
@@ -57,7 +58,8 @@ fn synchronized_redraw_keeps_committed_default_and_view_frames() {
 #[test]
 fn unread_catch_up_cannot_publish_an_incomplete_redraw() {
     let (owner, publication, terminal) = committed();
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     // First defer a normal update, leaving a stale slot before DEC 2026.
     apply_ok(&owner, output(&terminal, 1, b"!"));
     apply_ok(&owner, output(&terminal, 2, b"\x1b[?2026h\x1b[2J\x1b[H"));
@@ -154,14 +156,19 @@ fn synchronized_bootstrap_and_new_view_wait_for_a_complete_frame() {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"\x1b[?2026hpartial");
-    let view = owner.create_view(&terminal).unwrap();
+    assert!(matches!(
+        owner.view_source(&terminal),
+        Err(EngineError::ProjectionUnavailable)
+    ));
     assert!(publication.acquire(&terminal).is_none());
-    assert_eq!(publication.view_generation(view), Some(0));
     apply_ok(
         &owner,
         output(&terminal, 1, b"\x1b[2J\x1b[Hcomplete\x1b[?2026l"),
     );
     assert_eq!(publication.acquire(&terminal).unwrap().text(), "complete");
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
+    // Registered at admission, then published once from the complete frame.
     assert_eq!(publication.view_generation(view), Some(1));
     assert_eq!(publication.acquire_view(view).unwrap().text(), "complete");
 }
@@ -192,7 +199,8 @@ fn synchronization_does_not_hold_other_terminals_or_survive_reset() {
 fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
     let (owner, publication, terminal) = committed();
     owner.set_cell_pixels(&terminal, 9, 18).unwrap();
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     publication.acquire_view(view).unwrap();
     publication.acquire(&terminal).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h"));
@@ -216,7 +224,8 @@ fn replacement_generation_gets_a_fresh_watchdog_and_close_releases_it() {
 #[test]
 fn a_nonretained_close_drops_held_frames_and_deadlines() {
     let (owner, publication, terminal) = committed();
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     apply_ok(&owner, output(&terminal, 1, b"\x1b[?2026h\x1b[2J"));
     apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
     assert!(owner.presentation_deadline().is_none());

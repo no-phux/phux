@@ -356,3 +356,6 @@ mod ext_set;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ServerFeatureExtSet(u32);
 
+#[path = "server_features/ext2.rs"]
+mod ext2;
+pub use ext2::{ServerFeatureExt2, ServerFeatureExt2Set};

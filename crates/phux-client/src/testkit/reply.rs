@@ -28,10 +28,13 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
                     message,
                 }];
             }
-            let hello = HelloOk::new(spec.server_id.clone(), ServerCapabilities::new())
-                .features(spec.server_features)
-                .features_ext(spec.server_features_ext)
-                .negotiated_from(client_caps);
+            let hello = HelloOk::new(
+                spec.server_id.clone(),
+                ServerCapabilities::new().with_features_ext2(spec.server_features_ext2),
+            )
+            .features(spec.server_features)
+            .features_ext(spec.server_features_ext)
+            .negotiated_from(client_caps);
             vec![hello.build()]
         }
         FrameKind::Command {

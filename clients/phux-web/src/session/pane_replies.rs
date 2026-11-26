@@ -93,18 +93,19 @@ impl Connection {
             .and_then(|pending| pending.resource);
         self.pending_kill = None;
         self.pane_error = Some(message);
-        // A spawn this connection made and never presented is cleaned up with
-        // KILL_RESOURCE, which every server honors without an activation read.
-        let send = resource
-            .into_iter()
-            .map(|terminal_id| {
-                self.retiring_panes.push(terminal_id.clone());
-                let request_id = self.next_pane_request();
-                Self::legacy_kill_frame(request_id, terminal_id)
-            })
-            .collect();
+        // Failure to attach a view is not permission to terminate execution.
+        // Leave the created resource discoverable; only an explicit kill workflow
+        // may resolve and terminate its exact current activation.
+        if let Some(resource) = resource {
+            if !self.failed_pane_views.contains(&resource) {
+                self.failed_pane_views.push(resource.clone());
+            }
+            self.pane_error = self.pane_error.take().map(|message| {
+                format!("{message} The created resource {resource} may still be running; reload to attach or explicitly terminate it.")
+            });
+        }
         Outcome {
-            send,
+            send: Vec::new(),
             panes: true,
             ..Outcome::default()
         }

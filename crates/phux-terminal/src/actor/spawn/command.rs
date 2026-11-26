@@ -39,3 +39,12 @@ pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
         cmd.env_remove(key);
     }
 }
+
+/// Rex's nested-terminal resume token. A server started inside a Rex pane
+/// carries it, and OSC 7577 says a nested terminal must not pass it on.
+const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
+
+/// Strip Rex's `OSC7577_TOKEN` from a pane child's environment.
+pub(crate) fn clear_osc7577_token(cmd: &mut CommandBuilder) {
+    cmd.env_remove(OSC7577_TOKEN);
+}

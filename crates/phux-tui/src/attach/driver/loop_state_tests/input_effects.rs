@@ -94,7 +94,7 @@ async fn a_finished_job_toasts_and_refreshes_only_what_it_asks() {
         !state.overlays.top_is_passthrough(),
         "the result holds the keyboard like any toast"
     );
-    assert!(state.session_picker_dirty && state.peers.chrome_dirty);
+    assert!(state.session_picker_dirty && state.peer_presentation.chrome_dirty);
     let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         sent.iter().any(|frame| matches!(

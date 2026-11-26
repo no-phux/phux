@@ -49,6 +49,7 @@ async fn attach(handle: &ResourceHandle, id: u32) -> mpsc::Receiver<Outbound> {
             wire_terminal_id: WIRE_TID,
             stream_id: StreamId::new(u64::from(id)).unwrap(),
             bootstrap_id: BootstrapId::new(1).unwrap(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
             wants_state_sync: false,
             state_sync_scrollback: None,
             bootstrap_max_bytes: usize::MAX,
@@ -132,6 +133,7 @@ fn tick_and_ack_routing_survive_every_consumer_lifecycle_edge() {
         let (reply, reply_rx) = oneshot::channel();
         let detach = ConsumerDetachRequest {
             client_id: ClientId(2),
+            generation: Some((StreamId::new(2).unwrap(), BootstrapId::new(1).unwrap())),
             reply,
         };
         handle

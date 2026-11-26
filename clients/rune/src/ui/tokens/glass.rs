@@ -17,7 +17,7 @@ pub(crate) enum GlassSurface {
     Floating,
     /// The open modal surface: the palette, the inbox.
     Overlay,
-    /// The phone's session dock, its one blur.
+    /// The phone's Sessions drawer, its one blur.
     PhoneBar,
 }
 

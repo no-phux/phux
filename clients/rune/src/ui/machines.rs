@@ -10,7 +10,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize};
 
 use super::settings::{grown, section};
 use super::tokens::{Paint, Tokens};
-use super::{Sheet, icons, pressable};
+use super::{Sheet, pressable};
 use crate::desk::Desk;
 use crate::desk::machines::ssh::Offered;
 use crate::host_color;
@@ -36,21 +36,18 @@ pub fn switch(desk: &Desk, p: &Tokens) -> El {
         .on_press(|d: &mut Desk| d.toggle_machines())
         .child(host_color::dot(
             desk.machines.label(),
-            s.s2,
+            super::sidebar::dot_size(t),
             t.roles.layer.sidebar.paint(),
         ))
         .child(
             text(desk.machines.label().to_owned())
+                .key("machine-switch-name")
                 .font(t.ty.label.semibold().host(desk.machines.label()))
                 .color(t.roles.text.text.paint())
                 .truncate()
                 .a11y_hidden(),
         )
-        .child(
-            rune::icon(&icons::CHEVRON, t.icon.size.sm)
-                .color(t.roles.text.dim.paint())
-                .a11y_hidden(),
-        )
+        .help("Choose a machine")
 }
 
 /// The least height a row's action takes: its label's line, or on a phone
@@ -205,7 +202,12 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
         .flex_wrap()
         .role("radiogroup")
         .label(format!("Colour for {name}"));
-    let side = s.pointer_min;
+    // A scaled swatch must fit inside its own touch target, not its neighbours'.
+    let side = if desk.phone.is_some() {
+        reach(true, t).max(t.icon.size.md + s.s2)
+    } else {
+        s.pointer_min
+    };
     for (i, (id, hex)) in PALETTE.iter().enumerate() {
         let held = name.to_owned();
         let on = picked && *hex == rgb;
@@ -237,6 +239,7 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
     let held = name.to_owned();
     let auto = pressable(format!("machine-swatch-{name}-auto"), t)
         .px(s.s2)
+        .min_w(side)
         .min_h(side)
         .radius(t.radius.full)
         .items_center()

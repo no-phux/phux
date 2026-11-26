@@ -19,7 +19,7 @@ use crate::state::Degradation;
 mod selection;
 mod session;
 
-pub use selection::{KillError, Selected, selected};
+pub use selection::{KillError, KillIdentity, Selected, selected};
 pub use session::kill_session;
 
 /// What a `SHUTDOWN` request answered.
@@ -76,10 +76,12 @@ pub async fn shutdown(
 /// What a `KILL_RESOURCE` / `KILL_RESOURCES` request answered.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KillOutcome {
-    /// The server killed the target(s).
+    /// The server accepted close intent; this does not observe process exit.
     Killed,
     /// The server refused.
     Refused(String),
+    /// Original per-host result, including successful, absent and failed targets.
+    Partial(serde_json::Value),
     /// An unexpected reply shape.
     Unexpected(CommandResult),
 }
@@ -87,19 +89,17 @@ pub enum KillOutcome {
 impl KillOutcome {
     /// Classify a `KILL_RESOURCE`/`KILL_RESOURCES` `COMMAND_RESULT`.
     ///
-    /// A `KILL_RESOURCES` that named a satellite id is answered with one
-    /// outcome per id (`docs/protocol.md#commands-events-resources`): every id killed is
-    /// [`Self::Killed`], and any id a host refused or could not be reached
-    /// for makes it [`Self::Refused`] naming each such id.
+    /// A federated result retains each host's exact result rather than
+    /// reducing a mixed outcome to one refusal.
     #[must_use]
     pub fn from_result(result: CommandResult) -> Self {
         match result {
             CommandResult::Ok => Self::Killed,
             CommandResult::Error { message, .. } => Self::Refused(message),
             CommandResult::OkWith(CommandValue::Json(document)) => {
-                match merged_kill_failures(&document) {
-                    Some(failures) if failures.is_empty() => Self::Killed,
-                    Some(failures) => Self::Refused(format!("not killed: {}", failures.join("; "))),
+                match merged_kill_result(&document) {
+                    Some((value, false)) => Self::Partial(value),
+                    Some((_, true)) => Self::Killed,
                     None => Self::Unexpected(CommandResult::OkWith(CommandValue::Json(document))),
                 }
             }
@@ -108,28 +108,16 @@ impl KillOutcome {
     }
 }
 
-/// The failures a per-id `KILL_RESOURCES` outcome lists, one `"id: reason"`
-/// each; `None` when `document` is not such an outcome.
-fn merged_kill_failures(document: &str) -> Option<Vec<String>> {
+/// Validate the federated result while retaining the original document.
+fn merged_kill_result(document: &str) -> Option<(serde_json::Value, bool)> {
     let value: serde_json::Value = serde_json::from_str(document).ok()?;
-    value.get("schema_version")?;
-    let failed = value.get("failed")?.as_array()?;
-    Some(
-        failed
-            .iter()
-            .map(|entry| {
-                let id = entry
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("?");
-                let message = entry
-                    .get("message")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("refused");
-                format!("{id}: {message}")
-            })
-            .collect(),
-    )
+    if value.get("schema_version")?.as_u64()? != 1 {
+        return None;
+    }
+    value.get("killed")?.as_array()?;
+    value.get("not_found")?.as_array()?;
+    let complete = value.get("failed")?.as_array()?.is_empty();
+    Some((value, complete))
 }
 
 /// Request a batch kill (for example a whole-session target). The server

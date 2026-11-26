@@ -77,15 +77,19 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
             col()
                 .w_full()
                 .gap(s.s1)
-                .child(text(note.date).font(t.ty.caption).color(r.text.dim.paint()))
                 .child(
-                    text(note.title)
+                    text(note.date.as_str())
+                        .font(t.ty.caption)
+                        .color(r.text.dim.paint()),
+                )
+                .child(
+                    text(note.title.as_str())
                         .font(t.ty.label.semibold())
                         .color(r.text.text.paint())
                         .wrap(),
                 )
                 .child(
-                    text(note.body)
+                    text(note.body.as_str())
                         .font(t.ty.label)
                         .color(r.text.dim.paint())
                         .wrap(),

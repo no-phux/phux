@@ -120,8 +120,8 @@ from the notification.
 
 The server keeps a signed, hash-chained, append-only record of connections,
 authorization decisions, approvals, credential changes, file transfer
-chunks, forwarded connections and ssh-agent signatures, input leases, and
-clipboard reads. It lives in `audit/` in the
+chunks, forwarded connections and ssh-agent signatures, input leases,
+clipboard reads, and links panes asked to open (the host only). It lives in `audit/` in the
 [state directory](./reference/files.md#state), rotating at 64 MiB with four
 old files kept.
 
@@ -147,6 +147,49 @@ record's hash (64 zeros first). `sig` is padded base64 ed25519 over the 32
 raw hash bytes. A failed write never fails a command; `phux doctor` warns
 and `phux perf` counts `audit.write_failures`. A second server on the same
 state directory runs without a log rather than fork the chain.
+
+## Program resume
+
+Off unless `[restore] program-resume` is true. A program that knows the
+pane's `OSC7577_TOKEN` can report a command. phux checks a SHA-256 of the
+report and that token, a 60-second window, and that the reporting process is
+a same-uid direct child of the pane's shell. Text from `cat`, `tail -f`,
+`ssh`, or `less` does not know the token, so a planted report is ignored.
+
+The token is only in the first process's environment and, across
+`phux upgrade`, in the upgrade handoff. It is not metadata, `--json`, or a
+log line. The command itself is stored with the pane and shown, escaped, by
+`phux ls -l` and `phux restore --dry-run`. Treat that command like a shell
+startup file: it can name files you had open.
+
+Nothing runs unless `[[restore.trust]]` lists the program. There are no
+built-in entries. phux never resumes one when it is running as root. A record
+that is untrusted, or whose directory is gone, starts a shell. A resume that
+was already tried is not tried again. The legacy OSC 7501 `resume=` token is
+still unauthenticated; new programs should use OSC 7577.
+
+## Kept scrollback
+
+Off by default. With [`[restore] scrollback`](./concepts.md#kept-scrollback)
+the server writes what each pane last printed to disk, and that can hold
+secrets. `org/v1.scrollback/` in the [state directory](./reference/files.md#state)
+(0700, one 0600 file per pane; a server on another socket has its own beside
+its store in `org/sockets/`) holds the last lines of each pane's main screen,
+as text and colors.
+
+- The files are not encrypted; use full-disk encryption. Your own backups of
+  the state directory include them; phux's reports, archives and logs do
+  not.
+- A pane's file is deleted within a second of the pane being killed, closed
+  or removed, and at the next server start after a crash. A process that
+  exits in a pane that stays keeps its file.
+- `scrollback-exclude` keeps a session, a pane (by its `phux rename` name) or
+  a program out. Moving or renaming a pane into it deletes its file.
+- `scrollback = 0` deletes every file when the server next starts.
+- Clearing a pane's history (`CSI 3 J`) clears its file a few seconds later.
+- The text is stripped of everything but colors when written and again when
+  read, and goes only into the pane's history: never to a program, agent
+  detection, or `phux wait` on the screen.
 
 ## 1Password credentials
 

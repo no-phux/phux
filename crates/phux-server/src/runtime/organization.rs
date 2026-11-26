@@ -6,6 +6,11 @@
 //! `ActivationChanged`. A live termination starts under the commit lock
 //! using the cascade checked before persistence.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "private organization modules re-export crate-scoped handlers through this facade; pub would violate unreachable_pub"
+)]
+
 use std::time::Duration;
 
 #[cfg(doc)]
@@ -13,18 +18,20 @@ use phux_protocol::wire::frame::Committed;
 use phux_protocol::wire::frame::{Command, CommandResult};
 use tokio_util::sync::CancellationToken;
 
-use crate::org_wire as ow;
 use crate::state::{ClientId, SharedState};
 
-mod effects;
-mod mutate;
+mod answer;
+pub(crate) mod effects;
+pub(in crate::runtime) mod launch_admission;
 mod read;
 mod translate;
 
-use self::effects::run_effect;
-use self::mutate::{mutate, session_kill};
+pub(crate) use self::answer::answer;
+use self::answer::lookup_creation;
+pub(crate) use self::effects::run_effect;
 use self::read::{arrangement_get, organization_page};
-use self::translate::{answer, lookup_creation, translate};
+pub(crate) use self::translate::translate;
+use crate::state::org_operation::{mutate, session_kill};
 
 /// Records per `GET_ORGANIZATION` page when the caller asks for the
 /// default.
@@ -58,19 +65,7 @@ pub(super) fn handle(
         Command::SessionKill { operation, session } => {
             session_kill(state, client_id, &operation, &session, root_token)
         }
-        other => {
-            let Some((operation, op)) = state.with(|s| translate(s, other)) else {
-                return CommandResult::error(
-                    phux_protocol::wire::frame::ErrorCode::InvalidCommand,
-                    "not an organization command",
-                );
-            };
-            let op = match op {
-                Ok(op) => op,
-                Err(refusal) => return CommandResult::Refused(ow::refusal(&refusal)),
-            };
-            mutate(state, client_id, operation, op, root_token)
-        }
+        other => mutate(state, client_id, other, root_token),
     }
 }
 

@@ -121,6 +121,8 @@ pub mod org {
     /// Whether a server stop cut the launch off before any process was
     /// recorded (`bool`).
     pub const LAUNCH_INTERRUPTED: u32 = 52;
+    /// Exact ensure result (`bool`); absent for other operations.
+    pub const ENSURED_CREATED: u32 = 53;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/organization.md`).

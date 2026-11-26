@@ -1,14 +1,14 @@
 //! Settling pending commands and spawns, and retagging inbound ids.
 
 use super::{
-    ClientId, CommandResult, Registration, RelaySession, ResourceId, SnapshotGate, SpawnResult,
-    debug, retag_spawn_result, warn,
+    ClientId, CommandResult, ErrorCode, PendingProxyRegistration, Registration, RelaySession,
+    ResourceId, SnapshotGate, SpawnResult, debug, retag_spawn_result, warn,
 };
 
 impl RelaySession {
     /// Resolve a link-side id to its consumer. An error reply rolls back the
     /// command's subscription rider.
-    pub(super) fn resolve_pending(&mut self, request_id: u32, result: CommandResult) {
+    pub(super) fn resolve_pending(&mut self, request_id: u32, mut result: CommandResult) {
         match self.pending.remove(&request_id) {
             Some(pending) => {
                 if let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(
@@ -28,10 +28,50 @@ impl RelaySession {
                         }
                     }
                 }
-                if matches!(result, CommandResult::Error { .. })
-                    && let Some((terminal, client, effect)) = pending.subscription
-                {
-                    self.roll_back_subscription(terminal, client, effect);
+                // With no rider, the attach is the hub's own ask.
+                let asked = pending.subscription.is_none();
+                if let Some(registration) = pending.subscription {
+                    let current = self.registration_is_current(&registration);
+                    if !matches!(result, CommandResult::Error { .. })
+                        && (!current
+                            || pending
+                                .owner
+                                .as_ref()
+                                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled))
+                    {
+                        result = CommandResult::error(
+                            ErrorCode::InvalidCommand,
+                            "proxy registration was withdrawn before its reply",
+                        );
+                    }
+                    if matches!(result, CommandResult::Error { .. }) {
+                        self.roll_back_registration(&registration);
+                    } else if registration.content
+                        && !pending.reply.is_closed()
+                        && let Some(journal) = &self.journal
+                    {
+                        journal.with_mut(|s| {
+                            if s.federation()
+                                .satellite_link_is_current(&self.host, self.epoch)
+                            {
+                                s.federation_mut().register_satellite_proxy_attach(
+                                    registration.client,
+                                    self.host.clone(),
+                                    registration.terminal,
+                                );
+                            }
+                        });
+                    }
+                }
+                let refused = match &result {
+                    CommandResult::Error { code, .. } => Some(*code),
+                    _ => None,
+                };
+                if let Some(terminal) = pending.attach {
+                    if asked && refused == Some(ErrorCode::TerminalNotFound) {
+                        self.asked_for_a_closed_terminal(terminal);
+                    }
+                    self.attach_answered(terminal);
                 }
                 // A dropped receiver (detached relay) is fine.
                 let _ = pending.reply.send(result);
@@ -43,6 +83,29 @@ impl RelaySession {
                     "satellite reply with no pending command; dropping"
                 );
             }
+        }
+    }
+
+    /// Whether the subscriber `registration` installed is still the one held
+    /// for its `(terminal, client)`: a newer re-attach is not its to undo.
+    pub(super) fn registration_is_current(&self, registration: &PendingProxyRegistration) -> bool {
+        self.subscribers
+            .get(&registration.terminal)
+            .is_some_and(|subs| {
+                subs.iter()
+                    .any(|sub| sub.client == registration.client && sub.seq == registration.seq)
+            })
+    }
+
+    /// Undo `registration`'s effect if it still holds; see
+    /// [`Self::registration_is_current`].
+    pub(super) fn roll_back_registration(&mut self, registration: &PendingProxyRegistration) {
+        if self.registration_is_current(registration) {
+            self.roll_back_subscription(
+                registration.terminal,
+                registration.client,
+                registration.effect,
+            );
         }
     }
 
@@ -72,23 +135,29 @@ impl RelaySession {
             // Restore `Open` after a failed upgrade, but only if this
             // command's gate is still there: a snapshot retained meanwhile
             // must stay ahead of later deltas.
-            Registration::Regated => {
+            Registration::Existing {
+                regated,
+                first_content,
+            } => {
                 if let Some(sub) = self
                     .subscribers
                     .get_mut(&terminal)
                     .and_then(|subs| subs.iter_mut().find(|s| s.client == client))
-                    && matches!(sub.gate, SnapshotGate::AwaitingFirst)
                 {
-                    sub.gate = SnapshotGate::Open;
-                    debug!(
-                        satellite = %self.host,
-                        terminal,
-                        ?client,
-                        "satellite refused the upgrade attach; re-gated stream restored to Open"
-                    );
+                    if first_content {
+                        sub.content = None;
+                    }
+                    if regated && matches!(sub.gate, SnapshotGate::AwaitingFirst) {
+                        sub.gate = SnapshotGate::Open;
+                        debug!(
+                            satellite = %self.host,
+                            terminal,
+                            ?client,
+                            "satellite refused the upgrade attach; re-gated stream restored to Open"
+                        );
+                    }
                 }
             }
-            Registration::Idempotent => {}
         }
         self.recalculate_retained_totals();
     }
