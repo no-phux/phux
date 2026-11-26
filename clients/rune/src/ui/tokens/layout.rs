@@ -199,10 +199,14 @@ pub(crate) struct Phone {
     /// The text scale from which a page's title sits on its own line under
     /// Done: the iOS accessibility sizes (`AccessibilityM` and up).
     pub(crate) stacked_title_scale: f32,
+    /// A long-press menu: about a system context menu's width, narrower on
+    /// a small phone's column.
+    pub(crate) menu_w: f32,
 }
 
 pub(crate) const PHONE: Phone = Phone {
     tab_max_w: SPACE.s16 * 2.0,
     minimap: (SPACE.s12 * 2.0, SPACE.s16),
     stacked_title_scale: 1.4,
+    menu_w: SPACE.s16 * 4.0,
 };

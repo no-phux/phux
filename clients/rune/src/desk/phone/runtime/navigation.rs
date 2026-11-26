@@ -7,6 +7,7 @@ use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 mod canvas;
 mod layout;
+mod organize;
 mod render;
 mod review;
 mod search;
@@ -138,6 +139,8 @@ fn selecting_an_empty_session_switches_the_runtime_and_clears_the_old_terminal()
     rt.update(|d, _| d.open_phone_sessions());
     settle(&mut rt);
     let _ = client.take_outbound();
+    // An empty session is quiet: it is listed by name under Quiet.
+    tap(&mut rt, "phone-quiet", 0.05);
     tap(&mut rt, "phone-session-2", 0.1);
     assert!(rt.state.phone_page().is_none());
     assert_eq!(

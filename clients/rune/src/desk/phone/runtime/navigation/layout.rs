@@ -59,6 +59,8 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_glass_dock() {
         ),
     );
     rt.set_viewport((320.0, 568.0), 2.0);
+    // Nineteen empty sessions are quiet; shown, they make the long list.
+    rt.update(|d, _| d.phone.as_mut().unwrap().quiet_shown = true);
     rt.update(|d, _| d.open_phone_sessions());
     settle(&mut rt);
     let query = element(&rt, "phone-session-query").rect;

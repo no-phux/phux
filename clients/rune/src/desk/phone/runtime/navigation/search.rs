@@ -129,7 +129,8 @@ fn session_search_clear_reopens_a_blurred_filter_and_resets_the_old_scroll() {
     assert!(rt.state.phone_keyboard_visible());
     assert!(!rt.state.phone.as_ref().unwrap().keyboard);
     let list = element(&rt, "phone-session-list");
-    let first = element(&rt, "phone-session-1");
+    // The unfiltered list leads with Needs you again, at the top.
+    let first = element(&rt, "phone-needs-you");
     let space = phux_design::tokens::SPACE;
     assert!(first.rect[1] >= list.rect[1]);
     assert!(first.rect[1] - list.rect[1] < space.s2 + space.s1 + 1.0);

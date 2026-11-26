@@ -42,6 +42,14 @@ pub struct Phone {
     pub picker: bool,
     pub page: Option<navigation::Page>,
     pub query: rune::TextEdit,
+    /// Sessions folded to their header on the Sessions page, by id.
+    pub folded: std::collections::HashSet<u32>,
+    /// The quiet sessions are unfolded under their band.
+    pub quiet_shown: bool,
+    /// The long-press menu over a Sessions row.
+    pub menu: Option<navigation::Menu>,
+    /// The navigation page's laid-out size, so a menu opens on screen.
+    pub page_size: [f32; 2],
     navigation: Option<(phux_protocol::ids::ResourceId, Option<spatial::Axis>)>,
     /// The finger on the terminal, and the coast it left behind.
     touch: Option<touch::Touch>,
@@ -72,6 +80,10 @@ impl Default for Phone {
             picker: false,
             page: None,
             query: rune::TextEdit::new(""),
+            folded: std::collections::HashSet::new(),
+            quiet_shown: false,
+            menu: None,
+            page_size: [0.0; 2],
             navigation: None,
             touch: None,
             fling: None,

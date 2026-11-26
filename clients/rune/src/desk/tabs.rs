@@ -345,11 +345,24 @@ impl Desk {
         let Some(terminal) = self.connection.shown.as_ref().map(|s| s.resource.clone()) else {
             return;
         };
+        self.close_resource(terminal);
+    }
+
+    /// Close `terminal`, shown or not, by the same rules as the focused one:
+    /// a document hides, the last terminal of a locked tab stays, and a busy
+    /// terminal asks first (`Pending::Close`).
+    pub fn close_resource(&mut self, terminal: ResourceId) {
         if self.is_document(&terminal) {
             return self.hide_documents(&[terminal]);
         }
         let last_of_locked = |tab: &Tab| tab.locked && tab.resources == [terminal.clone()];
-        if self.connection.tabs.list.iter().any(last_of_locked) {
+        let tabs = &self.connection.tabs;
+        if tabs
+            .list
+            .iter()
+            .chain(tabs.by_session.values().flatten())
+            .any(last_of_locked)
+        {
             return self.say(NoticeKind::Info, LOCKED);
         }
         if self.asks_to_close(&terminal) {

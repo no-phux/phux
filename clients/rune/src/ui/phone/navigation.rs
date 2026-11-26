@@ -9,7 +9,6 @@ use crate::ui::tokens::Voice;
 use rune::{El, Key, Tx, col, el, row, text, text_input};
 
 use super::{Desk, Look};
-use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
 use crate::ui::tokens::Paint;
 use crate::ui::{icons, pressable};
@@ -17,14 +16,16 @@ use crate::ui::{icons, pressable};
 mod actions;
 mod connections;
 mod dock;
+mod inventory;
+mod menu;
 mod resource;
 mod section;
 mod states;
 use crate::ui::Cover;
 use actions::actions;
 use connections::view as connections;
+use inventory::{matches, session_list};
 use resource::resource_row;
-use section::session_section;
 use states::empty_state;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
@@ -98,9 +99,15 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
             .on_paste(|_: &mut Desk, _, _| {})
+            .on_layout(|d: &mut Desk, rect| {
+                if let Some(phone) = &mut d.phone {
+                    phone.page_size = [rect[2], rect[3]];
+                }
+            })
             .label(title)
             .child(header)
-            .child(body.max_w(column_max())),
+            .child(body.max_w(column_max()))
+            .children(menu::view(desk, p)),
     )
 }
 
@@ -112,6 +119,17 @@ fn column_max() -> f32 {
 /// A row nested in a card: the card's radius less its inset.
 fn nested(p: &Look) -> f32 {
     (p.radius.xl - p.space.s1).max(p.radius.xs)
+}
+
+/// A grouped surface: rows on one raised card, as an inset grouped list
+/// and the Actions page draw them.
+fn card(p: &Look) -> El {
+    col()
+        .w_full()
+        .padding(p.space.s1)
+        .radius(p.radius.xl)
+        .continuous_corners()
+        .fill(p.roles.layer.raised.paint())
 }
 
 /// Two lines of text in a touch row.
@@ -312,69 +330,6 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                 )
                 .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
         )
-}
-
-/// Every query word may match a different inventory field; never screen text.
-fn matches(query: &str, fields: &[&str]) -> bool {
-    let haystack = fields.join(" ").to_lowercase();
-    query
-        .split_whitespace()
-        .all(|word| haystack.contains(&word.to_lowercase()))
-}
-
-fn resource_matches(desk: &Desk, resource: &Addressable, query: &str) -> bool {
-    let pane = desk
-        .connection
-        .topology
-        .as_ref()
-        .and_then(|t| t.pane(&resource.id));
-    let cwd = pane
-        .and_then(|pane| pane.cwd.as_deref())
-        .unwrap_or_default();
-    let agent = desk.activities.agent_name(&resource.id).unwrap_or_default();
-    matches(
-        query,
-        &[
-            &resource.session,
-            &resource.label,
-            cwd,
-            agent,
-            desk.machines.label(),
-        ],
-    )
-}
-
-fn session_list(desk: &Desk, p: &Look) -> El {
-    let query = &desk.phone.as_ref().expect("phone").query.text;
-    let all = desk.addressable();
-    // Leave room for an outside keyboard ring without restoring card insets.
-    let mut list = col().w_full().px(p.space.s1).gap(p.space.s6);
-    let mut count = 0;
-    for session in desk.ordered_sessions() {
-        let members: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
-        let filtered: Vec<_> = members
-            .iter()
-            .copied()
-            .filter(|r| resource_matches(desk, r, query))
-            .collect();
-        if !matches(query, &[&session.name, desk.machines.label()]) && filtered.is_empty() {
-            continue;
-        }
-        count += 1;
-        list = list.child(session_section(desk, session, &members, &filtered, p));
-    }
-    // Hub satellite resources aren't members of a local session, but still
-    // belong in the navigator with their host-qualified resource addresses.
-    for resource in all.iter().filter(|r| r.id.host().is_some()) {
-        if resource_matches(desk, resource, query) {
-            count += 1;
-            list = list.child(resource_row(desk, resource, p));
-        }
-    }
-    if count == 0 {
-        list = list.child(empty_state(desk, query, p));
-    }
-    other_hosts(list, desk, query, p)
 }
 
 /// An inset hairline between touch rows, starting at the text column.
