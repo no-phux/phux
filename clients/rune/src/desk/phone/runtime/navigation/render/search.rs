@@ -90,5 +90,17 @@ fn search_frames(
             size.0, size.1
         ),
     );
+    rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
+    settle_for_snapshot(&mut rt);
+    paint(
+        gpu,
+        &mut renderer,
+        &mut rt,
+        (size.0 * 2, size.1 * 2),
+        &format!(
+            "session-search-bottom-{appearance}-{text}-native-{native}-{}x{}",
+            size.0, size.1
+        ),
+    );
     no_terminal_input(&client);
 }

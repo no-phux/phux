@@ -91,7 +91,7 @@ def session_search_inventory(themes):
         f"navigation/session-search-{state}-{theme}-{text}-native-{native}-"
         f"{width}x{height}-{width * 2}.png": (width, height, 2)
         for state, theme, text, (width, height, native) in product(
-            ("matching", "no-match", "long", "blurred"), themes, ("standard", "ax5"),
+            ("matching", "no-match", "long", "blurred", "bottom"), themes, ("standard", "ax5"),
             ((320, 568, "false"), (393, 852, "false"),
              (320, 478, "true"), (393, 759, "true"),
              (320, 340, "true"), (393, 480, "true")))
