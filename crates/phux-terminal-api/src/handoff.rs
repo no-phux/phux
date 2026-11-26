@@ -38,4 +38,32 @@ pub struct ProcessHandoff {
     pub vt_replay_bytes: Vec<u8>,
     /// Replayable history that precedes the viewport, or empty.
     pub scrollback_bytes: Vec<u8>,
+    /// The pane's OSC 7577 token, so a report after the upgrade still verifies.
+    /// [`Debug`] prints only that a token is present.
+    pub program_resume_token: Option<RedactedToken>,
+}
+
+/// A token that debug output never shows. Serialized only inside the upgrade blob.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct RedactedToken(String);
+
+impl RedactedToken {
+    /// Wrap `token`.
+    #[must_use]
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// Borrow the token. Callers must not log it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RedactedToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedactedToken([redacted])")
+    }
 }

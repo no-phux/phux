@@ -40,6 +40,7 @@ pub(super) fn no_pty_handoff() -> ProcessHandoff {
         cwd: None,
         vt_replay_bytes: Vec::new(),
         scrollback_bytes: Vec::new(),
+        program_resume_token: None,
     }
 }
 

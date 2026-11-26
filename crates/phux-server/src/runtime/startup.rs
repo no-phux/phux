@@ -157,6 +157,7 @@ pub(in crate::runtime) fn open_org_store(
             let org = crate::state::fresh_org(instance, crate::state::now_stamp());
             s.install_org(store, org, false);
         }
+        crate::runtime::apps::terminal::program_resume::publish_program_resumes(s);
         Ok(())
     })?;
     if let Some(path) = location_path(location) {

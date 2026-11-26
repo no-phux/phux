@@ -130,6 +130,10 @@ impl TerminalActor {
             cwd,
             vt_replay_bytes: snap.bytes,
             scrollback_bytes: snap.scrollback,
+            program_resume_token: self
+                .program_resume
+                .token()
+                .map(phux_terminal_api::handoff::RedactedToken::new),
         });
     }
 

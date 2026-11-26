@@ -111,6 +111,24 @@ impl TerminalProcess {
         }
         while self.input_rx.try_recv().is_ok() {}
     }
+
+    /// Whether the tty's foreground process is a same-uid direct child of this pane's shell.
+    pub(super) fn reporter_trusted(&self) -> bool {
+        let Some(pty) = self.pty.as_ref() else {
+            return false;
+        };
+        let Some(shell) = pty
+            .child
+            .process_id()
+            .and_then(|pid| i32::try_from(pid).ok())
+        else {
+            return false;
+        };
+        let Some(master) = pty.master.lock().ok().and_then(|master| master.as_raw_fd()) else {
+            return false;
+        };
+        super::program_resume::reporter_trusted(shell, master)
+    }
 }
 
 mod input;

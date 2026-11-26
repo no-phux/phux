@@ -198,6 +198,7 @@ fn pane_blob(
         retain_secs,
         asked: None,
         key: None,
+        program_resume_token: None,
     }
 }
 
