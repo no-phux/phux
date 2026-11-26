@@ -4,6 +4,7 @@
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 
+use phux_protocol::wire::{RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport};
 use phux_server::{ServerConfig, ServerEnv};
 use tokio::sync::oneshot;
 
@@ -45,11 +46,6 @@ impl QuicServer {
         } else {
             phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("cert");
         }
-        // The runtime's reconnect ladder covers the listener's startup, so a
-        // reserved-then-released port is enough; no readiness probe needed.
-        let addr = UdpSocket::bind("127.0.0.1:0")
-            .and_then(|socket| socket.local_addr())
-            .expect("reserve a loopback UDP port");
         let mut config = ServerConfig {
             socket_path: dir.path().join("phux.sock"),
             pre_seeded_session: Some(SESSION.to_owned()),
@@ -63,6 +59,14 @@ impl QuicServer {
             ..ServerConfig::with_default_socket()
         };
         phux_server_testkit::embedder::embed_owner_engine(&mut config);
+        Self::spawn(config, dir)
+    }
+
+    /// The server owns its ephemeral port before a client sees the endpoint.
+    /// Binding is acknowledged, not completion of session seeding.
+    fn spawn(config: ServerConfig, dir: tempfile::TempDir) -> Self {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (shutdown, stopped) = oneshot::channel::<()>();
         let thread = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -72,6 +76,9 @@ impl QuicServer {
             tokio::task::LocalSet::new().block_on(&runtime, async move {
                 phux_server_testkit::terminal_server(config)
                     .listen_quic(addr)
+                    .on_listening(move |report| {
+                        let _ = ready_tx.send(report.clone());
+                    })
                     .run_async(async move {
                         let _ = stopped.await;
                     })
@@ -79,12 +86,19 @@ impl QuicServer {
                     .expect("server run");
             });
         });
-        Self {
+        // Own cleanup before receiving or validating: failed startup still
+        // signals shutdown and joins before removing the state directory.
+        let mut server = Self {
             addr,
             shutdown: Some(shutdown),
             thread: Some(thread),
             dir,
-        }
+        };
+        let report = ready_rx
+            .recv_timeout(DEADLINE)
+            .expect("listener bind report");
+        server.addr = bound_quic(&report).expect("bound QUIC loopback endpoint");
+        server
     }
 
     pub(super) fn cert(&self) -> std::path::PathBuf {
@@ -109,9 +123,6 @@ impl QuicServer {
         let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
         phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
             .expect("cert");
-        let addr = UdpSocket::bind("127.0.0.1:0")
-            .and_then(|socket| socket.local_addr())
-            .expect("reserve a loopback UDP port");
         let config = ServerConfig {
             socket_path: dir.path().join("phux.sock"),
             pre_seeded_session: Some(SESSION.to_owned()),
@@ -128,31 +139,80 @@ impl QuicServer {
             },
             ..ServerConfig::with_default_socket()
         };
-        let (shutdown, stopped) = oneshot::channel::<()>();
-        let thread = thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            tokio::task::LocalSet::new().block_on(&runtime, async move {
-                phux_server_testkit::terminal_server(config)
-                    .listen_quic(addr)
-                    .run_async(async move {
-                        let _ = stopped.await;
-                    })
-                    .await
-                    .expect("server run");
-            });
-        });
-        (
-            Self {
-                addr,
-                shutdown: Some(shutdown),
-                thread: Some(thread),
-                dir,
-            },
-            paths,
-        )
+        (Self::spawn(config, dir), paths)
+    }
+}
+
+fn listener_bound(slot: &RemoteListenerSlot) -> bool {
+    slot.expected && slot.bound && slot.disabled_reason.is_none() && slot.waiting.is_none()
+}
+
+fn bound_quic(report: &RemoteListenersReport) -> Result<SocketAddr, String> {
+    let invalid = || format!("QUIC listener did not bind an actual loopback endpoint: {report:?}");
+    let slot = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == RemoteListenerTransport::Quic)
+        .ok_or_else(invalid)?;
+    if !listener_bound(slot) {
+        return Err(invalid());
+    }
+    let addr: SocketAddr = slot
+        .addr
+        .as_ref()
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    if addr.ip() != std::net::Ipv4Addr::LOCALHOST || addr.port() == 0 {
+        return Err(invalid());
+    }
+    Ok(addr)
+}
+
+#[test]
+fn listener_reports_require_a_bound_nonzero_ipv4_loopback_endpoint() {
+    use phux_protocol::wire::ListenerDisabledReason;
+    let slot = RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "127.0.0.1:4321");
+    let report = |slot| RemoteListenersReport::new().with_listeners(vec![slot]);
+    assert_eq!(
+        bound_quic(&report(slot.clone())).unwrap(),
+        "127.0.0.1:4321".parse().unwrap()
+    );
+    assert!(bound_quic(&RemoteListenersReport::new()).is_err());
+    let mut missing = slot.clone();
+    missing.addr = None;
+    let mut unexpected = slot;
+    unexpected.expected = false;
+    let rejected = [
+        missing,
+        unexpected,
+        RemoteListenerSlot::disabled(
+            RemoteListenerTransport::Quic,
+            None,
+            ListenerDisabledReason::BindFailed,
+        ),
+        RemoteListenerSlot::waiting(RemoteListenerTransport::Quic, "127.0.0.1:4321", "occupied"),
+        RemoteListenerSlot::bound(RemoteListenerTransport::Wss, "127.0.0.1:4321"),
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "not an address"),
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "127.0.0.1:0"),
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "192.0.2.1:4321"),
+        RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "[::1]:4321"),
+    ];
+    for slot in rejected {
+        assert!(bound_quic(&report(slot)).is_err());
+    }
+}
+
+#[test]
+fn constructors_return_listener_owned_ports() {
+    for server in [
+        QuicServer::start(),
+        QuicServer::start_with(true),
+        QuicServer::start_paired().0,
+    ] {
+        assert_ne!(server.addr.port(), 0);
+        let error = UdpSocket::bind(server.addr).expect_err("the server owns the port");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     }
 }
 
