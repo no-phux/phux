@@ -347,6 +347,17 @@ pub unsafe extern "C" fn phux_rune_ios_press(pointer: *mut c_void, id: *const c_
     })
 }
 
+/// The native long-press menu picked verb `id`: true when it named one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_menu_pick(pointer: *mut c_void, id: *const c_char) -> bool {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        Ok(mobile::menu_pick(host.layer.runtime_mut(), unsafe {
+            text(id)?
+        }))
+    })
+}
+
 /// A tapped card, widget or Dynamic Island: true when the link was one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_open_link(pointer: *mut c_void, url: *const c_char) -> bool {

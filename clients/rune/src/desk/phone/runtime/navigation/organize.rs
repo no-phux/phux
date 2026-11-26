@@ -367,3 +367,49 @@ fn a_session_menu_starts_a_pane_in_that_session() {
         "in the session's folder: {spawn}"
     );
 }
+
+#[test]
+fn the_native_host_opens_the_systems_menu_once_and_runs_its_pick() {
+    let (_, mut rt) = fixture();
+    detailed_inventory(&mut rt);
+    keyed(&mut rt);
+    rt.update(|d, _| d.native = Some(crate::mobile::Platform::test()));
+    open(&mut rt);
+    let _ = crate::mobile::take_requests(&mut rt);
+    hold(&mut rt, "phone-session-2", 0.1);
+    assert_eq!(menu(&rt), Some(Held::Session(2)));
+    assert!(rt.find("phone-menu").is_none(), "Rune draws no menu there");
+    let asked = crate::mobile::take_requests(&mut rt);
+    let ask = &asked["menu"];
+    assert!(ask["title"].as_str().unwrap().starts_with("api"), "{asked}");
+    let (row, _) = rt.presented("phone-session-2").unwrap();
+    let rect: Vec<f32> = ask["rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect();
+    assert_eq!(rect, row, "it opens from the held row");
+    let items = ask["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["open", "new-pane", "fold", "rename", "close"]);
+    assert!(items.iter().all(|i| i["symbol"].as_str().is_some()));
+    let destructive: Vec<bool> = items.iter().map(|i| i["destructive"] == true).collect();
+    assert_eq!(destructive, [false, false, false, false, true]);
+    assert_eq!(
+        crate::mobile::take_requests(&mut rt)["menu"],
+        serde_json::Value::Null,
+        "asked once"
+    );
+    // UIKit may run the pick after its menu has gone; it still lands.
+    assert!(!crate::mobile::menu_pick(&mut rt, "explode"));
+    assert!(crate::mobile::menu_pick(&mut rt, "fold"));
+    settle(&mut rt);
+    assert!(rt.state.phone.as_ref().unwrap().folded.contains(&2));
+    assert_eq!(menu(&rt), None);
+    // A menu UIKit dismissed leaves Escape to close the page.
+    hold(&mut rt, "phone-session-2", 2.0);
+    rt.key(crate::keys::plain(Key::Escape));
+    settle(&mut rt);
+    assert_eq!(rt.state.phone_page(), None);
+}
