@@ -142,12 +142,12 @@ fn kill_window_kills_terminals_and_only_closes_placeholder_views() {
     let confirm = crate::attach::input_dispatch::run_action::kill_window_confirm(&f.ctx())
         .expect("a terminal to end");
     assert_eq!(confirm.lines(), ["End 1 terminal in this tab."]);
-    let InputEvent::Key(enter) = press(PhysicalKey::Enter, None) else {
+    let InputEvent::Key(yes) = press(PhysicalKey::Y, None) else {
         unreachable!("press builds a key");
     };
-    let crate::render::overlay::OverlayOutcome::RunAction(commit) = f.overlays.handle_key(&enter)
+    let crate::render::overlay::OverlayOutcome::RunAction(commit) = f.overlays.handle_key(&yes)
     else {
-        panic!("Enter commits");
+        panic!("explicit confirmation commits");
     };
     let effects = f.run(&commit);
     let killed: Vec<_> = effects.kill_requests.iter().map(|(_, id)| id.clone()).collect();

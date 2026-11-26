@@ -4,13 +4,11 @@
 
 use phux_config::keybind::ResolvedAction;
 use phux_protocol::ids::{AuthorityId, SessionKey};
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::OrgFilter;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::attach::connection::Connection;
-use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectItem, SelectList, ToastOverlay};
-use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::Theme;
+use crate::render::overlay::{ConfirmOverlay, SelectItem, SelectList, ToastOverlay};
 
 use super::args::{session_id_arg, str_arg};
 use super::ctx::DispatchCtx;
@@ -128,7 +126,7 @@ fn notice(ctx: &mut DispatchCtx<'_>, title: &str, lines: Vec<String>) {
 
 enum Management {
     /// Boxed: the confirmation carries a whole theme.
-    Confirm(Box<SessionConfirm>),
+    Confirm(Box<ConfirmOverlay>),
     Result(Vec<String>),
 }
 
@@ -250,44 +248,14 @@ fn confirmation(
         ]
     };
     lines.extend(view.degradation.notices().iter().cloned());
-    let (title, keys) = if deleting {
-        ("Delete empty session?", "⏎ delete · esc")
+    let (title, verb) = if deleting {
+        ("Delete empty session?", "Delete session")
     } else {
-        ("Kill session?", "⏎ kill · esc")
+        ("Kill session?", "Kill session")
     };
-    Management::Confirm(Box::new(SessionConfirm {
-        notice: ToastOverlay::new(title, lines, theme).with_keys(keys),
-        action,
-    }))
-}
-
-/// Unlike a dismiss-on-any-key toast, only an unmodified confirmation press
-/// can commit this pinned operation. Resize reflows the same target, not focus.
-struct SessionConfirm {
-    notice: ToastOverlay,
-    action: ResolvedAction,
-}
-
-impl RenderOverlay for SessionConfirm {
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        self.notice.render(area, buf);
-    }
-    fn bounds(&self, area: Rect) -> Option<Rect> {
-        self.notice.bounds(area)
-    }
-    fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
-        self.notice.set_breakpoints(bp);
-    }
-    fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
-        if key.action != KeyAction::Press || key.mods != ModSet::empty() {
-            return OverlayCommand::Stay;
-        }
-        match key.key {
-            PhysicalKey::Enter | PhysicalKey::Y => OverlayCommand::Commit(self.action.clone()),
-            PhysicalKey::Escape | PhysicalKey::N => OverlayCommand::Dismiss,
-            _ => OverlayCommand::Stay,
-        }
-    }
+    Management::Confirm(Box::new(ConfirmOverlay::destructive_action(
+        title, verb, lines, action, theme,
+    )))
 }
 
 #[cfg(test)]

@@ -16,9 +16,9 @@ fn kill_pane_confirms_then_kills_the_named_terminal() {
     assert!(f.overlays.is_active(), "the confirm is up");
     let crate::render::overlay::OverlayOutcome::RunAction(commit) = f
         .overlays
-        .handle_key(&press_key(phux_protocol::input::key::PhysicalKey::Enter))
+        .handle_key(&press_key(phux_protocol::input::key::PhysicalKey::Y))
     else {
-        panic!("Enter commits");
+        panic!("explicit confirmation commits");
     };
     assert_eq!(commit.action, "kill-pane");
     f.workspace.groups[0].state.focus = Some(tid(2));
@@ -49,9 +49,9 @@ fn kill_window_confirms_then_kills_exactly_the_named_terminals() {
     assert!(f.overlays.is_active(), "the confirm is up");
     let crate::render::overlay::OverlayOutcome::RunAction(commit) = f
         .overlays
-        .handle_key(&press_key(phux_protocol::input::key::PhysicalKey::Enter))
+        .handle_key(&press_key(phux_protocol::input::key::PhysicalKey::Y))
     else {
-        panic!("Enter commits");
+        panic!("explicit confirmation commits");
     };
     assert!(!f.overlays.is_active());
     // A pane added after the confirm opened is not in the committed set.
@@ -75,6 +75,7 @@ fn kill_window_confirms_then_kills_exactly_the_named_terminals() {
 #[test]
 fn kill_window_cancel_kills_nothing() {
     for key in [
+        phux_protocol::input::key::PhysicalKey::Enter,
         phux_protocol::input::key::PhysicalKey::Escape,
         phux_protocol::input::key::PhysicalKey::N,
     ] {

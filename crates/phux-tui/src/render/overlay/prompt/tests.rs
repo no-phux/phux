@@ -52,11 +52,11 @@ fn the_buttons_name_the_verb_and_the_placeholder_shows_while_empty() {
     assert!(rendered(&PromptOverlay::rename_session("a", &theme)).contains("Rename"));
     let fresh = rendered(&PromptOverlay::new_session(&theme));
     assert!(fresh.contains("Create"), "{fresh}");
-    assert!(fresh.contains("a name for it"), "placeholder:\n{fresh}");
+    assert!(fresh.contains("Session name"), "placeholder:\n{fresh}");
     let mut typed = PromptOverlay::new_session(&theme);
     typ(&mut typed, 'x');
     assert!(
-        !rendered(&typed).contains("a name for it"),
+        !rendered(&typed).contains("Session name"),
         "the placeholder goes with the first character"
     );
 }
@@ -167,10 +167,9 @@ fn edits_respect_char_boundaries() {
     );
 }
 
-/// Backspace edits; Esc, an empty Enter, and an Enter after only
-/// control text (which never enters the buffer) all cancel.
+/// Backspace edits, Esc cancels, and a blank submission keeps the field open.
 #[test]
-fn backspace_edits_and_empty_or_escape_cancels() {
+fn backspace_edits_and_blank_submission_can_be_corrected() {
     let mut p = PromptOverlay::rename_window("ab", &Theme::default());
     assert_eq!(
         p.handle_key(&press(PhysicalKey::Backspace, None)),
@@ -183,15 +182,31 @@ fn backspace_edits_and_empty_or_escape_cancels() {
 
     let theme = Theme::default();
     let mut escaped = PromptOverlay::rename_window("x", &theme);
+    let mut composing = press(PhysicalKey::Escape, None);
+    composing.composing = true;
+    assert_eq!(escaped.handle_key(&composing), OverlayCommand::Stay);
     assert_eq!(
         escaped.handle_key(&press(PhysicalKey::Escape, None)),
         OverlayCommand::Dismiss
     );
     let mut empty = PromptOverlay::rename_window("", &theme);
+    let area = Rect::new(0, 0, 24, 10);
+    let before = empty.bounds(area);
     assert_eq!(typ(&mut empty, '\t'), OverlayCommand::Stay);
+    empty.handle_paste("  ");
     assert_eq!(
         empty.handle_key(&press(PhysicalKey::Enter, None)),
-        OverlayCommand::Dismiss
+        OverlayCommand::Stay
+    );
+    let error = rendered(&empty, area.width, area.height);
+    assert!(error.contains("Enter a name."), "{error}");
+    assert_eq!(empty.bounds(area), before, "the field and buttons stay put");
+    empty.handle_key(&key_event(PhysicalKey::U, ModSet::CTRL, None));
+    empty.handle_paste("build");
+    assert!(!rendered(&empty, 24, 10).contains("Enter a name."));
+    assert_eq!(
+        committed_name(&mut empty),
+        Some(toml::Value::String("build".to_owned()))
     );
 }
 
@@ -292,6 +307,17 @@ fn clicking_the_buttons_presses_them_and_clicking_the_field_moves_the_cursor() {
     let mut p = PromptOverlay::rename_window("build", &Theme::default());
     let at = find(&painted(&p), "Cancel").expect("the cancel button");
     assert_eq!(click(&mut p, (at.0 + 1, at.1)), OverlayCommand::Dismiss);
+
+    // A blank submission by mouse puts keyboard focus back in the field.
+    let mut p = PromptOverlay::new_session(&Theme::default());
+    let at = find(&painted(&p), "Create").expect("the create button");
+    assert_eq!(click(&mut p, (at.0 + 1, at.1)), OverlayCommand::Stay);
+    assert!(rendered(&p, area.width, area.height).contains("Enter a name."));
+    typ(&mut p, 'x');
+    assert_eq!(
+        committed_name(&mut p),
+        Some(toml::Value::String("x".to_owned()))
+    );
 
     // A click before the `u` puts the cursor there: typing lands in it.
     let mut p = PromptOverlay::rename_window("build", &Theme::default());

@@ -23,8 +23,7 @@ pub struct ToastOverlay {
     /// Snapshotted (copied) at construction so the overlay stays `'static`.
     theme: Theme,
     passthrough: bool,
-    /// The border's key legend in place of `any key` (a confirm's
-    /// `⏎ kill · esc`); `None` keeps the default.
+    /// A custom key legend for a notice that does not dismiss on any key.
     keys: Option<&'static str>,
     /// The request a placeholder awaits; only Escape dismisses one.
     pending: Option<u32>,
@@ -69,8 +68,7 @@ impl ToastOverlay {
         }
     }
 
-    /// Show `keys` in the border instead of `any key`, for a caller that
-    /// takes only some keys (a confirm).
+    /// Show `keys` in the border instead of `any key`.
     #[must_use]
     pub const fn with_keys(mut self, keys: &'static str) -> Self {
         self.keys = Some(keys);

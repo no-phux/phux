@@ -4,16 +4,45 @@
 //! overlay stays `'static`), plus shared geometry and scrollbar helpers.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
+use ratcn::{Button, Dialog};
 
 use crate::render::{ChromeBreakpoints, Theme, clip_text, display_width};
 
 /// Horizontal inner padding of a floating modal, in cells. Text never sits
 /// flush against the border.
 pub const MODAL_PAD: u16 = 1;
+
+/// Prefer whole buttons on separate rows when the normal dialog footer
+/// (one padding cell and border per side, two cells between actions) cannot fit.
+pub(super) fn stack_dialog_actions(width: u16, cancel: &str, accept: &str) -> bool {
+    let cancel = Button::<()>::new(cancel).width();
+    let accept = Button::<()>::new(accept).width();
+    cancel.saturating_add(accept).saturating_add(2) > width.saturating_sub(4)
+}
+
+pub(super) fn dialog_actions<S: 'static, M: 'static>(
+    dialog: Dialog<S, M>,
+    cancel: (&'static str, Button<M>),
+    accept: (&'static str, Button<M>),
+    stacked: bool,
+) -> Dialog<S, M> {
+    let (cancel_id, cancel) = cancel;
+    let (accept_id, accept) = accept;
+    if !stacked {
+        return dialog.action(cancel_id, cancel).action(accept_id, accept);
+    }
+    dialog.footer(2, move |ctx| {
+        let area = ctx.area();
+        let [first, second] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+        ctx.component(cancel_id, cancel, first);
+        ctx.component(accept_id, accept, second);
+    })
+}
 
 /// Interior text width of a modal: two border columns plus [`MODAL_PAD`]
 /// on each side.

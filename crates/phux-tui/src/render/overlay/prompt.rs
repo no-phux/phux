@@ -1,10 +1,9 @@
 //! Prompt overlay: a ratcn [`Input`] in a [`Dialog`], committing
 //! `action { arg_key: <text> }`.
 //!
-//! Enter in the field (or on the verb button) commits; an empty field
-//! cancels instead of committing a blank name. Esc, `Cancel`, and an empty
-//! commit dismiss. Tab moves between the field and the buttons, and the
-//! mouse clicks either.
+//! Enter in the field (or on the verb button) commits. A blank field keeps
+//! the dialog open with an inline error. Esc and `Cancel` dismiss. Tab is
+//! inert so shell habit cannot move focus onto Cancel before Enter.
 //!
 //! The field keeps the readline set (`C-a`/`C-e`/`C-b`/`C-f`, `C-h`/`C-d`,
 //! `C-k`, `C-w`), and the two edits ratcn's editor leaves out are made here:
@@ -18,29 +17,33 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::MouseEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, Ratcn};
 use ratcn::text_edit::Editor;
 use ratcn::{Button, Dialog, Input, InputState};
 
-use super::widgets::centered_panel;
+use super::widgets::{centered_panel, dialog_actions, stack_dialog_actions};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::kit::{self, Surface};
-use crate::render::{ChromeBreakpoints, Theme};
+use crate::render::{ChromeBreakpoints, Theme, clip_text};
 
 const DIALOG: &str = "prompt";
 const INPUT: &str = "input";
 const CANCEL: &str = "cancel";
 const COMMIT: &str = "commit";
+const CANCEL_LABEL: &str = "Cancel";
 
 /// Rows a one-field ratcn dialog takes: border and padding above and
-/// below, the field, the gap row, and the button row.
-const PROMPT_ROWS: u16 = 2 + 2 + 1 + 1 + 1;
+/// below, the field, its validation row, the gap, and the button row.
+const PROMPT_ROWS: u16 = 2 + 2 + 2 + 1 + 1;
 
 /// What the prompt's ratcn surface tracks between frames.
 #[derive(Debug)]
 struct Model {
     focus: FocusState,
     input: InputState,
+    submitted: bool,
 }
 
 /// What the field, the buttons, and focus traversal ask for.
@@ -105,6 +108,7 @@ impl PromptOverlay {
             model: Model {
                 focus: FocusState::intent([DIALOG, INPUT]),
                 input: selected(initial),
+                submitted: false,
             },
             ui: Surface::new(runtime),
             outer: Cell::new(Rect::new(0, 0, 80, 24)),
@@ -117,7 +121,7 @@ impl PromptOverlay {
     pub fn rename_window(current_name: &str, theme: &Theme) -> Self {
         Self {
             verb: "Rename",
-            placeholder: "a name for it",
+            placeholder: "Tab name",
             ..Self::new("Rename tab", "rename-window", "name", current_name, theme)
         }
     }
@@ -127,6 +131,7 @@ impl PromptOverlay {
     pub fn rename_session(current_name: &str, theme: &Theme) -> Self {
         Self {
             verb: "Rename",
+            placeholder: "Session name",
             ..Self::new(
                 "Rename session",
                 "rename-session",
@@ -142,7 +147,7 @@ impl PromptOverlay {
     pub fn new_session(theme: &Theme) -> Self {
         Self {
             verb: "Create",
-            placeholder: "a name for it",
+            placeholder: "Session name",
             ..Self::new("New session", "new-session", "name", "", theme)
         }
     }
@@ -152,8 +157,8 @@ impl PromptOverlay {
     pub fn popup(theme: &Theme) -> Self {
         Self {
             verb: "Run",
-            placeholder: "a command",
-            ..Self::new("Popup", "popup", "command", "", theme)
+            placeholder: "Shell command",
+            ..Self::new("Run command in popup", "popup", "command", "", theme)
         }
     }
 
@@ -163,24 +168,38 @@ impl PromptOverlay {
     pub fn new_worktree(theme: &Theme) -> Self {
         Self {
             verb: "Create",
-            placeholder: "a branch name",
+            placeholder: "Branch name",
             ..Self::new("New worktree", "new-worktree", "branch", "", theme)
         }
     }
 
-    /// The commit for the current text, or a dismissal when it is blank.
-    fn submit(&self) -> OverlayCommand {
+    /// Reject a blank submission in place, putting the caret back in the field.
+    fn submit(&mut self) -> OverlayCommand {
         let text = self.model.input.value();
         if text.trim().is_empty() {
-            return OverlayCommand::Dismiss;
+            self.model.submitted = true;
+            self.model.focus = FocusState::intent([DIALOG, INPUT]);
+            return OverlayCommand::Stay;
         }
         let args = BTreeMap::from([(self.arg_key.clone(), toml::Value::String(text.to_owned()))]);
         OverlayCommand::Commit(crate::attach::resolved(&self.action, args))
     }
 
+    fn validation_message(&self) -> Option<&'static str> {
+        (self.model.submitted && self.model.input.value().trim().is_empty()).then_some({
+            match self.arg_key.as_str() {
+                "name" => "Enter a name.",
+                "branch" => "Enter a branch name.",
+                "command" => "Enter a command.",
+                _ => "Enter a value.",
+            }
+        })
+    }
+
     fn modal_area(&self, outer: Rect) -> Rect {
         let wide = centered_panel(outer, 5, 40, PROMPT_ROWS, self.breakpoints);
-        let h = PROMPT_ROWS.min(outer.height);
+        let stacked = stack_dialog_actions(wide.width, CANCEL_LABEL, self.verb);
+        let h = (PROMPT_ROWS + u16::from(stacked)).min(outer.height);
         let y = outer.y + (outer.height.saturating_sub(h)) / 2;
         Rect::new(wide.x, y, wide.width, h)
     }
@@ -190,13 +209,16 @@ impl PromptOverlay {
         let title = self.title.clone();
         let placeholder = self.placeholder;
         let verb = self.verb;
+        let stacked = stack_dialog_actions(area.width, CANCEL_LABEL, verb);
+        let error = self.validation_message();
+        let error_style = Style::default().fg(self.theme.error);
         move |ctx| {
             let dialog = Dialog::new()
                 .title(title.clone())
                 .outer_width(area.width)
                 .outer_height(area.height)
                 .on_dismiss(|| Msg::Cancel)
-                .content(1, move |ctx| {
+                .content(2, move |ctx| {
                     let row = ctx.area();
                     // A viewport too short for the field: ratcn's input writes its
                     // placeholder without clipping, so declare nothing.
@@ -208,12 +230,17 @@ impl PromptOverlay {
                         .placeholder(placeholder)
                         .on_submit(|| Msg::Submit);
                     ctx.component(INPUT, field, Rect::new(row.x, row.y, row.width, 1));
-                })
-                .action(
-                    CANCEL,
-                    Button::new("Cancel").secondary().on_press(|| Msg::Cancel),
-                )
-                .action(COMMIT, Button::new(verb).on_press(|| Msg::Submit));
+                    if let Some(error) = error.filter(|_| row.height > 1) {
+                        let label = clip_text(error, usize::from(row.width));
+                        let validation = Rect::new(row.x, row.y + 1, row.width, 1);
+                        ctx.paint_widget(Line::styled(label, error_style), validation);
+                    }
+                });
+            let cancel = Button::new(CANCEL_LABEL)
+                .secondary()
+                .on_press(|| Msg::Cancel);
+            let commit = Button::new(verb).on_press(|| Msg::Submit);
+            let dialog = dialog_actions(dialog, (CANCEL, cancel), (COMMIT, commit), stacked);
             ctx.component(DIALOG, dialog, area);
         }
     }
@@ -330,9 +357,12 @@ impl RenderOverlay for PromptOverlay {
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
-        // Press-only; ignore release/repeat so a held key doesn't double.
-        if key.action != KeyAction::Press {
+        // A held key cannot double-submit, and composition belongs to the IME.
+        if key.action != KeyAction::Press || key.composing {
             return OverlayCommand::Stay;
+        }
+        if key.key == PhysicalKey::Escape {
+            return OverlayCommand::Dismiss;
         }
         // Tab stays inert, as it always was: focus never leaves the field by
         // keyboard, so a Tab pressed out of shell habit cannot turn the
