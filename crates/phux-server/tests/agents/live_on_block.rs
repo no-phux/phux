@@ -80,7 +80,8 @@ fn an_absent_phone_hears_the_counts_when_an_agent_blocks() {
         }
         assert_eq!(body["waiting"], 1, "{body}");
         assert_eq!(body["schema_version"], 1, "{body}");
-        let fields: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+        let mut fields: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+        fields.sort();
         assert_eq!(
             fields,
             ["host", "schema_version", "waiting", "working"],
