@@ -5,6 +5,50 @@ import Security
 enum HostSettings {
     static let service = "sh.phux.rune.ios"
     private static let nameKey = "paired-computer-name"
+    private static let computersKey = "paired-computers"
+
+    /// Every paired computer's public values and "name", most recently
+    /// paired first. "remote-host" is the one this phone opens; each token
+    /// stays in the Keychain under its endpoint.
+    static var computers: [[String: Any]] {
+        if let list = UserDefaults.standard.array(forKey: computersKey) as? [[String: Any]] { return list }
+        // Saved before the app kept more than one computer.
+        guard var current = UserDefaults.standard.dictionary(forKey: "remote-host"),
+              current["endpoint"] is String else { return [] }
+        current["name"] = UserDefaults.standard.string(forKey: nameKey)
+        return [current]
+    }
+    static var currentEndpoint: String? {
+        UserDefaults.standard.dictionary(forKey: "remote-host")?["endpoint"] as? String
+    }
+    static func label(_ computer: [String: Any]) -> String {
+        computer["name"] as? String ?? URLComponents(string: computer["endpoint"] as? String ?? "")?.host ?? "A computer"
+    }
+
+    /// Open a computer paired earlier: no pairing again, its token is kept.
+    static func select(_ endpoint: String) throws -> [String: Any]? {
+        guard var computer = computers.first(where: { $0["endpoint"] as? String == endpoint }) else { return nil }
+        if let name = computer.removeValue(forKey: "name") as? String { UserDefaults.standard.set(name, forKey: nameKey) }
+        else { UserDefaults.standard.removeObject(forKey: nameKey) }
+        UserDefaults.standard.set(computer, forKey: "remote-host")
+        return try load()
+    }
+
+    /// Forget a computer this phone does not have open: its token and,
+    /// unless another computer shares it, its device key.
+    static func forget(_ endpoint: String) throws {
+        guard endpoint != currentEndpoint else { return }
+        let list = computers
+        let others = list.filter { $0["endpoint"] as? String != endpoint }
+        UserDefaults.standard.set(others, forKey: computersKey)
+        if let gone = list.first(where: { $0["endpoint"] as? String == endpoint }), let keyID = gone["key_id"] as? String,
+           !others.contains(where: { $0["key_id"] as? String == keyID }) {
+            // A key the Keychain kept is retried when the app becomes active.
+            do { try NativeIdentity.discard(configuration: gone) }
+            catch { NSLog("Device key cleanup deferred: %@", error.localizedDescription) }
+        }
+        try removeToken(endpoint)
+    }
 
     /// What the person calls the saved computer. Kept beside the saved
     /// configuration, never inside it: the shared parser rejects unknown fields.
@@ -55,17 +99,24 @@ enum HostSettings {
         } else if status != errSecSuccess {
             throw NativeFailure.message("Could not update the pairing credential (Keychain \(status)).")
         }
+        // A token saved again must not be retired by an older cleanup.
+        let pending = UserDefaults.standard.stringArray(forKey:"pending-token-cleanup") ?? []
+        UserDefaults.standard.set(pending.filter { $0 != endpoint },forKey:"pending-token-cleanup")
         let publicKeys = ["endpoint", "certificate_pin", "authority_ca", "chain_pem", "key_id", "session", "tls_server_name"]
         let publicValues = values.filter { publicKeys.contains($0.key) }
+        var list = computers
+        let known = list.first { $0["endpoint"] as? String == endpoint }
         UserDefaults.standard.set(publicValues,forKey:"remote-host")
         // A name describes one computer; never let it outlive a change of host.
         if let name, !name.isEmpty { UserDefaults.standard.set(String(name.prefix(128)), forKey: nameKey) }
-        else if previous != endpoint { UserDefaults.standard.removeObject(forKey: nameKey) }
-        // Commit the new working credential before retiring the previous one.
-        if let previous, previous != endpoint {
-            do { try removeToken(previous) }
-            catch { NSLog("Previous token cleanup deferred: %@",error.localizedDescription) }
+        else if previous != endpoint {
+            if let name = known?["name"] as? String { UserDefaults.standard.set(name, forKey: nameKey) }
+            else { UserDefaults.standard.removeObject(forKey: nameKey) }
         }
+        var entry = publicValues
+        entry["name"] = UserDefaults.standard.string(forKey: nameKey)
+        list.removeAll { $0["endpoint"] as? String == endpoint }
+        UserDefaults.standard.set([entry] + list, forKey: computersKey)
     }
 
     private static func removeToken(_ endpoint:String) throws {
@@ -77,7 +128,7 @@ enum HostSettings {
         if removed { pending.remove(endpoint) } else { pending.insert(endpoint) }
         UserDefaults.standard.set(Array(pending),forKey:"pending-token-cleanup")
         guard removed else {
-            throw NativeFailure.message("New computer saved, but could not remove the previous pairing token (Keychain \(status)); cleanup will retry when the app becomes active.")
+            throw NativeFailure.message("Could not remove the computer's pairing token (Keychain \(status)); cleanup will retry when the app becomes active.")
         }
     }
 

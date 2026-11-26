@@ -10,8 +10,10 @@ final class OnboardingController: UITableViewController {
     var connected: (([String: Any]) -> Void)?
     var closed: (() -> Void)?
     private let saved: [String: Any]?
-    /// The computer this phone already opens; pairing another replaces it.
+    /// The computer this phone already opens.
     private let current: String?
+    /// Every paired computer; tapping one opens it without pairing again.
+    private var computers = HostSettings.computers
     let flow: PairingFlow
     private var camera: Task<Void, Never>?
     private var displayed = Screen.choices
@@ -94,7 +96,7 @@ final class OnboardingController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch screen {
-        case .choices: section == 0 ? (notice == nil ? 1 : 2) : section == 1 ? 3 : 1
+        case .choices: section == 0 ? max(computers.count, 1) + (notice == nil ? 0 : 1) : section == 1 ? 3 : 1
         case .review, .finish: 2
         case .enrolling: 0
         }
@@ -102,7 +104,7 @@ final class OnboardingController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         guard screen == .choices else { return nil }
-        return [current == nil ? "Your terminals, wherever you are" : "This phone's computer",
+        return [current == nil ? "Your terminals, wherever you are" : "Your computers",
                 "Choose how to connect", "More options"][section]
     }
 
@@ -123,7 +125,7 @@ final class OnboardingController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch (screen, section) {
         case (.choices, 0):
-            current.map { "Pairing with another computer replaces \($0) on this phone." }
+            current.map { _ in "Tap a computer to switch to it, or swipe to forget it. Pairing another adds it here." }
                 ?? "Nothing to type. Pairing gives this phone its own key for your computer."
         case (.choices, 1):
             "On your computer, run \(pairCommand). Scan the QR code it shows, or copy its link and paste it here. Tailscale can find your computers and fetch the code for you."
@@ -153,7 +155,7 @@ final class OnboardingController: UITableViewController {
 
     private func choice(at indexPath: IndexPath) -> UITableViewCell {
         switch (indexPath.section, indexPath.row) {
-        case (0, 0): return status()
+        case (0, let row) where row < max(computers.count, 1): return status(row)
         case (0, _):
             let cell = row(notice?.title ?? "", detail: notice?.message ?? "",
                            icon: "exclamationmark.triangle.fill", tint: .systemOrange, tappable: false)
@@ -173,15 +175,66 @@ final class OnboardingController: UITableViewController {
         }
     }
 
-    private func status() -> UITableViewCell {
-        guard let current else {
+    private func status(_ index: Int) -> UITableViewCell {
+        guard computers.indices.contains(index) else {
             return row("Welcome to Phux Rune", detail: "Keep your terminals running on your computer. Open them here.",
                        icon: "desktopcomputer", tappable: false)
         }
-        let cell = row("Paired with \(current)", detail: "This phone opens its terminals",
-                       icon: "checkmark.circle.fill", tappable: false)
-        cell.accessibilityIdentifier = "current-computer"
+        let computer = computers[index]
+        let endpoint = computer["endpoint"] as? String
+        guard endpoint != HostSettings.currentEndpoint else {
+            let cell = row(current ?? HostSettings.label(computer), detail: "Open on this phone",
+                           icon: "checkmark.circle.fill", tappable: false)
+            cell.accessibilityIdentifier = "current-computer"
+            return cell
+        }
+        let cell = row(HostSettings.label(computer), detail: URLComponents(string: endpoint ?? "")?.host ?? "",
+                       icon: "desktopcomputer")
+        cell.accessibilityIdentifier = "saved-computer"
         return cell
+    }
+
+    /// A paired computer other than the open one, by row.
+    private func saved(_ indexPath: IndexPath) -> String? {
+        guard screen == .choices, indexPath.section == 0, computers.indices.contains(indexPath.row),
+              let endpoint = computers[indexPath.row]["endpoint"] as? String,
+              endpoint != HostSettings.currentEndpoint else { return nil }
+        return endpoint
+    }
+
+    private func open(_ endpoint: String) {
+        do {
+            guard let values = try HostSettings.select(endpoint) else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
+            connected?(values)
+        } catch {
+            show(PairingFlow.Problem(title: "Couldn't open that computer", message: error.localizedDescription))
+        }
+    }
+
+    override func tableView(_ tableView: UITableView,
+                            trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard let endpoint = saved(indexPath) else { return nil }
+        let name = HostSettings.label(computers[indexPath.row])
+        let forget = UIContextualAction(style: .destructive, title: "Forget") { [weak self] _, _, done in
+            done(false)
+            self?.confirmForget(endpoint, name: name)
+        }
+        return UISwipeActionsConfiguration(actions: [forget])
+    }
+
+    private func confirmForget(_ endpoint: String, name: String) {
+        let alert = UIAlertController(title: "Forget \(name)?",
+            message: "This phone removes its key for \(name). To use it again, pair it again.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Forget", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            do { try HostSettings.forget(endpoint) }
+            catch { NSLog("Forgetting a computer left cleanup: %@", error.localizedDescription) }
+            self.computers = HostSettings.computers
+            self.tableView.reloadData()
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 
     /// Pasting through the system control never asks; tapping the row does, once.
@@ -206,12 +259,13 @@ final class OnboardingController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, shouldHighlightRowAt indexPath: IndexPath) -> Bool {
-        screen == .choices && indexPath.section > 0
+        screen == .choices && indexPath.section > 0 || saved(indexPath) != nil
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard screen == .choices else { return }
+        if let endpoint = saved(indexPath) { open(endpoint); return }
         switch (indexPath.section, indexPath.row) {
         case (1, 0): scan()
         case (1, 1): pasteLink()

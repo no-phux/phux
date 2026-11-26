@@ -2,9 +2,9 @@ import Foundation
 import Security
 
 /// The computers paired with the earlier (Swift) app under this bundle
-/// identifier. Rune opens one, so one is carried over. Everything the earlier
-/// app stored is only read: its records, tokens and keys stay for a version
-/// that can open more, and the carried computer keeps its own key in place.
+/// identifier. Every one that can be carried whole comes over, the last used
+/// open. Everything the earlier app stored is only read: its records, tokens
+/// and keys stay, and each carried computer keeps its own key in place.
 @MainActor
 enum EarlierHosts {
     /// `ServerConfig` as the earlier app kept it in UserDefaults.
@@ -36,18 +36,17 @@ enum EarlierHosts {
 
     @MainActor
     struct Outcome {
+        /// The computer left open: the last used of those carried.
         var carried: String?
-        /// What was not carried, each with its reason unless it merely lost
-        /// to the carried one.
+        /// What was not carried, each with its reason when one is known.
         var left: [(name: String, reason: String?)] = []
         var advice = "On your computer, run \(pairCommand), then pair again."
 
         /// Shown once beside the carried computer.
         var notice: String? {
             guard let carried, !left.isEmpty else { return nil }
-            return "This version of the app opens one computer, and \(carried) is the one it kept. "
-                + "\(EarlierHosts.list(left)) \(left.count == 1 ? "was" : "were") not carried over.\(reasons) "
-                + "To use another computer, run \(pairCommand) on it and pair it here. That replaces \(carried)."
+            return "\(carried) was carried over, but \(EarlierHosts.list(left)) \(left.count == 1 ? "was" : "were") not.\(reasons) "
+                + "To use \(left.count == 1 ? "it" : "them"), run \(pairCommand) there and pair it here."
         }
         /// Shown in place of a terminal when nothing could be carried.
         var refusal: String {
@@ -58,9 +57,9 @@ enum EarlierHosts {
         }
     }
 
-    /// Carry the last used computer that can be carried whole, at most once:
-    /// a computer Rune already has is never replaced. Nil when the earlier
-    /// app left no computers.
+    /// Carry every computer that can be carried whole, at most once: a phone
+    /// Rune already paired is left alone. The last used is saved last, so it
+    /// is the one open. Nil when the earlier app left no computers.
     static func carry(defaults: UserDefaults = .standard, paired: Bool = HostSettings.computerName != nil,
                       credential: @MainActor (String) throws -> Data? = { try keychain($0) },
                       save: ([String: Any], String) throws -> Void = { try HostSettings.save($0, name: $1) }) -> Outcome? {
@@ -69,8 +68,7 @@ enum EarlierHosts {
         guard !hosts.isEmpty else { return nil }
         var outcome = Outcome()
         do {
-            for host in hosts {
-                guard outcome.carried == nil else { outcome.left.append((host.title, nil)); continue }
+            for host in hosts.reversed() {
                 do {
                     try save(configuration(host, credential: credential), host.title)
                     outcome.carried = host.title
@@ -85,6 +83,7 @@ enum EarlierHosts {
             return Outcome(left: hosts.map { ($0.title, nil) },
                            advice: "This phone's Keychain couldn't be read. Unlock the phone and reopen the app to try again.")
         }
+        outcome.left.reverse()
         return outcome
     }
 

@@ -273,7 +273,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
 
     private func showNotice() {
         guard let notice = EarlierHosts.notice, probe == nil, presentedViewController == nil else { return }
-        let alert = UIAlertController(title: "One computer was carried over", message: notice, preferredStyle: .alert)
+        let alert = UIAlertController(title: "Some computers weren't carried over", message: notice, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Change Computer", style: .default) { [weak self] _ in
             EarlierHosts.notice = nil
             self?.showConnection()
