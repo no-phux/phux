@@ -1167,7 +1167,7 @@
         },
         "trust": {
           "default": [],
-          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is argv[0], a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
+          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is the program, a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
           "items": {
             "$ref": "#/definitions/RestoreTrust"
           },
@@ -1175,7 +1175,7 @@
         },
         "trust-append": {
           "default": [],
-          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is argv[0], a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
+          "description": "`[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.\nEach `command` is the program, a bare name or an absolute path. There are\nno built-in rules; an empty list resumes nothing.",
           "items": {
             "$ref": "#/definitions/RestoreTrust"
           },
@@ -1218,7 +1218,7 @@
       "description": "One `[[restore.trust]]` entry.",
       "properties": {
         "command": {
-          "description": "argv[0] of a resume command this entry allows.",
+          "description": "Program a resume command may relaunch: a bare name or an absolute path.",
           "type": "string"
         }
       },

@@ -24,7 +24,7 @@ pub struct RestoreCfg {
     /// or reboot. Off by default. A server running as root never resumes one.
     pub program_resume: bool,
     /// `[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.
-    /// Each `command` is argv[0], a bare name or an absolute path. There are
+    /// Each `command` is the program, a bare name or an absolute path. There are
     /// no built-in rules; an empty list resumes nothing.
     #[serde(deserialize_with = "trust")]
     pub trust: Vec<RestoreTrust>,
@@ -59,7 +59,7 @@ pub struct RestoreProgram {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct RestoreTrust {
-    /// argv[0] of a resume command this entry allows.
+    /// Program a resume command may relaunch: a bare name or an absolute path.
     pub command: String,
 }
 

@@ -133,7 +133,7 @@ completion SHOULD report `done` or `error` first.
 | `app` | `[A-Za-z0-9_.+-]{1,32}` | Stable program id such as `cargo`. Invalid is absent. A record without `app` inherits its nearest ancestor's when read. |
 | `title` | base64 UTF-8 | Short label; the active record's is the pane's agent name. Empty is absent. |
 | `msg` | base64 UTF-8 | One line of status. Shown, never interpreted. Empty is absent. |
-| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | phux extension; see [Resume](#resume). |
+| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | phux extension; see [Resume (legacy)](#resume-legacy). |
 
 ### Limits
 
