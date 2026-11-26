@@ -13,6 +13,10 @@ use crate::ui::tokens::{Paint, Tier};
 use phux_protocol::ids::ResourceId;
 
 pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
+    // The native host opens the system's own menu from the held row.
+    if desk.native.is_some() {
+        return None;
+    }
     let phone = desk.phone.as_ref()?;
     let menu = phone.menu.as_ref()?;
     let (title, detail, verbs) = contents(desk, &menu.held)?;
@@ -65,7 +69,7 @@ pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
                         .truncate()
                 })),
         );
-    for (verb, name, glyph) in verbs {
+    for (verb, name, glyph, _) in verbs {
         surface = surface
             .child(separator(p))
             .child(verb_row(verb, name, glyph, p));
@@ -85,7 +89,23 @@ pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
     )
 }
 
-type Verbs = Vec<(Verb, String, &'static rune::Icon)>;
+/// Each verb, its name, Rune's glyph for it and the SF Symbol the native
+/// host's menu shows instead.
+type Verbs = Vec<(Verb, String, &'static rune::Icon, &'static str)>;
+
+/// Each verb of the native host's menu, by name and SF Symbol.
+pub(crate) type NativeVerbs = Vec<(Verb, String, &'static str)>;
+
+/// The menu the native host opens in place of Rune's: the held thing's
+/// name and detail, then its verbs.
+pub(crate) fn native(desk: &Desk) -> Option<(String, String, NativeVerbs)> {
+    let menu = desk.phone.as_ref()?.menu.as_ref()?;
+    let (title, detail, verbs) = contents(desk, &menu.held)?;
+    let verbs = verbs
+        .into_iter()
+        .map(|(verb, name, _, symbol)| (verb, name, symbol));
+    Some((title, detail, verbs.collect()))
+}
 
 /// The held thing's name, its one-line detail and what can be done to it.
 fn contents(desk: &Desk, held: &Held) -> Option<(String, String, Verbs)> {
@@ -115,22 +135,32 @@ fn session_menu(desk: &Desk, id: u32) -> Option<(String, String, Verbs)> {
         n => format!("{n} panes"),
     };
     let mut verbs: Verbs = vec![
-        (Verb::Open, "Open".into(), &icons::WINDOW),
-        (Verb::NewPane, "New Pane".into(), &icons::PLUS),
+        (Verb::Open, "Open".into(), &icons::WINDOW, "macwindow"),
+        (Verb::NewPane, "New Pane".into(), &icons::PLUS, "plus"),
     ];
     // A search shows every match unfolded, so it offers no fold.
     let searching = !phone.query.text.trim().is_empty();
     if panes > 0 && !searching {
         let folded = phone.folded.contains(&id);
         verbs.push(if folded {
-            (Verb::Fold, "Show Panes".into(), &icons::CHEVRON)
+            (
+                Verb::Fold,
+                "Show Panes".into(),
+                &icons::CHEVRON,
+                "chevron.down",
+            )
         } else {
-            (Verb::Fold, "Fold".into(), &icons::CHEVRON_RIGHT)
+            (
+                Verb::Fold,
+                "Fold".into(),
+                &icons::CHEVRON_RIGHT,
+                "chevron.up",
+            )
         });
     }
     if session.key.is_some() {
-        verbs.push((Verb::Rename, "Rename".into(), &icons::PENCIL));
-        verbs.push((Verb::Close, "Close Session".into(), &icons::CLOSE));
+        verbs.push((Verb::Rename, "Rename".into(), &icons::PENCIL, "pencil"));
+        verbs.push((Verb::Close, "Close Session".into(), &icons::CLOSE, "xmark"));
     }
     Some((session.name.clone(), detail, verbs))
 }
@@ -138,11 +168,11 @@ fn session_menu(desk: &Desk, id: u32) -> Option<(String, String, Verbs)> {
 fn pane_menu(desk: &Desk, id: &ResourceId, session: &str) -> Option<(String, String, Verbs)> {
     let resource = desk.addressable().into_iter().find(|r| &r.id == id)?;
     let name = resource.presentation(desk).name;
-    let mut verbs: Verbs = vec![(Verb::Open, "Open".into(), &icons::RESOURCE)];
+    let mut verbs: Verbs = vec![(Verb::Open, "Open".into(), &icons::RESOURCE, "terminal")];
     // Another machine's pane is opened, not run from here.
     if id.host().is_none() {
-        verbs.push((Verb::NewPane, "New Pane Here".into(), &icons::PLUS));
-        verbs.push((Verb::Close, "Close Pane".into(), &icons::CLOSE));
+        verbs.push((Verb::NewPane, "New Pane Here".into(), &icons::PLUS, "plus"));
+        verbs.push((Verb::Close, "Close Pane".into(), &icons::CLOSE, "xmark"));
     }
     Some((name, session.to_owned(), verbs))
 }

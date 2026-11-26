@@ -32,6 +32,9 @@ pub struct Menu {
     /// The held row's element key: the menu opens clear of that row.
     pub row: String,
     pub at: [f32; 2],
+    /// The native host has been asked to open its own menu for it, which
+    /// may take a pick after the menu has gone. Rune draws none there.
+    pub asked: bool,
 }
 
 /// One verb of the long-press menu.
@@ -42,6 +45,31 @@ pub enum Verb {
     Rename,
     Fold,
     Close,
+}
+
+impl Verb {
+    /// The name a native host's menu item answers with.
+    pub fn id(self) -> &'static str {
+        match self {
+            Verb::Open => "open",
+            Verb::NewPane => "new-pane",
+            Verb::Rename => "rename",
+            Verb::Fold => "fold",
+            Verb::Close => "close",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Verb> {
+        [
+            Verb::Open,
+            Verb::NewPane,
+            Verb::Rename,
+            Verb::Fold,
+            Verb::Close,
+        ]
+        .into_iter()
+        .find(|verb| verb.id() == id)
+    }
 }
 
 impl Desk {
@@ -127,7 +155,8 @@ impl Desk {
         // Escape closes a menu first, unless what it was about has gone and
         // nothing is drawn: then it closes the page, as it would have.
         let menu = self.phone.as_ref().and_then(|p| p.menu.as_ref());
-        if event.key == Key::Escape && menu.is_some_and(|m| self.held_exists(&m.held)) {
+        let drawn = |m: &&Menu| self.native.is_none() && self.held_exists(&m.held);
+        if event.key == Key::Escape && menu.is_some_and(|m| drawn(&m)) {
             self.close_phone_menu();
             return true;
         }
@@ -213,7 +242,12 @@ impl Desk {
             phone.query.cancel_composition();
             tx.blur();
         }
-        phone.menu = Some(Menu { held, row, at });
+        phone.menu = Some(Menu {
+            held,
+            row,
+            at,
+            asked: false,
+        });
         self.phone_feedback(Feedback::Hold);
     }
 

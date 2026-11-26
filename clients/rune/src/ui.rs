@@ -39,6 +39,7 @@ mod pane_marks;
 mod panes;
 mod phone;
 pub(crate) use phone::edge_color as phone_edge_color;
+pub(crate) use phone::navigation::native_menu as phone_menu;
 #[allow(clippy::disallowed_methods)] // illustration art
 mod pitch;
 #[allow(clippy::disallowed_methods)] // illustration art

@@ -25,6 +25,7 @@ use crate::ui::Cover;
 use actions::actions;
 use connections::view as connections;
 use inventory::{matches, session_list};
+pub(crate) use menu::native as native_menu;
 use resource::resource_row;
 use states::empty_state;
 
@@ -54,16 +55,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .wrap()
         .min_w(0.0)
         .shrink();
-    let done = control("phone-navigation-close", "Done", p, |d, _| {
-        d.close_phone_navigation()
-    })
-    .radius(p.radius.full)
-    .child(
-        text("Done")
-            .font(p.ty.label.medium())
-            .color(p.roles.accent.accent_text.paint())
-            .a11y_hidden(),
-    );
+    let done = done(desk, p);
     let header = row()
         .w_full()
         .max_w(column_max())
@@ -154,6 +146,37 @@ fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El 
             p.motion.drawer.enter
         })
         .transition(rune::Transition::move_edge(rune::Edge::Leading).springs(p.motion.drawer))
+}
+
+/// Done closes the page: a glass checkmark like the top bar's buttons on
+/// the native host, inset as they are; Rune's accent word elsewhere.
+fn done(desk: &Desk, p: &Look) -> El {
+    let done = control("phone-navigation-close", "Done", p, |d, _| {
+        d.close_phone_navigation()
+    })
+    .radius(p.radius.full);
+    if !super::native_glass(desk, p) {
+        return done.child(
+            text("Done")
+                .font(p.ty.label.medium())
+                .color(p.roles.accent.accent_text.paint())
+                .a11y_hidden(),
+        );
+    }
+    let control = crate::mobile::Control {
+        key: "phone-navigation-close".to_owned(),
+        label: "Done".to_owned(),
+        title: None,
+        subtitle: None,
+        leading: false,
+        symbol: "checkmark",
+        enabled: true,
+        dark: p.dark(),
+        ink: p.roles.accent.accent_text.paint(),
+        badge: None,
+    };
+    let glass = super::hosted(desk, done.size(p.round(), p.round()).px(0.0), control);
+    el().pr(p.space.s2).child(glass)
 }
 
 /// The widest a phone column grows (an iPad's is centred).

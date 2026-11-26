@@ -28,6 +28,7 @@ final class RuneView: UIView {
     private var cadence = FrameCadence()
     private var controls: NativeControls?
     private let attachments = Attachments()
+    private let heldMenu = HeldMenu()
     private let path = NWPathMonitor()
     /// A tapped card's link, until Rune can take it.
     private var link: String?
@@ -57,6 +58,9 @@ final class RuneView: UIView {
         attachments.covering = { [weak self] covered in
             self?.editor.covered = covered
             if !covered { self?.wake() }
+        }
+        heldMenu.picked = { [weak self] id in
+            if self?.bridge?.menuPick(id) == true { self?.wake() }
         }
         attachments.picked = { [weak self] request, file in
             self?.bridge?.attach(file, request: request)
@@ -255,6 +259,7 @@ final class RuneView: UIView {
         if let at = requests["attach"] as? [Double], at.count == 4, let request = requests["attaching"] as? UInt64 {
             attachments.show(request: request, over: self, at: CGRect(x: at[0], y: at[1], width: at[2], height: at[3]))
         }
+        if let menu = requests["menu"] as? [String: Any] { heldMenu.show(menu, over: self) }
         for link in requests["open_urls"] as? [String] ?? [] {
             guard let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
             else { continue }

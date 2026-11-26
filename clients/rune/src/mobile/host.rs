@@ -16,6 +16,7 @@ pub fn viewport_changed(rt: &mut rune::Runtime<State>) {
 /// Every copy here is plain: this app writes no secret to the clipboard.
 pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
     use crate::desk::phone::touch::Feedback;
+    let menu = held_menu(rt);
     let copied = rt.copy_request.take();
     let copied = copied.as_ref().map(|write| write.content().text());
     let urls = rt.take_url_requests();
@@ -47,8 +48,51 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
     // `attaching` names the pane a menu's picks or a pasted image answer.
     let attaching = attaching.filter(|_| paste || attach.is_some());
     json!({"connection": connection, "paste": paste, "attach": attach,
-        "attaching": attaching, "copied_text": copied,
+        "attaching": attaching, "copied_text": copied, "menu": menu,
         "open_urls": urls, "feedback": feedback, "presence": presence, "attached": attached})
+}
+
+/// A long press's menu, once, for the host to open from the held row as the
+/// system's own: its name and detail, then each verb (`id`, `title`, an SF
+/// Symbol, and whether it destroys). The host answers with [`menu_pick`].
+fn held_menu(rt: &mut rune::Runtime<State>) -> Value {
+    use crate::desk::phone::navigation::Verb;
+    let phone = rt.state.phone.as_ref();
+    let Some(menu) = phone.and_then(|p| p.menu.as_ref()).filter(|m| !m.asked) else {
+        return Value::Null;
+    };
+    let Some((title, subtitle, verbs)) = crate::ui::phone_menu(&rt.state) else {
+        return Value::Null;
+    };
+    // The row as last drawn, else the finger.
+    let [x, y] = menu.at;
+    let rect = rt
+        .presented(&menu.row)
+        .map_or([x, y, 1.0, 1.0], |(rect, _)| rect);
+    let items: Vec<Value> = verbs
+        .into_iter()
+        .map(|(verb, name, symbol)| {
+            json!({"id": verb.id(), "title": name, "symbol": symbol,
+                "destructive": verb == Verb::Close})
+        })
+        .collect();
+    if let Some(menu) = rt.state.phone.as_mut().and_then(|p| p.menu.as_mut()) {
+        menu.asked = true;
+    }
+    json!({"rect": rect, "title": title, "subtitle": subtitle, "items": items})
+}
+
+/// The host's menu picked verb `id` for the row last held: run it as a
+/// pick in Rune's own menu would. False for an id that names no verb.
+pub fn menu_pick(rt: &mut rune::Runtime<State>, id: &str) -> bool {
+    let Some(verb) = crate::desk::phone::navigation::Verb::from_id(id) else {
+        return false;
+    };
+    rt.update(|state, tx| {
+        state.phone_menu_pick(verb);
+        tx.instant();
+    });
+    true
 }
 
 /// A tap on the phone's card, widget or Dynamic Island: `phux://inbox`, or a
@@ -284,7 +328,7 @@ mod tests {
             || {
                 let mut rt = runtime();
                 let quiet = json!({"connection": false, "paste": false, "attach": null,
-            "attaching": null, "copied_text": null,
+            "attaching": null, "copied_text": null, "menu": null,
             "open_urls": [], "feedback": null, "presence": null, "attached": false});
                 assert_eq!(take_requests(&mut rt), quiet);
                 rt.update(|state, tx| {
@@ -297,7 +341,7 @@ mod tests {
                 assert_eq!(
                     take_requests(&mut rt),
                     json!({"connection": true, "paste": true, "attach": null,
-                "attaching": null, "copied_text": "selected words",
+                "attaching": null, "copied_text": "selected words", "menu": null,
                 "open_urls": [], "feedback": "hold", "presence": null,
                 "attached": false})
                 );
