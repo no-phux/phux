@@ -154,10 +154,17 @@ impl Desk {
             .phone
             .as_mut()
             .is_some_and(super::phone::Phone::forget_gesture);
+        let native_menu = self.native.as_ref().is_some_and(|native| {
+            native.held_menu.is_some()
+                || self
+                    .phone
+                    .as_ref()
+                    .is_some_and(|phone| phone.menu.is_some())
+        });
         // Retire the touch, not just its preview. This also releases any
         // selection or program mouse capture through the existing cleanup.
         self.phone_interrupted();
-        moving
+        moving || native_menu
     }
 
     /// Let go of views the engine forgot. A terminal whose replica leaves

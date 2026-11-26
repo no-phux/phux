@@ -59,8 +59,13 @@ final class RuneView: UIView {
             self?.editor.covered = covered
             if !covered { self?.wake() }
         }
-        heldMenu.picked = { [weak self] id in
-            if self?.bridge?.menuPick(id) == true { self?.wake() }
+        heldMenu.picked = { [weak self] request, id in
+            _ = self?.bridge?.menuPick(request, id)
+            self?.wake()
+        }
+        heldMenu.dismissed = { [weak self] request in
+            self?.bridge?.menuDismiss(request)
+            self?.wake()
         }
         attachments.picked = { [weak self] request, file in
             self?.bridge?.attach(file, request: request)
@@ -259,6 +264,7 @@ final class RuneView: UIView {
         if let at = requests["attach"] as? [Double], at.count == 4, let request = requests["attaching"] as? UInt64 {
             attachments.show(request: request, over: self, at: CGRect(x: at[0], y: at[1], width: at[2], height: at[3]))
         }
+        heldMenu.reconcile(requests["menu_request"] as? UInt64)
         if let menu = requests["menu"] as? [String: Any] { heldMenu.show(menu, over: self) }
         for link in requests["open_urls"] as? [String] ?? [] {
             guard let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")

@@ -342,6 +342,9 @@ impl Desk {
     /// End whatever the finger was doing, as a cancelled release would: the
     /// app left the foreground with it down, or its release was lost.
     pub(crate) fn phone_interrupted(&mut self) {
+        if self.native.is_some() {
+            self.close_phone_menu();
+        }
         self.stop_coast();
         let Some(touch) = self.phone.as_mut().and_then(|p| p.touch.take()) else {
             return;

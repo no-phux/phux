@@ -9,6 +9,8 @@ use super::{Desk, Soft};
 use crate::desk::Pending;
 use crate::keys::Shortcut;
 
+pub(crate) mod native;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Sessions,
@@ -32,6 +34,8 @@ pub struct Menu {
     /// The held row's element key: the menu opens clear of that row.
     pub row: String,
     pub at: [f32; 2],
+    /// The source that owned the row when the hold opened it.
+    pub source: Option<String>,
     /// The native host has been asked to open its own menu for it, which
     /// may take a pick after the menu has gone. Rune draws none there.
     pub asked: bool,
@@ -99,6 +103,7 @@ impl Desk {
         if self.modal().is_some() {
             return;
         }
+        self.close_phone_menu();
         if let Some(phone) = &mut self.phone {
             phone.reset_navigation();
             phone.release();
@@ -111,6 +116,7 @@ impl Desk {
     }
 
     pub fn close_phone_navigation(&mut self) {
+        self.close_phone_menu();
         if let Some(phone) = &mut self.phone {
             phone.page = None;
             phone.menu = None;
@@ -231,6 +237,8 @@ impl Desk {
     /// A hold on a row: the menu opens where the finger is, with a tick.
     /// Search's keyboard goes, so the menu has the screen.
     pub fn open_phone_menu(&mut self, held: Held, row: String, at: [f32; 2], tx: &mut Tx) {
+        let source = native::source(self, &held);
+        self.close_phone_menu();
         let Some(phone) = &mut self.phone else { return };
         if phone.page != Some(Page::Sessions) {
             return;
@@ -246,6 +254,7 @@ impl Desk {
             held,
             row,
             at,
+            source,
             asked: false,
         });
         self.phone_feedback(Feedback::Hold);
@@ -264,6 +273,9 @@ impl Desk {
     }
 
     pub fn close_phone_menu(&mut self) {
+        if let Some(native) = &mut self.native {
+            native.held_menu = None;
+        }
         if let Some(phone) = &mut self.phone {
             phone.menu = None;
         }
@@ -276,12 +288,16 @@ impl Desk {
         let Some(menu) = self.phone.as_mut().and_then(|phone| phone.menu.take()) else {
             return;
         };
+        self.phone_held_pick(menu.held, verb);
+    }
+
+    pub(crate) fn phone_held_pick(&mut self, held: Held, verb: Verb) {
         // A question that arrived meanwhile is answered first, over the
         // terminal where its bar is; no verb replaces it.
         if self.pending.is_some() {
             return self.close_phone_navigation();
         }
-        match menu.held {
+        match held {
             Held::Session(id) => self.session_verb(id, verb),
             Held::Pane(id, session) => self.pane_verb(id, &session, verb),
         }

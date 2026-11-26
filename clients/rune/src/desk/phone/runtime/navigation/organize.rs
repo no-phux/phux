@@ -5,6 +5,8 @@ use super::*;
 use crate::desk::phone::navigation::Held;
 use crate::desk::phone::touch::Feedback;
 
+mod native;
+
 /// A finger held still past the long press, then lifted, on a row scrolled
 /// clear of the search field and the floating dock.
 pub(super) fn hold(rt: &mut Runtime<Desk>, key: &str, at: f64) {
@@ -369,6 +371,32 @@ fn a_session_menu_starts_a_pane_in_that_session() {
 }
 
 #[test]
+fn a_late_native_menu_pick_cannot_consume_a_newer_menu() {
+    let (_, mut rt) = fixture();
+    detailed_inventory(&mut rt);
+    keyed(&mut rt);
+    rt.update(|d, _| d.native = Some(crate::mobile::Platform::test()));
+    open(&mut rt);
+    hold(&mut rt, "phone-session-2", 0.1);
+    let old = crate::mobile::take_requests(&mut rt)["menu"]["request"]
+        .as_u64()
+        .unwrap();
+    rt.update(|d, _| d.close_phone_navigation());
+    open(&mut rt);
+    hold(&mut rt, "phone-session-1", 2.0);
+    let new = crate::mobile::take_requests(&mut rt)["menu"]["request"]
+        .as_u64()
+        .unwrap();
+    assert_ne!(old, new);
+    assert!(!crate::mobile::menu_pick(&mut rt, old, "fold"));
+    crate::mobile::menu_dismiss(&mut rt, old);
+    assert_eq!(menu(&rt), Some(Held::Session(1)));
+    assert!(!rt.state.phone.as_ref().unwrap().folded.contains(&1));
+    assert!(crate::mobile::menu_pick(&mut rt, new, "fold"));
+    assert!(rt.state.phone.as_ref().unwrap().folded.contains(&1));
+}
+
+#[test]
 fn the_native_host_opens_the_systems_menu_once_and_runs_its_pick() {
     let (_, mut rt) = fixture();
     detailed_inventory(&mut rt);
@@ -381,6 +409,7 @@ fn the_native_host_opens_the_systems_menu_once_and_runs_its_pick() {
     assert!(rt.find("phone-menu").is_none(), "Rune draws no menu there");
     let asked = crate::mobile::take_requests(&mut rt);
     let ask = &asked["menu"];
+    let request = ask["request"].as_u64().unwrap();
     assert!(ask["title"].as_str().unwrap().starts_with("api"), "{asked}");
     let (row, _) = rt.presented("phone-session-2").unwrap();
     let rect: Vec<f32> = ask["rect"]
@@ -402,8 +431,18 @@ fn the_native_host_opens_the_systems_menu_once_and_runs_its_pick() {
         "asked once"
     );
     // UIKit may run the pick after its menu has gone; it still lands.
-    assert!(!crate::mobile::menu_pick(&mut rt, "explode"));
-    assert!(crate::mobile::menu_pick(&mut rt, "fold"));
+    assert!(!crate::mobile::menu_pick(&mut rt, request, "explode"));
+    crate::mobile::menu_dismiss(&mut rt, request);
+    assert_eq!(
+        menu(&rt),
+        None,
+        "visual menu retired, not an unbound current target"
+    );
+    assert!(crate::mobile::menu_pick(&mut rt, request, "fold"));
+    assert!(
+        !crate::mobile::menu_pick(&mut rt, request, "fold"),
+        "once only"
+    );
     settle(&mut rt);
     assert!(rt.state.phone.as_ref().unwrap().folded.contains(&2));
     assert_eq!(menu(&rt), None);

@@ -84,20 +84,24 @@ final class Probe {
 }
 func controls(_ ids: [String]) -> [[String: Any]] { ids.map { ["id": $0] } }
 let top = ["phone-back", "phone-place", "phone-news", "phone-more"]
+let sessions = ["phone-session-new", "phone-navigation-close"]
 let probe = Probe()
 probe.glassBefore = controls(top)
 // A moving drawer can uncover each old control in turn. None is ready,
 // including the observed frame where Back is gone but News/More remain.
 for remaining in [top, ["phone-news", "phone-more"]] + top.map({ [$0] }) {
-    probe.surface!.glassEvidence = controls(["phone-session-new"] + remaining)
+    probe.surface!.glassEvidence = controls(sessions + remaining)
     try probe.frame()
     precondition(!probe.glassRecorded && probe.writes == 0,
                  "a partly covered top bar is not Sessions readiness")
 }
-probe.surface!.glassEvidence = []
-try probe.frame()
-precondition(!probe.glassRecorded, "the dock must also be present")
-probe.surface!.glassEvidence = controls(["phone-session-new"])
+for incomplete in [[], ["phone-session-new"], ["phone-navigation-close"]] {
+    probe.surface!.glassEvidence = controls(incomplete)
+    try probe.frame()
+    precondition(!probe.glassRecorded && probe.writes == 0,
+                 "the dock and Done must both be present")
+}
+probe.surface!.glassEvidence = controls(sessions)
 try probe.frame()
 precondition(probe.glassRecorded && probe.writes == 1)
 try probe.frame()

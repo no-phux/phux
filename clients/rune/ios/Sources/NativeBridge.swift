@@ -127,7 +127,10 @@ final class NativeBridge {
     /// A tap on the frame's native control `id`: true when Rune ran its press.
     func press(_ id: String) -> Bool { id.withCString { phux_rune_ios_press(pointer, $0) } }
     /// The long-press menu picked verb `id`: true when Rune ran it.
-    func menuPick(_ id: String) -> Bool { id.withCString { phux_rune_ios_menu_pick(pointer, $0) } }
+    func menuPick(_ request: UInt64, _ id: String) -> Bool {
+        id.withCString { phux_rune_ios_menu_pick(pointer, request, $0) }
+    }
+    func menuDismiss(_ request: UInt64) { phux_rune_ios_menu_dismiss(pointer, request) }
     /// A tapped card, widget or Dynamic Island: true when the link was one.
     func openLink(_ link: String) -> Bool { link.withCString { phux_rune_ios_open_link(pointer, $0) } }
     /// Where the phone's computers post its agent counts while it is closed.
