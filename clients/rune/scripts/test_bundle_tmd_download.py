@@ -12,7 +12,7 @@ import bundle_tmd
 class MirrorDownloadTests(unittest.TestCase):
     def test_bootstrap_preserves_the_official_aro_package_identity(self):
         repo = Path(__file__).resolve().parents[3]
-        manifest = (repo / "scripts/zig-mirrors/build.zig.zon").read_text()
+        manifest = (repo / "dev/zig-mirrors/build.zig.zon").read_text()
         self.assertIn("https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz", manifest)
         self.assertIn(' .hash = "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa"', manifest)
         self.assertEqual(re.findall(r'\.url\s*=\s*"([^"]+)"', manifest), [bundle_tmd.ARO_URL])

@@ -94,12 +94,12 @@ export function eventHasLabel(event: unknown, label: string): boolean {
  * root manifest, `.cargo`, and crate build scripts, C sources, headers, and
  * linker scripts are inputs. A crate `Cargo.toml` is not: `Cargo.lock` is
  * what moves dependencies. `cargo test` on that machine runs
- * `scripts/test-env-runner.sh` through `.cargo/config.toml`. Merge groups and
+ * `dev/test-env-runner.sh` through `.cargo/config.toml`. Merge groups and
  * main always run the job.
  *
- * `scripts/lib/apple-toolchain-env.sh` is copied into the setup fixture and
+ * `dev/lib/apple-toolchain-env.sh` is copied into the setup fixture and
  * never sourced. The copy fails if the file is gone, so it stays on the list.
- * `scripts/lib/mbx-target.sh` is copied because `doctor.sh` sources it; a
+ * `dev/lib/mbx-target.sh` is copied because `doctor.sh` sources it; a
  * missing sibling fails `doctor.sh core`.
  * `clients/phux-vt-web/vendor/ghostty-vt.wasm` is not: the fixture creates its
  * own empty stand-in. `just/setup.just` is not: the job calls bash, not just.
@@ -118,30 +118,27 @@ export const NATIVE_SETUP_PATHS = [
   "crates/**/*.h",
   "crates/**/*.ld",
   "crates/**/*.lds",
-  "scripts/test-dev-setup.sh",
-  "scripts/setup-rust.sh",
-  "scripts/install-zig.sh",
-  "scripts/native-smoke.sh",
-  "scripts/test-env-runner.sh",
-  "scripts/doctor.sh",
-  "scripts/check-docs.sh",
-  "scripts/build-vt-wasm.sh",
-  "scripts/zig-mirrors/build.zig",
-  "scripts/zig-mirrors/build.zig.zon",
-  "scripts/prepare-vt-wasm.mjs",
-  "scripts/smoke-vt-wasm.mjs",
-  "scripts/check-ghostty-pin.sh",
-  "scripts/check-ghostty-pin_test.sh",
-  "scripts/lib/dev-toolchain.sh",
-  "scripts/lib/output.sh",
-  "scripts/lib/apple-toolchain-env.sh",
-  "scripts/lib/mbx-target.sh",
+  "dev/test-dev-setup.sh",
+  "dev/setup-rust.sh",
+  "dev/install-zig.sh",
+  "dev/native-smoke.sh",
+  "dev/test-env-runner.sh",
+  "dev/doctor.sh",
+  "clients/phux-vt-web/scripts/build-vt-wasm.sh",
+  "dev/zig-mirrors/build.zig",
+  "dev/zig-mirrors/build.zig.zon",
+  "clients/phux-vt-web/scripts/prepare-vt-wasm.mjs",
+  "clients/phux-vt-web/scripts/smoke-vt-wasm.mjs",
+  "dev/lib/dev-toolchain.sh",
+  "dev/lib/output.sh",
+  "dev/lib/apple-toolchain-env.sh",
+  "dev/lib/mbx-target.sh",
 ] as const;
 
 /**
  * Bench sources, the baseline, and the harness `rust icount` runs. The job
  * builds `phux-server`'s `icount` bench and `phux-terminal`'s `terminal_icount`
- * bench through `scripts/ci/perf-icount.sh` (`just perf-icount`) and compares
+ * bench through `just perf-icount` (just/perf.just) and compares
  * them to `benchmarks/icount-baseline.json`. A pull request also runs the job
  * when `ci.yml` changes or the PR has the `perf-baseline` label. Adding that
  * label does not start a run; the next push does. Other hot-path edits wait
@@ -151,7 +148,6 @@ export const ICOUNT_PR_PATHS = [
   "benchmarks/icount-baseline.json",
   "crates/phux-server/benches/icount.rs",
   "crates/phux-terminal/benches/terminal_icount.rs",
-  "scripts/ci/perf-icount.sh",
   "just/perf.just",
   "tools/src/perf/**",
   ".github/actions/setup-rust-lane/**",

@@ -32,9 +32,17 @@ if command -v bd >/dev/null 2>&1; then
 fi
 # --- END BEADS INTEGRATION v1.1.0 ---
 # --- BEGIN PHUX INTEGRATION ---
-# A dead docs link otherwise surfaces only in CI's guards lane. Takes ~30 s, so
-# only for a branch that changes Markdown.
+# A dead docs link otherwise surfaces only in CI's guards lane. Only for a
+# branch that changes Markdown. core.hooksPath is shared by every worktree, so
+# a checkout of a branch from before the port still runs its own bash copy.
 if [ -n "$(git diff --name-only origin/main...HEAD -- '*.md' 2>/dev/null)" ]; then
-  bash "$(git rev-parse --show-toplevel)/scripts/check-docs.sh" || exit 1
+  _phux_top="$(git rev-parse --show-toplevel)"
+  if [ ! -f "$_phux_top/tools/src/docs/check.ts" ] && [ -f "$_phux_top/scripts/check-docs.sh" ]; then
+    bash "$_phux_top/scripts/check-docs.sh" || exit 1
+  elif command -v bun >/dev/null 2>&1; then
+    bun "$_phux_top/tools/main.ts" docs-check || exit 1
+  else
+    echo >&2 "phux: warn: bun is not on PATH; skipping the docs gate (the guards lane still runs it)"
+  fi
 fi
 # --- END PHUX INTEGRATION ---

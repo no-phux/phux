@@ -56,8 +56,8 @@ runs:
     - name: Toolchains
       shell: bash
       run: |
-        bash scripts/setup-rust.sh core
-        bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        bash dev/setup-rust.sh core
+        bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
     # Cold, a leg compiled Rune's graph three ways (clippy, test, release)
     # plus the root `phux` CLI: 15 to 18 minutes (run 41886269436). The
     # third-party artifacts of both workspaces are kept; saves come from
@@ -98,7 +98,7 @@ runs:
         APPLE_NOTARY_KEY_P8: ${{ inputs.apple_notary_key_p8 }}
         APPLE_NOTARY_KEY_ID: ${{ inputs.apple_notary_key_id }}
         APPLE_NOTARY_ISSUER_ID: ${{ inputs.apple_notary_issuer_id }}
-      run: bash scripts/ci/sign-macos-desktop.sh --check-config
+      run: bash packaging/sign-macos-desktop.sh --check-config
     - name: Package
       if: inputs.qualify == 'true'
       shell: bash
@@ -123,7 +123,7 @@ runs:
         archive="phux-rune-$version-macos-arm64.zip"
         dmg="phux-rune-$version-macos-arm64.dmg"
         rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
-        bash scripts/ci/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
+        bash packaging/sign-macos-desktop.sh "$RUNNER_TEMP/app/Phux Rune.app" \
           "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg"
         mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/signed/$dmg" "$RUNNER_TEMP/dist/"
         cd "$RUNNER_TEMP/dist"
@@ -160,7 +160,7 @@ runs:
             zig version
             curl --disable --version
             shasum -a 256 clients/rune/scripts/bundle_tmd.py \
-              scripts/zig-mirrors/build.zig.zon .config/zig-toolchain.json
+              dev/zig-mirrors/build.zig.zon .config/zig-toolchain.json
           } > "$evidence/context.log" 2>&1
           ditto -x -k "$archive" "$unpack"
           app="$unpack/Phux Rune.app"

@@ -42,7 +42,7 @@
       "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
     },
     "tooling/brand.py": {
-      "destination": "scripts/brand.py",
+      "destination": "brand/brand.py",
       "sha256": "731f24cc33acb87e4c9acce152188d90b53e56de7059911f87f8d98142e7a13c"
     }
   },

@@ -29,7 +29,7 @@ publish-protocol:
 [group('release')]
 [doc('Write the product skills package to DEST (publish mirror of .agents/skills).')]
 sync-skills DEST:
-    bash scripts/export-product-skills.sh "{{DEST}}"
+    bash packaging/skills/export.sh "{{DEST}}"
 
 
 # The UniFFI xcframework (iOS device, arm64 simulator, macOS), with generated
@@ -39,10 +39,10 @@ sync-skills DEST:
 [group('release')]
 [doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
 mobile-ffi-xcframework *ARGS:
-    bash scripts/build-mobile-ffi-xcframework.sh {{ARGS}}
+    bash packaging/build-mobile-ffi-xcframework.sh {{ARGS}}
 
 # The Android sibling: Kotlin, arm64-v8a/x86_64 .so, and provenance.
 [group('release')]
 [doc('Build the canonical Android UniFFI zip (Kotlin, cdylibs, provenance).')]
 mobile-ffi-android:
-    bash scripts/build-mobile-ffi-android.sh
+    bash packaging/build-mobile-ffi-android.sh

@@ -49,7 +49,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/bundle-skill.mjs",
     "build:test": "npm run clean && tsc -p tsconfig.test.json",
     "test": "npm run test:unit && npm run pack:check && node scripts/test-extension-load.mjs",
-    "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high --omit=dev",
+    "gates": "npm run typecheck && npm test && bun ../../tools/main.ts npm-audit-gate --audit-level=high --omit=dev",
     "test:unit": "npm run build:test && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pack:check": "npm run build && node scripts/test-pack.mjs",

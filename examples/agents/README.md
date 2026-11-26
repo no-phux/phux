@@ -64,7 +64,7 @@ Run every introductory example and negative-path regression against the same
 checkout binary with:
 
 ```sh
-bash scripts/examples-smoke.sh
+bash examples/agents/tests/examples-smoke.sh
 ```
 
 The smoke also runs a fake Pi that only narrates success and proves the live

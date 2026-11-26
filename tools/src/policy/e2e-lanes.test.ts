@@ -3,7 +3,7 @@
 // `#[ignore]`d tests do not run in the default pool (`cargo nextest run
 // --workspace`, CI's unit step). They run only where a lane passes
 // `--run-ignored` and names their binary, and `just e2e` reads a
-// hand-maintained list (E2E_BINARIES in scripts/lib/e2e-selection.sh). A new
+// hand-maintained list (E2E_BINARIES in dev/lib/e2e-selection.sh). A new
 // `*_e2e.rs` full of `#[ignore]`d tests could compile, pass review, and never
 // execute anywhere: upgrade_e2e.rs shipped claiming "run via `just e2e`" while
 // absent from the list, as did plugin_agent_bench_e2e and workspace_archive_e2e.
@@ -32,7 +32,7 @@ const readRepo: Read = (path) =>
 
 function e2eBinaries(): string[] {
   return capture(
-    ["bash", "-c", 'source scripts/lib/e2e-selection.sh; printf "%s\\n" "${E2E_BINARIES[@]}"'],
+    ["bash", "-c", 'source dev/lib/e2e-selection.sh; printf "%s\\n" "${E2E_BINARIES[@]}"'],
     { cwd: ROOT },
   )
     .trim()
@@ -84,7 +84,7 @@ function laneFailures(
       `${path} has #[ignore]d tests that no lane runs (binary id ${binary.id}). ` +
         "#[ignore]d tests only run where a recipe passes --run-ignored and names the binary, " +
         "so this one never executes in CI and stays green whatever it asserts. Add " +
-        `${binary.id} to E2E_BINARIES in scripts/lib/e2e-selection.sh, or, if it is too slow ` +
+        `${binary.id} to E2E_BINARIES in dev/lib/e2e-selection.sh, or, if it is too slow ` +
         "for the PR critical path, to the `stress` recipe (run locally with `just stress`).",
     ];
   });

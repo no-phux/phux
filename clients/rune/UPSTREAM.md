@@ -1,7 +1,7 @@
 # Rune upstream dependency
 
 Rune tracks `dev`, with an immutable revision in this client's own manifest
-and lockfile. The [upstream follower](../../scripts/rune-upstream/README.md)
+and lockfile. The [upstream follower](upstream/README.md)
 reviews and qualifies changes rather than treating a successful update as
 application compatibility.
 

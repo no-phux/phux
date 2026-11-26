@@ -72,7 +72,7 @@ session id) and refuse another live session with exit 3; `test` and
 worktree on with `just worktree-release`. An idle lease is taken over after
 six hours; `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff only. The
 guard does not stop raw `git` or editor use, so isolation is still yours to
-keep (`scripts/lib/worktree-owner.sh`).
+keep (`dev/lib/worktree-owner.sh`).
 
 ## Never touch the installed phux
 

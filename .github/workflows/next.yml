@@ -84,7 +84,7 @@ jobs:
       - name: Sign the checksums
         env:
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
-        run: bash scripts/ci/sign-release.sh dist/*.sha256
+        run: bash packaging/sign-release.sh dist/*.sha256
       # next.json is signed with the same key.
       - name: Publish phux
         env:

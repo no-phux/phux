@@ -1,6 +1,6 @@
 // The static half of the install surface: the installers phux.sh serves, how
 // clients discover releases, and the tests that run an installer.
-// scripts/check-install-surface.sh runs the installer tests themselves.
+// install/test.sh runs the installer tests themselves.
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -43,7 +43,7 @@ function releaseListFailures(client: string, texts: readonly string[]): string[]
 // against the real home leaves PATH lines behind (phux-gh85y).
 function homeFailures(tests: Record<string, string>): string[] {
   return Object.entries(tests).flatMap(([path, text]) =>
-    /install(-desktop|-rune)?\.sh|installer\//.test(text) && !/^export HOME="\$TMP/m.test(text)
+    /install(-desktop|-rune)?\.sh|install\/src\//.test(text) && !/^export HOME="\$TMP/m.test(text)
       ? [`${path} runs an installer; export HOME="$TMP/..." first`]
       : [],
   );
@@ -71,7 +71,9 @@ test("release clients read the channel manifest, not the GitHub release list", (
 });
 
 test("installer tests run against a temporary HOME", () => {
-  const tests = [...new Glob("scripts/test-*.sh").scanSync(ROOT)].sort();
+  const tests = ["install", "packaging"]
+    .flatMap((dir) => [...new Glob(`${dir}/test-*.sh`).scanSync(ROOT)])
+    .sort();
   expect(homeFailures(Object.fromEntries(tests.map((path) => [path, read(path)])))).toEqual([]);
 });
 

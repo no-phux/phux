@@ -152,7 +152,7 @@
 
         # Zig on Linux is the official ziglang.org release, verified against
         # the digests in .config/zig-toolchain.json (the same archives
-        # scripts/install-zig.sh and the site builder install). nixpkgs'
+        # dev/install-zig.sh and the site builder install). nixpkgs'
         # zig_0_16 rebuilt on the GCC 16 / glibc 2.44 stdenv emits corrupt
         # ELF objects: some section symbols come out with st_shndx = SHN_UNDEF,
         # a different random subset on every run. libghostty-vt's compiler_rt.o
@@ -310,16 +310,16 @@
           ]
           ++ pkgs.lib.optional (mbxPinned != null) mbxPinned
           ++ [
-            # Shell linting for scripts/ and examples/agents/ (just shellcheck).
+            # Shell linting for the repo's shell (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just
             # guards`). This is release infrastructure, so it belongs
             # in the pinned shell rather than a developer's global tools.
             pkgs.actionlint
-            # JSON plumbing for the CI observability scripts (scripts/ci/,
-            # ADR-0047) and `just trace-attach`'s slow-render peek. The
-            # hosted runners ship jq, but the scripts must also run in the
-            # devshell (`just dep-stats`, local dashboard renders).
+            # JSON plumbing for the CI observability recipes (`just
+            # dep-stats`, ADR-0047) and `just trace-attach`'s slow-render
+            # peek. The hosted runners ship jq, but the recipes must also
+            # run in the devshell (local dashboard renders).
             pkgs.jq
             # The demo setup scripts and their test (just guards), Rust
             # test fixtures, examples and benchmarks. Python is a TOOLING

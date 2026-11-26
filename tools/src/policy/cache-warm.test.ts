@@ -68,16 +68,14 @@ test("mbx export headroom uses the real action eligibility output", () => {
     "${{ steps.mbx.outputs.cache-save-eligible }}",
   );
   for (const id of ["rust-lint", "rust-test", "rust-icount"]) {
-    const headroom = steps(job(WARM, id)).find((step) =>
-      run(step).includes("mbx-export-headroom.sh"),
-    );
+    const headroom = steps(job(WARM, id)).find((step) => run(step).includes("mbx-export-headroom"));
     expect(headroom?.["if"]).toBe(
       "steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'",
     );
   }
   for (const id of ["lint", "test-build", "icount"]) {
     const jobSteps = steps(job(CI, id));
-    const headroom = jobSteps.find((step) => run(step).includes("mbx-export-headroom.sh"));
+    const headroom = jobSteps.find((step) => run(step).includes("mbx-export-headroom"));
     expect(headroom?.["if"]).toBe(
       "steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'",
     );
@@ -141,7 +139,7 @@ test("the Linux warm cannot replace or wait behind a pending Rune warm", () => {
 test("cache eviction happens only after post-step uploads, never on save eligibility", () => {
   for (const id of LINUX) {
     const commands = steps(job(WARM, id)).map(run).join("\n");
-    expect(commands).not.toContain("prune-build-cache.sh");
+    expect(commands).not.toContain("prune-build-cache");
     expect(commands).not.toContain("--replace-prefix");
   }
   expect(needs(job(WARM, "prune-build-cache")).toSorted()).toEqual(

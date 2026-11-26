@@ -28,7 +28,7 @@ fn assert_script_passes(program: &str, script: &str, env: &[(&str, &str)], what:
 fn agent_verify_self_test_covers_the_harness_without_real_agents() {
     assert_script_passes(
         "python3",
-        "scripts/agent-verify/self_test.py",
+        "benchmarks/agent-verify/self_test.py",
         &[("PYTHONDONTWRITEBYTECODE", "1")],
         "agent-verify self-test",
     );
@@ -37,7 +37,12 @@ fn agent_verify_self_test_covers_the_harness_without_real_agents() {
 #[test]
 #[ignore = "spawns private servers and PTYs; run through just e2e"]
 fn introductory_examples_use_real_output_and_propagate_failures() {
-    assert_script_passes("bash", "scripts/examples-smoke.sh", &[], "examples");
+    assert_script_passes(
+        "bash",
+        "examples/agents/tests/examples-smoke.sh",
+        &[],
+        "examples",
+    );
 }
 
 #[test]

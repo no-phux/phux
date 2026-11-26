@@ -8,7 +8,7 @@ is required. See [Native iOS](./ios/README.md) for building and qualification.
 desktop, with every piece of the phone UI working against a live server.
 Whatever Rune can't do on a phone yet is drawn by the app instead, and each
 of those stand-ins is listed below with the upstream capability that
-replaces it. The [Rune upstream follower](../../scripts/rune-upstream/README.md)
+replaces it. The [Rune upstream follower](upstream/README.md)
 reads this file on every run: it swaps a stand-in out as soon as upstream
 ships what it waits for, and builds the next piece from the last table when
 upstream is quiet.

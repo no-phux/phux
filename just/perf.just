@@ -43,7 +43,7 @@ perf interval="1":
 [doc('Reproducible echo-latency benchmark against an isolated release server.')]
 perf-echo flood="full" cols="188" rows="48" iters="60":
     cargo build --release -p phux
-    bash scripts/bench/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
+    bash benchmarks/tui-load/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
 
 # Rune's keystroke-echo hops (clients/rune/DEVELOP.md#keystroke-latency):
 # headless phux-rune typing into an isolated release server, frames paced at
@@ -55,7 +55,7 @@ perf-echo flood="full" cols="188" rows="48" iters="60":
 perf-rune-echo fps="60" keys="200":
     cargo build --release -p phux
     cargo build --release --locked --manifest-path clients/rune/Cargo.toml
-    bash scripts/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune {{keys}} 120 {{fps}}
+    bash clients/rune/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune {{keys}} 120 {{fps}}
 
 # Key to on-screen pixels, Rune against Ghostty on the same display (macOS;
 # Screen Recording, Accessibility, an unlocked screen and uncovered windows).
@@ -64,7 +64,7 @@ perf-rune-echo fps="60" keys="200":
 perf-rune-photon keys="200":
     cargo build --release -p phux
     cargo build --release --locked --manifest-path clients/rune/Cargo.toml
-    bash scripts/bench/rune-echo.sh --photon target/release/phux clients/rune/target/release/phux-rune {{keys}} 250
+    bash clients/rune/bench/rune-echo.sh --photon target/release/phux clients/rune/target/release/phux-rune {{keys}} 250
 
 
 # Cyclomatic complexity of Rust source over a CCN ceiling — advisory.
@@ -127,16 +127,103 @@ bloat *ARGS:
 # benchmarks/icount-baseline.json. Run inside `nix develop` on x86_64.
 # `--update` rewrites the baseline; see docs/development.md#performance before
 # committing that file.
+#
+# Builds phux-server's `icount` and phux-terminal's `terminal_icount` benches
+# with the `icount` profile and runs them under callgrind, then compares their
+# combined Ir to the baseline. Valgrind comes from the flake's nixpkgs so its
+# libc matches the devshell that built the bench.
 [group('perf')]
 [doc('Callgrind instruction counts against benchmarks/icount-baseline.json.')]
+[positional-arguments]
 perf-icount *ARGS:
-    bash scripts/ci/perf-icount.sh {{ARGS}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$*" in
+      "") action=compare ;;
+      --update) action=update ;;
+      *)
+        echo "usage: just perf-icount [--update]" >&2
+        exit 2
+        ;;
+    esac
+    root="{{justfile_directory()}}"
+    # Pure git policy: refuse an unauthorized baseline edit before the slow bench.
+    bun tools/main.ts perf-icount authorize
+    if ! command -v nix >/dev/null 2>&1; then
+      echo "perf-icount: nix is required so valgrind matches the devshell libc" >&2
+      exit 1
+    fi
+    valgrind_bin="$(nix shell --inputs-from "$root" nixpkgs#valgrind -c bash -c 'command -v valgrind')"
+    PATH="$(dirname "$valgrind_bin"):${PATH}"
+    # The bench spawns iai-callgrind-runner, whose version must match the
+    # iai-callgrind crate in Cargo.lock.
+    runner_version="$(bun tools/main.ts perf-icount runner-version)"
+    runner_root="${root}/target/icount-runner"
+    if [[ ! -x ${runner_root}/bin/iai-callgrind-runner ]]; then
+      cargo install --locked --version "${runner_version}" --profile release \
+        --target-dir "${root}/target/icount-runner-build" --root "${runner_root}" iai-callgrind-runner
+    fi
+    export PATH="${runner_root}/bin:${PATH}"
+    out="${root}/target/perf-icount"
+    mkdir -p "$out"
+    : > "${out}/iai.jsonl"
+    cargo build --locked --profile icount \
+      -p phux-server --bench icount -p phux-terminal --bench terminal_icount
+    for bench in icount terminal_icount; do
+      # Newest matching file: incremental builds leave earlier hashes beside it.
+      executable="$(
+        find "${root}/target/icount/deps" -type f -name "${bench}-*" -executable ! -name '*.d' -printf '%T@\t%p\n' \
+          | sort -n | tail -1 | cut -f2-
+      )"
+      if [[ -z ${executable} || ! -x ${executable} ]]; then
+        echo "perf-icount: ${bench} bench executable not found under target/icount/deps" >&2
+        exit 1
+      fi
+      "$executable" --output-format=json --home="${out}/iai" >> "${out}/iai.jsonl"
+    done
+    bun tools/main.ts perf-icount "$action" "${out}/iai.jsonl"
 
 
-# Dependency-graph stats without compiling: locked-package count, duplicate
-# versions (each compiles separately in cold CI), proc-macro and
-# build-script crate counts. Prints markdown to stdout.
+# Dependency-graph stats without compiling: counts and shapes that explain
+# build cost. Reads `cargo metadata` (locked) and prints markdown to the step
+# summary, or to stdout locally.
+#   locked_packages   every crate CI may compile cold
+#   duplicate crates  same crate, multiple versions; each compiles separately
+#   proc_macros       compile serially early and gate everything downstream
+#   build_scripts     each is a compile + an execution (libghostty-vt's zig
+#                     shell-out is the workspace's dominant single cost)
 [group('perf')]
 [doc('Dependency-graph stats without compiling: counts, duplicates, proc-macros.')]
 dep-stats:
-    bash scripts/ci/dep-stats.sh
+    #!/usr/bin/env bash
+    set -euo pipefail
+    meta=$(cargo metadata --format-version 1 --locked 2>/dev/null || cargo metadata --format-version 1)
+    stats=$(jq -c \
+        '(.workspace_members) as $ws
+         | (.packages | map(select(.id as $id | $ws | index($id)))) as $members
+         | ($members | map(.name)) as $member_names
+         | {workspace_members: ($members | length),
+            locked_packages: (.packages | length),
+            direct_deps: ([$members[].dependencies[].name] | unique
+                          | map(select(. as $n | $member_names | index($n) | not))
+                          | length),
+            proc_macros: ([.packages[] | select(any(.targets[]; .kind | index("proc-macro")))] | length),
+            build_scripts: ([.packages[] | select(any(.targets[]; .kind | index("custom-build")))] | length),
+            duplicates: (.packages | map(select(.name as $n | $member_names | index($n) | not))
+                         | group_by(.name) | map(select(length > 1)
+                         | {name: .[0].name, versions: [.[].version]}))}' \
+        <<<"$meta")
+    {
+        echo "### dependency graph"
+        echo
+        jq -r '"- locked packages: **\(.locked_packages)** (\(.workspace_members) workspace members, \(.direct_deps) direct deps)
+    - proc-macro crates: \(.proc_macros); crates with build scripts: \(.build_scripts)
+    - duplicate versions: **\(.duplicates | length)**"' <<<"$stats"
+        if jq -e '.duplicates | length > 0' <<<"$stats" >/dev/null; then
+            echo
+            echo "| duplicated crate | versions |"
+            echo "|---|---|"
+            jq -r '.duplicates[] | "| `\(.name)` | \(.versions | join(", ")) |"' <<<"$stats"
+        fi
+        echo
+    } >>"${GITHUB_STEP_SUMMARY:-/dev/stdout}"

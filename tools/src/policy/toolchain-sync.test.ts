@@ -4,8 +4,7 @@
 //
 // Static: this reads files, so it runs on a CI checkout with no Nix, no Mise
 // and no compilers (`just toolchain-check`, and `just guards` through
-// tools-check). `just toolchain-parity` is the runtime half that resolves both
-// environments and compares binaries.
+// tools-check).
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Glob } from "bun";

@@ -92,7 +92,7 @@ jobs:
           RELEASE_SPECS: |
             PhuxFFI-|.xcframework.zip|.provenance|phux-rev
             PhuxMobileFFI-|.xcframework.zip|.provenance|phux_rev=
-        run: bash scripts/ci/ffi-build-preflight.sh
+        run: bash packaging/ffi-build-preflight.sh
 
   build:
     name: build native xcframeworks
@@ -149,7 +149,7 @@ jobs:
 
       - name: Contributor Zig setup
         run: |
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
           # ghostty's build.zig panics when its HEAD carries a tag that is not vX.Y.Z,
           # and the ghostty fork tags archived branches (phux-1wudz). This step lives
           # in the workflow, not the checkout, so a dispatch for an older tag gets it too.
@@ -159,10 +159,10 @@ jobs:
           echo "ZIG=$RUNNER_TEMP/zig-no-git" >> "$GITHUB_ENV"
 
       - name: Contributor Rust setup
-        run: bash scripts/setup-rust.sh core
+        run: bash dev/setup-rust.sh core
 
       # After the Rust setup: check-release-version.sh runs `cargo metadata`,
-      # and the pinned toolchain must come from scripts/setup-rust.sh, not
+      # and the pinned toolchain must come from dev/setup-rust.sh, not
       # from whatever the runner image auto-installs on first use.
       - name: Validate release tag
         if: env.RELEASE_TAG != ''
@@ -172,7 +172,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
           test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
-          bash scripts/check-release-version.sh "$RELEASE_TAG"
+          bash packaging/check-release-version.sh "$RELEASE_TAG"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
       # No rust-cache for this job. Two dep archives, 978198846 and
@@ -192,7 +192,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       - name: Build, verify and smoke-test the mobile xcframework
-        run: bash scripts/build-mobile-ffi-xcframework.sh --full
+        run: bash packaging/build-mobile-ffi-xcframework.sh --full
 
       - name: Package the mobile archive, bindings and checksum
         id: mobile-package

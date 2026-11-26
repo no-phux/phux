@@ -27,9 +27,9 @@ The browser runs libghostty-vt compiled to WebAssembly:
 [phux-web](../clients/phux-web/README.md) paints its grid on a canvas.
 
 Native and browser engines build one source revision.
-`scripts/check-ghostty-pin.sh` fails unless the `libghostty-vt` revision in
+`bun tools/main.ts ghostty-pin` fails unless the `libghostty-vt` revision in
 `Cargo.lock`, `revision=` and `archive_sha256=` in
-`scripts/build-vt-wasm.sh`, and the Zig version in
+`clients/phux-vt-web/scripts/build-vt-wasm.sh`, and the Zig version in
 `.config/zig-toolchain.json` agree; bump them together. Build options are in
 [development](./development.md#libghostty-vt).
 
@@ -83,10 +83,10 @@ Corpora and thresholds are in `crates/phux-terminal/benches/capture.rs`. To
 time stock encoding and decoding against a separately built install prefix:
 
 ```sh
-cc -O2 -I "$prefix/include" scripts/bench/libghostty-capture.c \
+cc -O2 -I "$prefix/include" crates/phux-terminal/benches/c/libghostty-capture.c \
   "$prefix/lib/libghostty-vt.a" -o "$scratch/capture"
 "$scratch/capture" 10000 10 1 0 11   # lines, history MiB, dense, 48-KiB images, samples
-cc -O2 -I "$prefix/include" scripts/bench/libghostty-stock-decode.c \
+cc -O2 -I "$prefix/include" crates/phux-terminal/benches/c/libghostty-stock-decode.c \
   "$prefix/lib/libghostty-vt.a" -o "$scratch/decode"
 "$scratch/decode"
 ```

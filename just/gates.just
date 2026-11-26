@@ -35,17 +35,13 @@ crate-check PACKAGE FEATURES="": worktree-claim
 guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bun tools/main.ts design-gen --check
-    bash scripts/check-file-tokens_test.sh
-    bash scripts/check-file-tokens.sh --merge-base origin/main
-    bash scripts/ci/main-red_test.sh
-    bash scripts/check-release-cpu-baselines.sh
-    bash scripts/test-demo-pi-setup.sh
-    bash scripts/lib/worktree-owner_test.sh
-    bash scripts/worktree-prune_test.sh
-    node --test scripts/test-npm-audit-gate.mjs
+    bun tools/main.ts file-tokens-check --merge-base origin/main
+    bash packaging/test-release-cpu-baselines.sh
+    bash dev/lib/worktree-owner_test.sh
+    bash dev/worktree-prune_test.sh
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
-    python3 -B scripts/test-agent-examples.py
+    python3 -B examples/agents/tests/test-agent-examples.py
     python3 -B -m unittest discover -s distros/crew -p 'test_*.py'
 
 
@@ -58,8 +54,7 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
     cargo check --locked -p phux-tui --all-targets --no-default-features
-    bash scripts/check-ghostty-pin_test.sh
-    bash scripts/check-ghostty-pin.sh
+    bun tools/main.ts ghostty-pin
 
 
 # The binding crate with the mobile artifact's exact features (ADR-0135).
@@ -74,12 +69,22 @@ binding-uniffi-test:
 integration-check PACKAGE: worktree-claim
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, or grok' >&2; exit 2 ;; esac
-    bash scripts/doctor.sh integrations
+    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude|grok|muse) ;; *) echo 'choose runtime, opencode-v2, omp, pi, claude, grok, or muse' >&2; exit 2 ;; esac
+    bash dev/doctor.sh integrations
+    # Incidental install audits are off; the explicit audit inside each
+    # package's gates script still runs.
     export npm_config_audit=false npm_config_fund=false
     case "{{PACKAGE}}" in
-        omp|opencode-v2) cd "integrations/{{PACKAGE}}"; bun install --frozen-lockfile; bun run gates ;;
+        omp) cd integrations/omp; bun install --frozen-lockfile; bun run gates ;;
+        opencode-v2)
+            cd integrations/opencode-v2
+            bun install --frozen-lockfile
+            bun run gates
+            # index.js and tui.js ship as committed bundles; the build must not change them.
+            git diff --exit-code -- .
+            ;;
         grok) node --test integrations/grok/test/package.test.mjs ;;
+        muse) npm --prefix integrations/muse run gates ;;
         pi)
             npm --prefix integrations/runtime ci
             npm --prefix integrations/runtime run build
@@ -93,8 +98,7 @@ integration-check PACKAGE: worktree-claim
 # The `integrations` lane: every package, the shared runtime, and npm audit.
 [group('gates')]
 [doc('Every agent integration package and the shared runtime.')]
-agent-integrations-check:
-    bash scripts/ci/agent-integrations.sh
+agent-integrations-check: (integration-check "runtime") (integration-check "opencode-v2") (integration-check "omp") (integration-check "pi") (integration-check "claude") (integration-check "grok") (integration-check "muse")
 
 
 # Format every Rust file in place.
@@ -131,10 +135,11 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh scripts/rune-upstream/*.sh \
+    shellcheck --severity=warning dev/*.sh dev/lib/*.sh install/*.sh install/lib/*.sh packaging/*.sh packaging/skills/*.sh scripts/*.sh \
+      clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
-      plugins/*/scripts/*.sh
+      plugins/*/scripts/*.sh benchmarks/*/*.sh
 
 
 # The tools package (build and CI logic, ADR-0184): format, types, lint, tests.
@@ -144,11 +149,11 @@ tools-check:
     cd tools && bun install --frozen-lockfile && bun run check
 
 
-# Check documentation links, commands, crate maps, and code citations.
+# Check documentation links, commands, crate maps, code citations, and llms.txt.
+# Its fixtures are tools/src/docs/*.test.ts, which tools-check runs.
 [group('gates')]
-docs-check:
-    bash scripts/check-docs.sh
-    bash scripts/check-docs_test.sh
+docs-check *ARGS:
+    bun tools/main.ts docs-check {{ARGS}}
 
 
 # Regenerate docs/reference/ from the compiled binary after CLI changes.
@@ -169,50 +174,50 @@ design-gen *ARGS:
 [group('gates')]
 [private]
 install-surface-check:
-    bash scripts/check-install-surface.sh
+    bash install/test.sh
 
 
 # Lease this worktree to the running agent session, or refuse (exit 3) when
 # another live session holds it (AGENTS.md "Worktree Isolation"). Human shells
-# and CI are never checked. scripts/lib/worktree-owner_test.sh holds the list
+# and CI are never checked. dev/lib/worktree-owner_test.sh holds the list
 # of recipes that depend on it.
 [private]
 worktree-claim:
-    @bash scripts/worktree-claim.sh
+    @bash dev/worktree-lease.sh claim
 
 
 # After a long run (`test`, `e2e`): fail (exit 3) when HEAD moved or the lease
 # changed hands since the claim, so a straddled run is not a green.
 [private]
 worktree-verify CALLER:
-    @bash scripts/worktree-verify.sh "{{CALLER}}"
+    @bash dev/worktree-lease.sh verify "{{CALLER}}"
 
 
 # Drop this agent session's worktree lease when handing the worktree on.
 [group('setup')]
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
-    @bash scripts/worktree-release.sh worktree-release
+    @bash dev/worktree-lease.sh release worktree-release
 
 
-# Reclaim disk from idle linked worktrees (scripts/worktree-prune.sh): remove
+# Reclaim disk from idle linked worktrees (dev/worktree-prune.sh): remove
 # clean ones whose pushed branch is merged, prune build output from the rest.
 [group('setup')]
 [doc('Prune idle worktrees (dry run; --apply acts, --outputs-only keeps every worktree).')]
 worktree-prune *ARGS:
-    @bash scripts/worktree-prune.sh {{ARGS}}
+    @bash dev/worktree-prune.sh {{ARGS}}
 
 # Verify committed branding without accessing the private source library.
 [group('gates')]
 brand-check:
-    python3 -B scripts/brand.py check
-    python3 -B -m unittest discover -s scripts -p 'test_brand*.py'
+    python3 -B brand/brand.py check
+    python3 -B -m unittest discover -s brand -p 'test_brand*.py'
 
 # Install an explicitly checksummed approved release (or roll back to one).
 [positional-arguments]
 brand-sync ARCHIVE SHA256:
-    python3 -B scripts/brand.py sync --archive "$1" --sha256 "$2"
+    python3 -B brand/brand.py sync --archive "$1" --sha256 "$2"
 
 # Restore the current release pin from the public brand archive.
 brand-restore:
-    python3 -B scripts/brand.py restore
+    python3 -B brand/brand.py restore

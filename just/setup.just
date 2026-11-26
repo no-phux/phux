@@ -5,7 +5,7 @@
 # Check prerequisites for only this work area; also works without just via bash.
 [group('setup')]
 doctor SCOPE="native":
-    bash scripts/doctor.sh "{{SCOPE}}"
+    bash dev/doctor.sh "{{SCOPE}}"
 
 
 # Activate the tracked Git hooks. The relative path makes every worktree run
@@ -20,7 +20,7 @@ hooks-install:
 # Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
 [group('setup')]
 native-smoke: worktree-claim
-    bash scripts/native-smoke.sh
+    bash dev/native-smoke.sh
 
 
 # Scaffold a commented starter config into a worktree-local XDG dir
@@ -41,13 +41,6 @@ scaffold-config:
 [doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
     cd tools && bun test ./src/policy/toolchain-sync.test.ts
-
-
-# Runtime half of toolchain-check: both environments, actual binaries.
-# Local only (no Mise on a CI checkout). Skips if either env is missing.
-[group('setup')]
-toolchain-parity:
-    bash scripts/check-toolchain-parity.sh
 
 
 # Print the toolchain we are pinned to.

@@ -12,7 +12,7 @@ provisioned device/TestFlight release or full native accessibility coverage.
 
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
 workspace and lock so Rune's graph stays out of the rest of phux. The
-[Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
+[Rune upstream follower](upstream/README.md) moves the pin
 twice a day.
 
 See [upstream dependency policy](UPSTREAM.md) for pin agreement, the `ImeSync`
@@ -89,12 +89,12 @@ event arrives, `send` when the input is handed to the runtime,
 pane builds a frame with a new publication, and `stdout` when the first
 frame showing it is drawn (after present in a window, after submit
 headless). The server's hops fall between `send` and `client_recv`.
-`scripts/bench/rune-echo.sh` runs it end to end against a temp-socket
+`clients/rune/bench/rune-echo.sh` runs it end to end against a temp-socket
 server and prints p50 and p99 per hop and for `stdin->stdout`:
 
 ```sh
 just perf-rune-echo        # or, built already:
-bash scripts/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune 200 120 60
+bash clients/rune/bench/rune-echo.sh target/release/phux clients/rune/target/release/phux-rune 200 120 60
 ```
 
 The arguments after the binaries are keystrokes, the gap between them in

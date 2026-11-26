@@ -43,7 +43,7 @@ The confusing part: there are **two wasm modules, one nested in the other.**
 
 ```text
 ghostty (Zig)
-   │  zig build               (scripts/build-vt-wasm.sh)
+   │  zig build               (clients/phux-vt-web/scripts/build-vt-wasm.sh)
    ▼
 ghostty-vt.wasm  ── the engine, vendored into phux-vt-web/vendor/
    │  include_bytes!          (baked in as raw bytes)
@@ -104,7 +104,7 @@ cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
 ```
 
 Tool versions and installation commands live in the setup guide;
-`bash scripts/doctor.sh web` checks them from the repository root.
+`bash dev/doctor.sh web` checks them from the repository root.
 Changing the engine itself additionally needs Zig; the setup guide documents
 verified source acquisition and the byte-for-byte regeneration check.
 

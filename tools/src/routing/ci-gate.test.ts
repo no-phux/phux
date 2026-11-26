@@ -10,7 +10,7 @@ import { classifyDetection } from "./detect.ts";
 const CI = workflow("ci.yml");
 const AFTER = ["ci", "content", "prune-build-cache"];
 const script = run(
-  steps(job(CI, "ci")).find((step) => run(step).includes("scripts/ci/ci-aggregate.sh")) ?? {},
+  steps(job(CI, "ci")).find((step) => run(step).includes("tools/main.ts ci-aggregate")) ?? {},
 );
 const lanes = Object.keys(jobs(CI)).filter((id) => !AFTER.includes(id));
 const baseline = {
@@ -121,12 +121,14 @@ test("a skipped plan passes only as a draft, which never reports the required ci
 
 test("native setup's path list covers every script that job runs", () => {
   const commands = steps(job(CI, "native")).map(run).join("\n");
-  const scripts = [...commands.matchAll(/scripts\/[A-Za-z0-9_./-]+\.sh/g)].map((match) => match[0]);
+  const scripts = [...commands.matchAll(/(?:dev|scripts)\/[A-Za-z0-9_./-]+\.sh/g)].map(
+    (match) => match[0],
+  );
   expect(scripts).toEqual([
-    "scripts/test-dev-setup.sh",
-    "scripts/setup-rust.sh",
-    "scripts/install-zig.sh",
-    "scripts/native-smoke.sh",
+    "dev/test-dev-setup.sh",
+    "dev/setup-rust.sh",
+    "dev/install-zig.sh",
+    "dev/native-smoke.sh",
   ]);
   const inputs: readonly string[] = NATIVE_SETUP_PATHS;
   for (const script of scripts) expect(inputs).toContain(script);

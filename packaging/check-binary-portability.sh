@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Assert that release binaries link only against libraries that exist on an
+# ordinary host, on both macOS and Linux.
+#
+# Usage: packaging/check-binary-portability.sh <binary> [<binary>...]
+#
+# WHY THIS EXISTS: release.yml grep'd `otool -L` for "/nix/store" on macOS and
+# checked NOTHING on Linux. That caught exactly one failure mode on exactly one
+# platform. A Homebrew-linked dylib on macOS, or any non-baseline .so on Linux,
+# shipped green and failed on the user's machine at exec time — the worst place
+# to find out, because the tarball and its checksum both verify fine.
+#
+# The rule enforced here is: a release binary may depend only on libraries the
+# target OS itself ships. Everything else is a build-host leak.
+#
+#   macOS   /usr/lib/** and /System/Library/** only. A Nix, Homebrew, MacPorts,
+#           or /usr/local path is a leak. So is an unresolved @rpath/@loader_path
+#           entry, which is a dangling dependency wearing a relative name.
+#   Linux   The glibc runtime set only (libc, libm, libgcc_s, libdl, libpthread,
+#           librt, libutil, ld-linux). Anything else — and any /nix/store path in
+#           the resolved output — is a leak.
+#
+# GLIBC SYMBOL VERSIONS are also checked, because a clean NEEDED list still
+# breaks on older distros: the Linux legs build on ubuntu-22.04 (glibc 2.35)
+# precisely to keep this floor low, and a runner image bump would silently raise
+# it. PHUX_GLIBC_MAX overrides the ceiling.
+#
+# THE MACOS DEPLOYMENT FLOOR is checked for the same reason: the LC_BUILD_VERSION
+# `minos` must stay at or below 11.0 (rustc's arm64 default), so an Xcode/SDK
+# bump on the runner cannot silently stop the binary launching on older macOS.
+# PHUX_MACOS_MIN_MAX overrides the ceiling.
+#
+# CPU inputs are pinned by packaging/build-release-binaries.sh. ELF GNU property
+# notes are checked below as a second, artifact-level guard against a compiler
+# declaring an x86-64-v2-or-newer requirement.
+set -euo pipefail
+# shellcheck source=dev/lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
+
+GLIBC_MAX="${PHUX_GLIBC_MAX:-2.35}"
+MACOS_MIN_MAX="${PHUX_MACOS_MIN_MAX:-11.0}"
+failures=0
+
+fail() {
+  phux_error "portability: $1"
+  failures=$((failures + 1))
+}
+
+# 2.35 -> 2035000 style key so `sort -V`-free numeric comparison is possible in
+# pure bash (the runners have coreutils, macOS does not have `sort -V` before
+# Sonoma and this must behave identically on both).
+ver_key() {
+  local major minor
+  major="${1%%.*}"
+  minor="${1#*.}"
+  minor="${minor%%.*}"
+  [ "$minor" = "$1" ] && minor=0
+  printf '%d\n' $((major * 1000 + minor))
+}
+
+check_macho() {
+  local bin="$1" line lib identity
+  # A copied/renamed addon retains its original LC_ID_DYLIB. That identifies
+  # this image; it is not a runtime dependency on the build directory.
+  identity="$(otool -D "$bin" | tail -n +2)"
+  # Skip the first line (the binary's own path) and the LC_ID_DYLIB of the
+  # image itself; every remaining line is a load command.
+  while read -r line; do
+    lib="${line%% (compatibility*}"
+    lib="${lib#"${lib%%[![:space:]]*}"}"
+    [ -n "$lib" ] || continue
+    if [ -n "$identity" ] && [ "$lib" = "$identity" ]; then continue; fi
+    case "$lib" in
+      /usr/lib/*|/System/Library/*) ;;
+      *)
+        fail "$bin links a non-system library: $lib"
+        ;;
+    esac
+  done < <(otool -L "$bin" | tail -n +2)
+
+  local minos
+  minos="$(otool -l "$bin" | awk '$1 == "minos" { print $2; exit }')"
+  if [ -z "$minos" ]; then
+    fail "$bin carries no LC_BUILD_VERSION minos"
+  elif [ "$(ver_key "$minos")" -gt "$(ver_key "$MACOS_MIN_MAX")" ]; then
+    fail "$bin requires macOS $minos, above the $MACOS_MIN_MAX floor (Xcode/SDK drift?)"
+  else
+    phux_info "portability: $bin requires macOS $minos (floor $MACOS_MIN_MAX)"
+  fi
+}
+
+check_elf() {
+  local bin="$1" line soname maxver key ceiling notes
+
+  notes="$(readelf -n "$bin" 2>/dev/null || true)"
+  if grep -Eq 'x86 ISA needed:.*x86-64-v[234]' <<<"$notes"; then
+    fail "$bin declares a newer-than-x86-64 baseline: $(grep -E 'x86 ISA needed:' <<<"$notes" | head -n 1)"
+  fi
+
+  # NEEDED entries: the names the loader will look up.
+  while read -r soname; do
+    [ -n "$soname" ] || continue
+    case "$soname" in
+      libc.so.*|libm.so.*|libgcc_s.so.*|libdl.so.*|libpthread.so.*) ;;
+      librt.so.*|libutil.so.*|ld-linux*.so.*) ;;
+      *)
+        fail "$bin has a non-baseline NEEDED entry: $soname"
+        ;;
+    esac
+  done < <(readelf -d "$bin" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+
+  # Resolved paths: catches a baseline soname that happens to resolve into a
+  # build-host store on this machine.
+  if command -v ldd >/dev/null 2>&1; then
+    while read -r line; do
+      case "$line" in
+        */nix/store/*) fail "$bin resolves a dependency into the Nix store: ${line#"${line%%[![:space:]]*}"}" ;;
+        *"not found"*) fail "$bin has an unresolved dependency: ${line#"${line%%[![:space:]]*}"}" ;;
+      esac
+    done < <(ldd "$bin" 2>/dev/null || true)
+  fi
+
+  # Highest GLIBC_x.y symbol version the binary demands.
+  maxver="$(readelf -V "$bin" 2>/dev/null \
+    | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' \
+    | sort -t. -k1,1n -k2,2n | tail -n 1)"
+  if [ -n "$maxver" ]; then
+    key="$(ver_key "$maxver")"
+    ceiling="$(ver_key "$GLIBC_MAX")"
+    if [ "$key" -gt "$ceiling" ]; then
+      fail "$bin requires GLIBC_$maxver, above the $GLIBC_MAX baseline (runner image drift?)"
+    else
+      phux_info "portability: $bin requires at most GLIBC_$maxver (baseline $GLIBC_MAX)"
+    fi
+  fi
+}
+
+[ "$#" -gt 0 ] || {
+  phux_error "usage: check-binary-portability.sh <binary> [<binary>...]"
+  exit 2
+}
+
+for bin in "$@"; do
+  [ -f "$bin" ] || {
+    fail "no such binary: $bin"
+    continue
+  }
+  case "$(uname -s)" in
+    Darwin) check_macho "$bin" ;;
+    Linux) check_elf "$bin" ;;
+    *)
+      phux_warn "portability: unsupported host $(uname -s); skipping"
+      exit 0
+      ;;
+  esac
+done
+
+if [ "$failures" -ne 0 ]; then
+  phux_error "portability: $failures problem(s). Release binaries must run on a stock host."
+  exit 1
+fi
+
+phux_ok "portability: $# binary/binaries"

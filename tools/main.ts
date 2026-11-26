@@ -4,10 +4,12 @@
 import { invoke, type Command } from "./src/lib/command.ts";
 import { commands as cargo } from "./src/cargo/commands.ts";
 import { commands as design } from "./src/design/commands.ts";
+import { commands as docs } from "./src/docs/commands.ts";
 import { commands as integrations } from "./src/integrations/commands.ts";
 import { commands as mbx } from "./src/mbx/commands.ts";
 import { commands as mutation } from "./src/mutation/commands.ts";
 import { commands as perf } from "./src/perf/commands.ts";
+import { commands as policy } from "./src/policy/commands.ts";
 import { commands as release } from "./src/release/commands.ts";
 import { commands as routing } from "./src/routing/commands.ts";
 import { commands as web } from "./src/web/commands.ts";
@@ -15,10 +17,12 @@ import { commands as web } from "./src/web/commands.ts";
 const COMMANDS: Record<string, Command> = {
   ...cargo,
   ...design,
+  ...docs,
   ...integrations,
   ...mbx,
   ...mutation,
   ...perf,
+  ...policy,
   ...release,
   ...routing,
   ...web,

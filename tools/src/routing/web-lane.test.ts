@@ -1,16 +1,16 @@
 // The web lane's own checks. workflows.test.ts is at the file-size ratchet,
 // so the split and its cache policy are asserted here.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { capture } from "../lib/process.ts";
 import { repoPath } from "../lib/repo.ts";
 import { list, str, table } from "../lib/value.ts";
+import { SWEEP } from "../mbx/prune.ts";
 import { action, job, needs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
 import { LANES, LANE_RECIPES } from "./plan.ts";
 
 const WEB_CHECKS = [
-  'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi',
-  "node --test scripts/test-vt-wasm.mjs",
+  'if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash clients/phux-vt-web/scripts/build-vt-wasm.sh --check; fi',
+  "node --test clients/phux-vt-web/scripts/test-vt-wasm.mjs",
   "(cd clients/phux-vt-web && wasm-pack test --node --locked)",
   "(cd clients/phux-web && wasm-pack test --node --locked)",
   "(cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg --locked)",
@@ -91,7 +91,7 @@ test("the web jobs cache cargo dependencies and save them only from main", () =>
 test("both web halves fail the aggregate on failure or cancellation", () => {
   const gate = run(
     steps(job(workflow("ci.yml"), "ci")).find((step) =>
-      run(step).includes("scripts/ci/ci-aggregate.sh"),
+      run(step).includes("tools/main.ts ci-aggregate"),
     ) ?? {},
   );
   for (const id of ["web-vt", "web-client"]) {
@@ -127,8 +127,8 @@ test("both web halves fail the aggregate on failure or cancellation", () => {
 });
 
 test("the new web cache series participate in bounded repository retention", () => {
-  const prune = readFileSync(repoPath("scripts/ci/prune-build-cache.sh"), "utf8");
+  const sweep: readonly string[] = SWEEP;
   for (const prefix of ["v0-rust-phux-web-vt-", "v0-rust-phux-web-client-"]) {
-    expect(prune).toContain(prefix);
+    expect(sweep).toContain(prefix);
   }
 });

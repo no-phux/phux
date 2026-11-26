@@ -6,19 +6,19 @@ on:
   pull_request:
     paths:
       - scripts/install-windows.ps1
-      - scripts/test-install-windows.ps1
-      - scripts/test-windows-wsl.ps1
-      - scripts/test-windows-mcp.py
-      - scripts/test-windows-terminal.py
+      - install/test-install-windows.ps1
+      - install/test-windows-wsl.ps1
+      - install/test-windows-mcp.py
+      - install/test-windows-terminal.py
       - .github/workflows/windows-wsl.yml
   push:
     branches: [main]
     paths:
       - scripts/install-windows.ps1
-      - scripts/test-install-windows.ps1
-      - scripts/test-windows-wsl.ps1
-      - scripts/test-windows-mcp.py
-      - scripts/test-windows-terminal.py
+      - install/test-install-windows.ps1
+      - install/test-windows-wsl.ps1
+      - install/test-windows-mcp.py
+      - install/test-windows-terminal.py
       - .github/workflows/windows-wsl.yml
   workflow_dispatch:
 
@@ -41,10 +41,10 @@ jobs:
           python -m pip install --disable-pip-version-check --no-input --only-binary=:all: pywinpty==3.1.2
       - name: Installer contracts in Windows PowerShell 5.1
         shell: powershell
-        run: ./scripts/test-install-windows.ps1
+        run: ./install/test-install-windows.ps1
       - name: Installer contracts in PowerShell 7
         shell: pwsh
-        run: ./scripts/test-install-windows.ps1
+        run: ./install/test-install-windows.ps1
       - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Ubuntu-24.04
@@ -61,8 +61,8 @@ jobs:
           wsl.exe --terminate Ubuntu-24.04
       - name: Real WSL release installation and PowerShell 5.1 launchers
         shell: powershell
-        run: ./scripts/test-windows-wsl.ps1 -Distribution Ubuntu-24.04
+        run: ./install/test-windows-wsl.ps1 -Distribution Ubuntu-24.04
       - name: Real WSL release installation and PowerShell 7 launchers
         if: always() && steps.user.outcome == 'success'
         shell: pwsh
-        run: ./scripts/test-windows-wsl.ps1 -Distribution Ubuntu-24.04
+        run: ./install/test-windows-wsl.ps1 -Distribution Ubuntu-24.04

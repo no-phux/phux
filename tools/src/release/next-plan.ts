@@ -14,8 +14,8 @@ import { nextSha } from "./release-manifest.ts";
 const BUILDERS: Record<Product, string[]> = {
   phux: [
     ".github/workflows/build-cli.yml",
-    "scripts/{build-release-binaries,pack-release,check-binary-portability}.sh",
-    "scripts/ci/setup-linux-release-userspace.sh",
+    "packaging/{build-release-binaries,pack-release,check-binary-portability}.sh",
+    "packaging/setup-linux-release-userspace.sh",
   ],
 };
 

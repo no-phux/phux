@@ -1,13 +1,13 @@
 // The shared presentation contract for human diagnostics, in every runtime
-// that renders it: scripts/lib/output.sh under each POSIX shell, this
-// package's output.ts, and scripts/lib/output.mjs while scripts still import it.
+// that renders it: dev/lib/output.sh under each POSIX shell and this
+// package's output.ts.
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoPath } from "./repo.ts";
 
-const HELPER = repoPath("scripts/lib/output.sh");
+const HELPER = repoPath("dev/lib/output.sh");
 const SHELLS = [...new Set(["/bin/sh", "/bin/bash", Bun.which("dash")])].filter(
   (shell): shell is string => shell !== null && existsSync(shell),
 );
@@ -30,9 +30,6 @@ const COMMANDS: Record<string, string[]> = Object.fromEntries(
   SHELLS.map((shell) => [shell, [shell, "-eu", "-c", STATUS, "test", HELPER]]),
 );
 COMMANDS["output.ts"] = [process.execPath, "-e", script(repoPath("tools/src/lib/output.ts"))];
-// The .mjs twin retires with its last importer under scripts/.
-const MJS = repoPath("scripts/lib/output.mjs");
-if (existsSync(MJS)) COMMANDS["output.mjs"] = [process.execPath, "-e", script(MJS)];
 
 function environment(overrides: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
@@ -49,7 +46,7 @@ function runStatus(
   env: Record<string, string> = {},
 ): { stdout: string; stderr: string } {
   const result = Bun.spawnSync(command, {
-    cwd: repoPath("scripts"),
+    cwd: repoPath("dev"),
     env: environment(env),
     stdout: "pipe",
     stderr: "pipe",
@@ -95,7 +92,7 @@ describe.each(Object.keys(COMMANDS))("%s", (name) => {
         const redirect = destination === "stderr" ? '>"$PHUX_OTHER"' : '2>"$PHUX_OTHER"';
         const chunks: Uint8Array[] = [];
         const child = Bun.spawn(["/bin/sh", "-c", `exec "$@" ${redirect}`, "sh", ...command], {
-          cwd: repoPath("scripts"),
+          cwd: repoPath("dev"),
           env: environment({ PHUX_OTHER: other }),
           terminal: { cols: 200, rows: 24, data: (_terminal, data) => chunks.push(data) },
         });

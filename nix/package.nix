@@ -5,7 +5,7 @@
 # Nix sandbox allows neither. So the engine is built here, the way its
 # build.rs builds it, from the commit build.rs pins, with that commit's own Zig
 # package set and the pinned Zig release, and handed over through
-# LIBGHOSTTY_VT_SYS_LIB_DIR. scripts/check-ghostty-pin.sh fails when
+# LIBGHOSTTY_VT_SYS_LIB_DIR. `bun tools/main.ts ghostty-pin` fails when
 # ghosttyRev drifts from build.rs.
 {
   lib,
@@ -77,7 +77,7 @@ rustPlatform.buildRustPackage {
     allowBuiltinFetchGit = true;
   };
 
-  # The release tarball's members (scripts/pack-release.sh).
+  # The release tarball's members (packaging/pack-release.sh).
   cargoBuildFlags = [
     "--bin"
     "phux"

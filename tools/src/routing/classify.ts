@@ -70,7 +70,6 @@ const PERF_ICOUNT_PATHS = [
   "{Cargo.toml,Cargo.lock,rust-toolchain.toml,flake.nix,flake.lock}",
   ".cargo/**",
   "benchmarks/icount-baseline.json",
-  "scripts/ci/perf-icount.sh",
   "tools/src/{perf,lib}/**",
   "tools/main.ts",
   "just/perf.just",
@@ -84,9 +83,9 @@ const PERF_ICOUNT_PATHS = [
 export const CONTENT_PATHS = [
   "docs/**",
   ".agents/skills/{using-phux,using-phux-mcp,using-phux-tools}/**",
-  "scripts/{install,install-desktop,export-product-skills}.sh",
-  "scripts/product-skills",
-  "scripts/skills-package/**",
+  "scripts/{install,install-desktop}.sh",
+  "packaging/skills/{export.sh,allowlist}",
+  "packaging/skills/package/**",
   // The website's design tokens, fetched from phux by revision.
   "clients/phux-web/assets/phux-tokens.css",
   "crates/phux-design/tokens/src/vocabulary.json",
@@ -102,8 +101,7 @@ function mobileFfiPaths(root: string): string[] {
     ...[
       ...pathClosure([{ dir: "crates/phux-client-ffi", dev: false, features: ["uniffi"] }], root),
     ].map((dir) => `${dir}/**`),
-    "scripts/build-mobile-ffi-{xcframework,android}.sh",
-    "scripts/ci/setup-android-ndk.sh",
+    "packaging/build-mobile-ffi-{xcframework,android}.sh",
     // The generator writes the archives' design/ directory.
     "tools/src/design/**",
     ".github/workflows/ffi-{android,xcframework}.yml",

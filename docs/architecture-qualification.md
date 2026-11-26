@@ -122,8 +122,8 @@ Wire: `PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_
 Current artifact/surface routes:
 
 ```sh
-bash scripts/build-mobile-ffi-xcframework.sh --full --out /absolute/scratch/apple-ffi
-bash scripts/build-mobile-ffi-android.sh --out /absolute/scratch/android-ffi
+bash packaging/build-mobile-ffi-xcframework.sh --full --out /absolute/scratch/apple-ffi
+bash packaging/build-mobile-ffi-android.sh --out /absolute/scratch/android-ffi
 python3 clients/rune/ios/build.py --target simulator --out /absolute/scratch/ios-sim
 python3 clients/rune/ios/build.py --target device --out /absolute/scratch/ios-device
 cargo build --locked -p phux

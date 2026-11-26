@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+# Exercise fresh-PATH behavior and compiler download integrity without network.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-setup-test.XXXXXX")"
+scratch="$(cd "$scratch" && pwd)"
+trap 'rm -rf "$scratch"' EXIT
+repo="$scratch/repo"
+bin="$scratch/bin"
+mkdir -p "$repo/scripts" "$repo/dev/lib" "$repo/.config" "$bin"
+cp "$root"/dev/{doctor,setup-rust,install-zig}.sh "$repo/dev/"
+cp "$root/dev/lib/dev-toolchain.sh" "$repo/dev/lib/"
+cp "$root/dev/lib/output.sh" "$repo/dev/lib/"
+cp "$root/dev/lib/apple-toolchain-env.sh" "$repo/dev/lib/"
+# doctor.sh sources this during rust_tools. The fixture doctor fails closed
+# without the sibling file.
+cp "$root/dev/lib/mbx-target.sh" "$repo/dev/lib/"
+cp "$root/rust-toolchain.toml" "$repo/"
+cp "$root/mise.toml" "$repo/"
+cp "$root/.config/zig-toolchain.json" "$repo/.config/"
+source "$root/dev/lib/dev-toolchain.sh"
+bash_bin="$BASH"
+for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr chmod; do
+    ln -s "$(command -v "$tool")" "$bin/$tool"
+done
+if command -v sha256sum >/dev/null 2>&1; then
+    ln -s "$(command -v sha256sum)" "$bin/sha256sum"
+else
+    ln -s "$(command -v shasum)" "$bin/shasum"
+fi
+expect_pass() {
+    if ! PATH="$bin" "$bash_bin" "$@" >"$scratch/output" 2>&1; then
+        cat "$scratch/output" >&2; echo "unexpected failure: $*" >&2; exit 1
+    fi
+}
+expect_fail() {
+    local expected="$1"
+    shift
+    if PATH="$bin" "$bash_bin" "$@" >"$scratch/output" 2>&1; then
+        echo "unexpected success: $*" >&2; exit 1
+    fi
+    grep -Fq "$expected" "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+}
+
+# A docs contributor needs Bun for the docs gate (tools/src/docs) and no
+# compiler or Node: on a PATH without Bun, Bun is the one problem.
+expect_fail 'doctor docs: 1 problem(s)' "$repo/dev/doctor.sh" docs
+grep -Fq 'missing/incompatible: bun' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+expect_fail 'usage:' "$repo/dev/doctor.sh" typo
+# Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
+# Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the
+# remedy (the fixture PATH has no compilers either way).
+unset IN_NIX_SHELL
+expect_fail 'mise install' "$repo/dev/doctor.sh" core
+grep -Fq 'bash dev/setup-rust.sh core' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/dev/doctor.sh" core
+rm -f "$bin/uname"
+cat >"$bin/uname" <<'SH'
+#!/bin/sh
+case "$1" in -s) echo Linux ;; -m) echo "${SETUP_TEST_ARCH:-x86_64}" ;; esac
+SH
+cat >"$bin/rustc" <<SH
+#!/bin/sh
+test "\$RUSTUP_AUTO_INSTALL" = 0 || exit 1
+if [ "\$1" = --print ]; then echo "\$SETUP_TEST_SYSROOT"; exit 0; fi
+if [ "\$1" = -o ]; then
+    if [ -n "\$SETUP_TEST_LINK_FAIL" ]; then echo 'libSystem.tbd:4:20: error: unknown architecture' >&2; exit 1; fi
+    printf '#!/bin/sh\\nexit 0\\n' >"\$2"; chmod +x "\$2"; exit 0
+fi
+echo 'rustc $RUST_CHANNEL (fixture)'
+SH
+for tool in cargo cc mold pkg-config npm; do
+    cat >"$bin/$tool" <<'SH'
+#!/bin/sh
+exit 0
+SH
+done
+cat >"$bin/node" <<'SH'
+#!/bin/sh
+echo 22
+SH
+chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
+expect_pass "$repo/dev/doctor.sh" core
+
+# Check environment identity before Apple normalization can hide a mixed shell.
+mkdir -p "$scratch/custom-tools/command-wrappers/bin"
+cat >"$repo/dev/check-desktop.sh" <<'SH'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
+check_desktop_toolchain
+SH
+PHUX_ENV=mise IN_NIX_SHELL=1 expect_fail 'mixed Nix/Mise desktop toolchain' "$repo/dev/doctor.sh" desktop
+PHUX_ENV=mise expect_pass "$repo/dev/check-desktop.sh"
+PHUX_ENV=nix IN_NIX_SHELL=1 expect_pass "$repo/dev/check-desktop.sh"
+# Shell hooks can shadow Nix tools without changing PHUX_ENV.
+cp "$bin/cargo" "$scratch/custom-tools/command-wrappers/bin/cargo"
+PATH="$scratch/custom-tools/command-wrappers/bin:$bin" IN_NIX_SHELL=1 PHUX_ENV=nix \
+    "$bash_bin" "$repo/dev/check-desktop.sh" >"$scratch/output" 2>&1 && exit 1
+grep -Fq 'mixed Nix/Mise desktop toolchain' "$scratch/output"
+cp "$bin/rustc" "$scratch/rustc-good"
+sed "s/rustc $RUST_CHANNEL /rustc 0.0.0 /" "$scratch/rustc-good" >"$bin/rustc"
+expect_fail "desktop requires Rust $RUST_CHANNEL (found: rustc 0.0.0" "$repo/dev/check-desktop.sh"
+cp "$scratch/rustc-good" "$bin/rustc"
+
+# Tools present but the link broken (a linker older than the SDK) must fail.
+SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/dev/doctor.sh" core
+expect_fail 'Node 24+' "$repo/dev/doctor.sh" integrations
+sed 's/echo 22/echo 24/' "$bin/node" >"$scratch/node"
+cp "$scratch/node" "$bin/node"
+expect_fail 'bun' "$repo/dev/doctor.sh" integrations
+cp "$bin/npm" "$bin/bun"
+expect_pass "$repo/dev/doctor.sh" integrations
+expect_fail "Zig $ZIG_VERSION" "$repo/dev/doctor.sh" native
+cat >"$bin/zig" <<'SH'
+#!/bin/sh
+echo 0.0.0
+SH
+chmod +x "$bin/zig"
+expect_fail 'found: 0.0.0' "$repo/dev/doctor.sh" native
+sed "s/0.0.0/$ZIG_VERSION/" "$bin/zig" >"$scratch/zig"
+cp "$scratch/zig" "$bin/zig"
+expect_pass "$repo/dev/doctor.sh" native
+# Linux desktop checks libraries. Missing a development
+# package is diagnosed even when the machine has no graphical login.
+cp "$bin/npm" "$bin/python3"
+bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
+cat >"$bin/bun" <<SH
+#!/bin/sh
+echo '$bun_version'
+SH
+chmod +x "$bin/bun"
+expect_pass "$repo/dev/doctor.sh" desktop
+grep -Fq 'xkbcommon-x11' "$scratch/output"
+SETUP_TEST_ARCH=aarch64 expect_pass "$repo/dev/doctor.sh" desktop
+SETUP_TEST_ARCH=ppc64le expect_fail 'unsupported desktop platform' "$repo/dev/doctor.sh" desktop
+cat >"$bin/pkg-config" <<'SH'
+#!/bin/sh
+test "$2" != xkbcommon-x11
+SH
+expect_fail 'xkbcommon-x11 development libraries' "$repo/dev/doctor.sh" desktop
+cp "$bin/npm" "$bin/pkg-config"
+
+# Browser-client work reuses its committed engine; Zig must not be required.
+export SETUP_TEST_SYSROOT="$scratch/sysroot"
+mkdir -p "$SETUP_TEST_SYSROOT/lib/rustlib/wasm32-unknown-unknown/lib" "$repo/clients/phux-web" "$repo/clients/phux-vt-web/vendor"
+cp "$root/clients/phux-web/Cargo.toml" "$repo/clients/phux-web/"
+touch "$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
+bindgen="$(sed -n 's/^wasm-bindgen = "=\([^"]*\)"/\1/p' "$root/clients/phux-web/Cargo.toml")"
+cat >"$bin/wasm-bindgen" <<SH
+#!/bin/sh
+echo 'wasm-bindgen $bindgen'
+SH
+chmod +x "$bin/wasm-bindgen"
+cp "$bin/npm" "$bin/wasm-pack"
+cp "$bin/npm" "$bin/wasm-opt"
+rm -f "$bin/zig"
+expect_pass "$repo/dev/doctor.sh" web
+cp "$scratch/zig" "$bin/zig"
+chmod +x "$bin/zig"
+rm -f "$bin/mold"
+expect_fail 'mold' "$repo/dev/doctor.sh" core
+
+# macOS must diagnose an SDK with no nmedit before starting the VT build.
+cat >"$bin/uname" <<'SH'
+#!/bin/sh
+case "$1" in -s) echo Darwin ;; -m) echo "${SETUP_TEST_ARCH:-arm64}" ;; esac
+SH
+cat >"$bin/xcrun" <<'SH'
+#!/bin/sh
+test "$1" = --show-sdk-path
+SH
+chmod +x "$bin/xcrun"
+expect_fail 'macOS SDK/nmedit' "$repo/dev/doctor.sh" native
+
+# The macOS desktop needs no Apple tools beyond the SDK the native build uses.
+cp "$bin/npm" "$bin/xcrun"
+cp "$bin/npm" "$bin/python3"
+bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
+cat >"$bin/bun" <<SH
+#!/bin/sh
+echo '$bun_version'
+SH
+chmod +x "$bin/bun"
+expect_pass "$repo/dev/doctor.sh" desktop
+cat >"$bin/bun" <<'SH'
+#!/bin/sh
+echo 0.0.0
+SH
+expect_fail "Bun $bun_version (found: 0.0.0)" "$repo/dev/doctor.sh" desktop
+
+# Opt-in rustup components must not leak into a core contributor's install.
+export SETUP_TEST_LOG="$scratch/rustup-log"
+cat >"$bin/rustup" <<'SH'
+#!/bin/sh
+echo "$*" >>"$SETUP_TEST_LOG"
+SH
+chmod +x "$bin/rustup"
+expect_pass "$repo/dev/setup-rust.sh" core
+grep -Fq "toolchain install $RUST_CHANNEL --profile minimal" "$SETUP_TEST_LOG"
+if grep -Eq 'wasm32|llvm-tools|rust-analyzer|default ' "$SETUP_TEST_LOG"; then exit 1; fi
+expect_pass "$repo/dev/setup-rust.sh" web
+grep -Fq "target add --toolchain $RUST_CHANNEL wasm32-unknown-unknown" "$SETUP_TEST_LOG"
+
+# A corrupt download must never be extracted or published. Use a fixture pin
+# for the valid path, with a real tarball and real SHA verification.
+export SETUP_TEST_ARCHIVE="$scratch/download.tar.xz"
+export SETUP_TEST_DOWNLOADS="$scratch/downloads"
+cat >"$bin/curl" <<'SH'
+#!/bin/sh
+set -eu
+resume=
+output=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -C) resume=$2; shift ;;
+        -o) output=$2; shift ;;
+    esac
+    shift
+done
+[ -n "$output" ] || exit 1
+case "${SETUP_TEST_CURL_MODE:-complete}" in
+    complete)
+        echo complete >>"$SETUP_TEST_DOWNLOADS"
+        cp "$SETUP_TEST_ARCHIVE" "$output" ;;
+    resume|no-range)
+        [ "$resume" = - ] || exit 1
+        if [ ! -s "$output" ]; then
+            echo partial >>"$SETUP_TEST_DOWNLOADS"
+            head -c 40 "$SETUP_TEST_ARCHIVE" >"$output"
+            exit 18
+        fi
+        if [ "$SETUP_TEST_CURL_MODE" = no-range ]; then
+            echo refused-range >>"$SETUP_TEST_DOWNLOADS"
+            exit 33
+        fi
+        echo resumed >>"$SETUP_TEST_DOWNLOADS"
+        tail -c +41 "$SETUP_TEST_ARCHIVE" >>"$output" ;;
+esac
+SH
+ln -s "$(command -v cp)" "$bin/cp"
+ln -s "$(command -v tail)" "$bin/tail"
+cp "$bin/npm" "$bin/sleep"
+chmod +x "$bin/curl"
+printf 'corrupt archive' >"$SETUP_TEST_ARCHIVE"
+expect_fail 'checksum' "$repo/dev/install-zig.sh" "$scratch/toolchains"
+[[ ! -e "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" ]]
+SETUP_TEST_ARCH=x86_64 expect_fail 'checksum' "$repo/dev/install-zig.sh" "$scratch/toolchains"
+[[ ! -e "$scratch/toolchains/zig-x86_64-macos-$ZIG_VERSION" ]]
+mkdir -p "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION"
+cp "$bin/zig" "$scratch/payload/zig-aarch64-macos-$ZIG_VERSION/zig"
+tar -cf "$SETUP_TEST_ARCHIVE" -C "$scratch/payload" "zig-aarch64-macos-$ZIG_VERSION"
+if command -v sha256sum >/dev/null 2>&1; then
+    sha="$(sha256sum "$SETUP_TEST_ARCHIVE" | awk '{print $1}')"
+else
+    sha="$(shasum -a 256 "$SETUP_TEST_ARCHIVE" | awk '{print $1}')"
+fi
+cat >"$repo/.config/zig-toolchain.json" <<SH
+{
+  "version": "$ZIG_VERSION",
+  "archives": {
+    "aarch64-macos": {
+      "archive": "zig-aarch64-macos-$ZIG_VERSION.tar.xz",
+      "sha256": "$sha"
+    }
+  }
+}
+SH
+rm -f "$SETUP_TEST_DOWNLOADS"
+SETUP_TEST_CURL_MODE=resume expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
+[[ "$(cat "$SETUP_TEST_DOWNLOADS")" == $'partial\nresumed' ]]
+grep -Fxq "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" "$scratch/output"
+rm -f "$SETUP_TEST_DOWNLOADS"
+
+# An endpoint that rejects resuming exhausts the bounded retries, cleans the
+# stage and leaves an existing verified installation available for reuse.
+SETUP_TEST_CURL_MODE=no-range expect_fail 'could not download Zig' "$repo/dev/install-zig.sh" "$scratch/no-range"
+[[ "$(cat "$SETUP_TEST_DOWNLOADS")" == $'partial\nrefused-range\nrefused-range\nrefused-range' ]]
+[[ -z "$(find "$scratch/no-range" -mindepth 1 -print)" ]]
+rm -f "$SETUP_TEST_DOWNLOADS"
+expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
+[[ ! -e "$SETUP_TEST_DOWNLOADS" ]]
+# Engine regeneration rejects corrupt source before building, preserves the
+# old artifact on ABI failure, and never replaces it in comparison mode. It
+# builds only with the digest-verified Zig it installs, never a Zig on PATH,
+# and tolerates the compiler's occasional nondeterministic build.
+mkdir -p "$repo/clients/phux-vt-web/scripts"
+cp "$root/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$repo/clients/phux-vt-web/scripts/"
+mkdir -p "$repo/dev/zig-mirrors"
+cp "$root/dev/zig-mirrors/"{build.zig,build.zig.zon} "$repo/dev/zig-mirrors/"
+ln -s "$(command -v cmp)" "$bin/cmp"
+ln -s "$(command -v du)" "$bin/du"
+ln -s "$(command -v cut)" "$bin/cut"
+export PHUX_TOOLCHAIN_DIR="$scratch/toolchains"
+export SETUP_TEST_ZIG_CALLS="$scratch/zig-calls"
+export SETUP_TEST_ARO=aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa
+engine="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
+printf old >"$engine"
+printf corrupt >"$SETUP_TEST_ARCHIVE"
+cat >"$bin/zig" <<'SH'
+#!/bin/sh
+echo 'decoy zig on PATH was used'
+exit 1
+SH
+expect_fail 'source checksum mismatch' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
+[[ "$(cat "$engine")" = old ]]
+[[ ! -s "$SETUP_TEST_ZIG_CALLS" ]]
+export GHOSTTY_SRC="$scratch/local engine"
+export SETUP_TEST_EXPECT_SOURCE="$GHOSTTY_SRC"
+mkdir -p "$GHOSTTY_SRC"
+touch "$GHOSTTY_SRC/build.zig"
+# Each build emits the next line of SETUP_TEST_BUILDS, or "rebuilt".
+export SETUP_TEST_BUILDS="$scratch/builds"
+cat >"$PHUX_TOOLCHAIN_DIR/zig-aarch64-macos-$ZIG_VERSION/zig" <<SH
+#!/bin/sh
+if [ "\$1" = version ]; then echo '$ZIG_VERSION'; exit; fi
+test -n "\$ZIG_GLOBAL_CACHE_DIR" || exit 1
+option() {
+  key="\$1"
+  shift
+  while [ "\$#" -gt 1 ]; do
+    if [ "\$1" = "\$key" ]; then printf '%s' "\$2"; return; fi
+    shift
+  done
+  return 1
+}
+case " \$* " in
+  *' --fetch=needed '*)
+    echo fetch >>"\$SETUP_TEST_ZIG_CALLS"
+    if [ -n "\${SETUP_TEST_FETCH_FAIL:-}" ]; then echo 'fixture mirror rejected'; exit 23; fi
+    grep -Fq 'https://deps.files.ghostty.org/aro-d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz' build.zig.zon || exit 1
+    grep -Fq "\$SETUP_TEST_ARO" build.zig.zon || exit 1
+    package="\$(option --pkg-dir "\$@")" || exit 1
+    cache="\$(option --cache-dir "\$@")" || exit 1
+    test "\$package" = "\$SETUP_TEST_EXPECT_SOURCE/zig-pkg" || { echo 'wrong mirror package directory'; exit 1; }
+    test "\$ZIG_GLOBAL_CACHE_DIR" = "\$(dirname "\$cache")/zig-mirror-global" || exit 1
+    mkdir -p "\$package/\$SETUP_TEST_ARO"
+    exit 0 ;;
+esac
+echo compile >>"\$SETUP_TEST_ZIG_CALLS"
+test "\$PWD" = "\$SETUP_TEST_EXPECT_SOURCE" || exit 1
+test -d "zig-pkg/\$SETUP_TEST_ARO" || { echo 'mirror not materialized before compile'; exit 1; }
+test ! -e "\$ZIG_GLOBAL_CACHE_DIR/compiled" || { echo 'compiler cache was reused'; exit 1; }
+case "\$ZIG_GLOBAL_CACHE_DIR" in
+  */zig-global-1) mkdir -p "\$ZIG_GLOBAL_CACHE_DIR/p"; printf fetched >"\$ZIG_GLOBAL_CACHE_DIR/p/package" ;;
+  */zig-global-[23]) test -f "\$ZIG_GLOBAL_CACHE_DIR/p/package" || { echo 'fetched package cache was lost'; exit 1; } ;;
+  *) echo 'compile did not use an independent cache'; exit 1 ;;
+esac
+printf compiled >"\$ZIG_GLOBAL_CACHE_DIR/compiled"
+case " \$* " in *' -Doptimize=safe '*) ;; *) exit 1 ;; esac
+case " \$* " in *' --seed=0 '*) ;; *) exit 1 ;; esac
+case " \$* " in *' -j1 '*) ;; *) exit 1 ;; esac
+case " \$* " in *' --global-cache-dir '*|*' --seed '*) exit 1 ;; esac
+bytes=rebuilt
+if [ -s "\$SETUP_TEST_BUILDS" ]; then
+  bytes="\$(head -n 1 "\$SETUP_TEST_BUILDS")"
+  sed 1d "\$SETUP_TEST_BUILDS" >"\$SETUP_TEST_BUILDS.next"
+  mv "\$SETUP_TEST_BUILDS.next" "\$SETUP_TEST_BUILDS"
+fi
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = --prefix ]; then
+    mkdir -p "\$2/bin"
+    printf '%s' "\$bytes" >"\$2/bin/ghostty-vt.wasm"
+    exit
+  fi
+  shift
+done
+exit 1
+SH
+# A failed hash-checked bootstrap stops both modes before compilation, ABI
+# checks, consuming a deterministic-build result, or touching the vendor file.
+printf not-consumed >"$SETUP_TEST_BUILDS"
+for mode in build --check; do
+    : >"$SETUP_TEST_ZIG_CALLS"
+    SETUP_TEST_FETCH_FAIL=1 expect_fail 'fixture mirror rejected' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" "$mode"
+    [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = fetch ]]
+    [[ "$(cat "$SETUP_TEST_BUILDS")" = not-consumed ]]
+    [[ "$(cat "$engine")" = old ]]
+done
+: >"$SETUP_TEST_BUILDS"
+cat >"$bin/node" <<'SH'
+#!/bin/sh
+echo 'fixture ABI rejected'
+exit 1
+SH
+: >"$SETUP_TEST_ZIG_CALLS"
+expect_fail 'ABI rejected' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
+[[ "$(cat "$engine")" = old ]]
+cp "$bin/npm" "$bin/node"
+: >"$SETUP_TEST_ZIG_CALLS"
+expect_fail 'engine differs in 3 rebuilds' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile\ncompile' ]]
+[[ "$(grep -c '^attempt [123]: rebuilt sha256' "$scratch/output")" = 3 ]]
+[[ "$(cat "$engine")" = old ]]
+: >"$SETUP_TEST_ZIG_CALLS"
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile\ncompile' ]]
+[[ "$(cat "$engine")" = rebuilt ]]
+: >"$SETUP_TEST_ZIG_CALLS"
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
+[[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
+# Resolve a relative development override (including spaces) before the fetch
+# changes cwd to the manifest shim.
+(
+    cd "$scratch"
+    export GHOSTTY_SRC="local engine"
+    : >"$SETUP_TEST_ZIG_CALLS"
+    expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
+    [[ "$(cat "$SETUP_TEST_ZIG_CALLS")" = $'fetch\ncompile' ]]
+)
+# One divergent build is retried from fresh caches; two that disagree never
+# become the committed engine.
+printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
+grep -Fq 'matches the verified source rebuild (attempt 2)' "$scratch/output"
+[[ "$(cat "$engine")" = rebuilt ]]
+printf 'variant-1\nvariant-2\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_pass "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh" --check
+grep -Fq 'matches the verified source rebuild (attempt 3)' "$scratch/output"
+[[ "$(cat "$engine")" = rebuilt ]]
+printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_fail 'two rebuilds differ' "$repo/clients/phux-vt-web/scripts/build-vt-wasm.sh"
+[[ "$(cat "$engine")" = rebuilt ]]
+unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR SETUP_TEST_ZIG_CALLS SETUP_TEST_ARO SETUP_TEST_EXPECT_SOURCE
+echo 'dev setup tests passed (scoped PATH, version/SDK errors, opt-in components, checksum rejection, idempotence)'

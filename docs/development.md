@@ -19,7 +19,7 @@ mise install     # or: nix develop
 just doctor      # scope: native (default), docs, core, server, integrations, web, desktop, ci
 ```
 
-`bash scripts/doctor.sh <scope>` works before `just` is installed; it only
+`bash dev/doctor.sh <scope>` works before `just` is installed; it only
 checks and prints remedies.
 
 With direnv, `.envrc` loads Nix; an untracked `.envrc.local` containing
@@ -44,8 +44,8 @@ brew install pkgconf
 ```
 
 CI's `native setup` lane uses neither Mise nor
-Nix; reproduce it with `bash scripts/setup-rust.sh native`, Zig from
-`scripts/install-zig.sh`, and `just native-smoke`.
+Nix; reproduce it with `bash dev/setup-rust.sh native`, Zig from
+`dev/install-zig.sh`, and `just native-smoke`.
 
 ## libghostty-vt
 
@@ -53,7 +53,7 @@ The terminal engine is Ghostty's C library ([libghostty in phux](./libghostty.md
 On Linux and macOS (arm64, x86_64) the default static build links a
 checksummed prebuilt `libghostty-vt.a`, so it needs no Zig. Other targets or
 flavors, offline builds and failed downloads build from source with Zig
-0.17.1, cached outside `target/`. `bash scripts/check-ghostty-pin.sh`
+0.17.1, cached outside `target/`. `bun tools/main.ts ghostty-pin`
 validates the pin and reports prebuilt coverage. `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`
 forces a source build, `GHOSTTY_SOURCE_DIR` builds a local Ghostty checkout,
 and `LIBGHOSTTY_VT_SYS_LIB_DIR` links a library you built.
@@ -80,7 +80,7 @@ enforces it. Rust `E0514` means the toolchain changed under a build: check
 | docs | `just docs-check` |
 | pure Rust | `just core-check` |
 | server, TUI, CLI, FFI | `just crate-check phux-server` |
-| agent integrations | `just integration-check pi` (or runtime, opencode-v2, omp, claude, grok) |
+| agent integrations | `just integration-check pi` (or runtime, opencode-v2, omp, claude, grok, muse) |
 | browser client | `just web-check` |
 | Phux Rune desktop | `just rune-check` |
 | everything | `just check` |
@@ -90,7 +90,7 @@ Run `just doctor <scope>` for the area first.
 ## Browser client
 
 Client work uses the committed `clients/phux-vt-web/vendor/ghostty-vt.wasm`
-and needs no Zig. It needs the Rust wasm target (`bash scripts/setup-rust.sh web`),
+and needs no Zig. It needs the Rust wasm target (`bash dev/setup-rust.sh web`),
 Node, `wasm-pack`, `binaryen`, and `wasm-bindgen-cli` at the exact version the
 client manifests pin; `just doctor web` checks all of them.
 
@@ -101,7 +101,7 @@ wasm-pack test --node
 
 Browser e2e needs Chrome, a matching chromedriver, and a server:
 `PHUX_DEMO_PANE=cat cargo run --locked -p phux-server --example ws_demo_server`.
-`bash scripts/build-vt-wasm.sh` rebuilds the engine with the pinned Zig
+`bash clients/phux-vt-web/scripts/build-vt-wasm.sh` rebuilds the engine with the pinned Zig
 (`--check` verifies the committed one).
 
 ## Rune desktop
@@ -140,7 +140,7 @@ full pass. `just check` first simulates merging your committed branch into
 branch, and resolve them before spending time on builds. Uncommitted edits
 count for routing, not for the merge simulation.
 
-Test processes never inherit `PHUX_*`: `scripts/test-env-runner.sh` strips
+Test processes never inherit `PHUX_*`: `dev/test-env-runner.sh` strips
 all but its listed knobs, so add a new test knob there.
 
 Easy to forget:

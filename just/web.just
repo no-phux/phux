@@ -15,8 +15,8 @@ web-check: web-vt-check web-client-check
 web-vt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash scripts/build-vt-wasm.sh --check; fi
-    node --test scripts/test-vt-wasm.mjs
+    if [[ "${PHUX_WEB_ENGINE:-0}" == 1 ]]; then bash clients/phux-vt-web/scripts/build-vt-wasm.sh --check; fi
+    node --test clients/phux-vt-web/scripts/test-vt-wasm.mjs
     (cd clients/phux-vt-web && wasm-pack test --node --locked)
 
 [group('web')]

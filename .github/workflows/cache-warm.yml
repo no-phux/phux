@@ -78,7 +78,7 @@ jobs:
       - run: nix develop -c just rust-lint
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   rust-test:
     name: warm rust test
@@ -109,7 +109,7 @@ jobs:
         run: nix develop -c just test-archive
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   rust-uniffi:
     name: warm rust uniffi
@@ -159,7 +159,7 @@ jobs:
         run: nix develop -c just perf-icount
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   web-vt:
     name: warm web vt
@@ -213,6 +213,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/prune-build-cache.sh
+        run: bun tools/main.ts prune-build-cache

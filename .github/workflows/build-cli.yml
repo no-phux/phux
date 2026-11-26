@@ -84,7 +84,7 @@ jobs:
 
       - name: Setup Linux 22.04 release userspace
         if: runner.os == 'Linux'
-        run: bash scripts/ci/setup-linux-release-userspace.sh
+        run: bash packaging/setup-linux-release-userspace.sh
 
       - name: Check out the source
         env:
@@ -98,10 +98,10 @@ jobs:
         if: inputs.channel == 'stable'
         env:
           TAG: ${{ inputs.id }}
-        run: bash scripts/check-release-version.sh "$TAG"
+        run: bash packaging/check-release-version.sh "$TAG"
 
       - name: Install Zig
-        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+        run: bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
 
       - name: Install Rust
         run: |
@@ -120,10 +120,10 @@ jobs:
         env:
           PHUX_BUILD_CHANNEL: ${{ inputs.channel }}
           PHUX_BUILD_SHA: ${{ inputs.channel == 'next' && inputs.ref || '' }}
-        run: bash scripts/build-release-binaries.sh "${{ matrix.target }}"
+        run: bash packaging/build-release-binaries.sh "${{ matrix.target }}"
 
       - name: Check binary portability
-        run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
+        run: bash packaging/check-binary-portability.sh target/release/phux target/release/phux-mcp
 
       # Stable only: a Developer ID signature is what the macOS firewall's
       # signed-software allowance trusts (phux-9lj9). The script fails on
@@ -136,13 +136,13 @@ jobs:
           APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: bash scripts/ci/sign-macos-desktop.sh --binaries target/release/phux target/release/phux-mcp
+        run: bash packaging/sign-macos-desktop.sh --binaries target/release/phux target/release/phux-mcp
 
       - name: Package
         env:
           ID: ${{ inputs.id }}
           TARGET: ${{ matrix.target }}
-        run: bash scripts/pack-release.sh --id "$ID" --target "$TARGET" --bin-dir target/release --out-dir . --smoke
+        run: bash packaging/pack-release.sh --id "$ID" --target "$TARGET" --bin-dir target/release --out-dir . --smoke
 
       # macOS: phux Server.app around the phux binary, so privacy grants
       # attach to one stable identity (docs/install.md#macos-permissions).
@@ -153,7 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           label="$(target/release/phux --version | awk '{print $2}')"
-          bash scripts/make-server-app.sh target/release/phux server-app "${label%%+*}"
+          bash packaging/make-server-app.sh target/release/phux server-app "${label%%+*}"
 
       - name: Sign and notarize phux Server.app
         if: runner.os == 'macOS' && inputs.channel == 'stable'
@@ -163,14 +163,14 @@ jobs:
           APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: bash scripts/ci/sign-macos-desktop.sh "server-app/phux Server.app" "$RUNNER_TEMP/phux-server-notarized.zip"
+        run: bash packaging/sign-macos-desktop.sh "server-app/phux Server.app" "$RUNNER_TEMP/phux-server-notarized.zip"
 
       - name: Package phux Server.app
         if: runner.os == 'macOS'
         env:
           ID: ${{ inputs.id }}
           TARGET: ${{ matrix.target }}
-        run: bash scripts/make-server-app.sh --pack "server-app/phux Server.app" . "$ID" "$TARGET"
+        run: bash packaging/make-server-app.sh --pack "server-app/phux Server.app" . "$ID" "$TARGET"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

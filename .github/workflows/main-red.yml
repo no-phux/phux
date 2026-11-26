@@ -1,6 +1,6 @@
 # How a red main surfaces. Pull requests merge on the fast Linux gate; slow
 # lanes first run on main's push (docs/ci.md#after-the-merge). When a tracked
-# push run ends red, scripts/ci/main-red.sh opens the ci/main-red issue with
+# push run ends red, `bun tools/main.ts main-red` opens the ci/main-red issue with
 # the suspect commits; once every tracked workflow is green again, it closes
 # that issue.
 #
@@ -40,8 +40,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: scripts/ci/main-red.sh
+          # The tools package and the Bun pin; runtime code needs no install.
+          sparse-checkout: |
+            tools/
+            mise.toml
+            .github/actions/setup-bun/
           sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/setup-bun
       - name: open, update or close the ci/main-red issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,4 +56,4 @@ jobs:
           RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: bash scripts/ci/main-red.sh
+        run: bun tools/main.ts main-red

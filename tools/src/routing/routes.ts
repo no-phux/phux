@@ -49,9 +49,7 @@ const ROUTES: Record<string, Surface[]> = {
   // First-party plugins and runnable CLI examples are native test inputs.
   "plugins/**": ["phux"],
   "examples/**": ["phux"],
-  "scripts/examples-smoke.sh": ["phux"],
-  "scripts/agent-verify/**": ["phux"],
-  "scripts/test-agent-examples.py": ["phux"],
+  "benchmarks/agent-verify/**": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // shared actions: route each action to the lanes that actually consume it.
   ".github/workflows/*.{yml,yaml}": [],
@@ -67,13 +65,15 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/actions/rune-host/**": ["rune"],
   // Also used by release workflows outside the lane model.
   ".github/actions/setup-bun/**": [...SURFACES],
-  "scripts/ci/setup-linux-release-userspace.sh": [],
-  "scripts/ci/prune-build-cache.sh": [],
+  "packaging/setup-linux-release-userspace.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
-  "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
-  "scripts/test-windows-mcp.py": [],
-  "scripts/test-windows-terminal.py": [],
+  "scripts/install-windows.ps1": [],
+  "install/{test-install-windows,test-windows-wsl}.ps1": [],
+  "install/test-windows-{mcp,terminal}.py": [],
+  // The install-surface guard's entrypoint; the installers and the tests it
+  // drives stay unrouted, so a change to them still requests every lane.
+  "install/test.sh": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
@@ -82,6 +82,8 @@ const ROUTES: Record<string, Surface[]> = {
   "tools/src/lib/**": ["web"],
   "tools/src/web/**": ["web"],
   "tools/src/integrations/**": ["integrations"],
+  // Every integration package's gates script runs the npm audit gate.
+  "tools/src/policy/npm-audit-*": ["integrations"],
   "tools/src/cargo/build-features.ts": ["phux"],
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
   ".agents/lib/**": ["integrations"],
@@ -92,12 +94,10 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/workflows/rune-macos.yml": ["rune"],
   "just/rune.just": ["rune"],
   // What that lane packages and qualifies with, outside its tree.
-  "scripts/check-binary-portability.sh": ["rune"],
+  "packaging/check-binary-portability.sh": ["rune"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
-  "scripts/build-vt-wasm.sh": ["web", "web_engine"],
-  "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
+  "clients/phux-vt-web/scripts/**": ["web", "web_engine"],
   "{integrations,.claude-plugin,.grok-plugin}/**": ["integrations"],
-  "scripts/ci/agent-integrations.sh": ["integrations"],
   ".release-please-manifest.json": ["integrations"],
   "just/web.just": ["web"],
   // Root crates reach the web and Rune lanes only through Cargo (see
@@ -105,7 +105,7 @@ const ROUTES: Record<string, Surface[]> = {
   "crates/**": ["phux"],
   "crates/**/{Cargo.toml,Cargo.lock,build.rs,*.ld,*.lds,*.c,*.h}": ["native"],
   // Golden release manifests are include_str! inputs of the updaters' tests.
-  "scripts/fixtures/release-manifest/**": ["phux"],
+  "packaging/release-manifest/**": ["phux"],
   // Path crates inherit `workspace = true` keys from the root manifest, and
   // the Rune build reads the root toolchain and Cargo config. Its lock is
   // its own, so the root Cargo.lock stays off the Rune lane.
@@ -115,34 +115,33 @@ const ROUTES: Record<string, Surface[]> = {
   "flake.{nix,lock}": ["phux", "web"],
   // The native lane; the Rune lane provisions with setup-rust.sh too.
   "just/setup.just": ["native"],
-  "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
-  "scripts/setup-rust.sh": ["native", "rune"],
+  "dev/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
+  "dev/setup-rust.sh": ["native", "rune"],
   // How the native and web-engine lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG, "rune"],
-  "scripts/install-zig.sh": [...ZIG, "rune"],
-  "scripts/lib/dev-toolchain.sh": [...ZIG, "rune"],
+  "dev/install-zig.sh": [...ZIG, "rune"],
+  "dev/lib/dev-toolchain.sh": [...ZIG, "rune"],
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
-  "scripts/lib/e2e-selection.sh": ["phux"],
+  "dev/lib/e2e-selection.sh": ["phux"],
   // Compile-free recipes and scripts that guards or release workflows run.
   // The root justfile is imports and `default`.
   justfile: [],
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
-  "scripts/check-*": [],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],
-  "scripts/{brand,update-brand,test_brand_update,design-pin}.py": [],
-  "scripts/{export-product-skills.sh,product-skills}": [],
-  "scripts/skills-package/**": [],
-  "scripts/build-mobile-ffi-android.sh": [],
-  "scripts/ci/setup-android-ndk.sh": [],
+  "brand/**": [],
+  // Release checks the guards and release workflows run.
+  "packaging/{check-release-version,test-release-cpu-baselines}.sh": [],
+  "packaging/skills/**": [],
+  "packaging/build-mobile-ffi-android.sh": [],
   // The worktree lease and the mbx target heal are guards. They do not
   // change what any product lane compiles.
-  "scripts/worktree-{claim,verify,release}.sh": [],
-  "scripts/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
+  "dev/worktree-lease.sh": [],
+  "dev/lib/{worktree-owner,worktree-owner_test,mbx-target,mbx-target_test}.sh": [],
 };
 
 /**

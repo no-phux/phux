@@ -4,9 +4,7 @@
 #
 # Both environments are held together rather than merely documented as similar:
 # `just toolchain-check` (a `just guards` gate) checks this file against the
-# manifests their native consumers actually read AND against flake.nix, and
-# `just toolchain-parity` compares the two resolved environments tool by tool
-# when both are installed.
+# manifests their native consumers actually read AND against flake.nix.
 
 [tools]
 # --- Compilers and runtimes -------------------------------------------------
@@ -32,7 +30,6 @@ bun = "1.4.4"
 # With these installed, the Mise path runs `just check`, not just `cargo` loops.
 # Each is pinned to the release the Nix shell currently resolves, so a gate
 # cannot pass in one environment and fail in the other over a linter version.
-# `just toolchain-parity` is what catches them diverging on a nixpkgs bump.
 just = "1.59.0"
 cargo-deny = "0.20.2"
 actionlint = "1.7.12"
@@ -57,10 +54,10 @@ mr-boxington = "1.29.0"
 # against, since nextest's source releases can need a newer compiler than this
 # repository's Rust pin. Install the official prebuilt binary instead:
 # https://nexte.st/docs/installation/pre-built-binaries/. `bash
-# scripts/doctor.sh ci` reports it missing.
+# dev/doctor.sh ci` reports it missing.
 #
 # The browser-client tools (wasm-pack, wasm-bindgen-cli, binaryen, trunk,
 # chromedriver), the build-observability crates
 # (cargo-llvm-lines, cargo-bloat, cargo-watch, cargo-insta, cargo-mutants),
 # mold and lldb stay Nix-only or native-install. They are area tools, not root
-# gate tools; `bash scripts/doctor.sh web` names browser tools with remedies.
+# gate tools; `bash dev/doctor.sh web` names browser tools with remedies.

@@ -1,4 +1,4 @@
-//! The Cargo target runner (`scripts/test-env-runner.sh`) stands between
+//! The Cargo target runner (`dev/test-env-runner.sh`) stands between
 //! every test process and the shell that started it. A test run from inside
 //! a production phux pane must not inherit the variables that address the
 //! live server, whichever driver started it.
@@ -15,7 +15,7 @@ const CANARY: &str = "PHUX_SCRUB_CANARY";
 
 fn runner() -> PathBuf {
     let manifest = std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
-    Path::new(&manifest).join("../../scripts/test-env-runner.sh")
+    Path::new(&manifest).join("../../dev/test-env-runner.sh")
 }
 
 /// A `deps/print-env` script standing in for a test binary, run through the

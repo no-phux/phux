@@ -87,9 +87,9 @@ jobs:
       - name: docs guards
         if: needs.plan.outputs.docs_only == 'true'
         run: |
-          bash scripts/check-docs.sh
-          bash scripts/check-install-surface.sh
-          bash scripts/check-file-tokens.sh --merge-base origin/main
+          bun tools/main.ts docs-check
+          bash install/test.sh
+          bun tools/main.ts file-tokens-check --merge-base origin/main
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         if: needs.plan.outputs.docs_only != 'true'
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -127,7 +127,7 @@ jobs:
       - &mbx-export-headroom
         name: leave disk for the mbx objects export
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
-        run: bash scripts/ci/mbx-export-headroom.sh
+        run: bun tools/main.ts mbx-export-headroom
 
   # One compile of the test profile, archived for the tests and e2e jobs. The
   # mbx store lets a PR recompile only the crates its diff reaches.
@@ -304,6 +304,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Before setup-node: the installer's PATH entries otherwise put the
+      # image's /usr/local/bin/node (22) ahead of setup-node's 26.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       # No npm cache: a PR-scoped entry is unrestorable after the PR closes
       # and only evicts main's build caches.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -313,8 +316,8 @@ jobs:
       # The npm agent-integration-release.yml packs and publishes with, so a
       # change that only breaks under it fails here instead of at release.
       - run: npm install --global npm@12.2.1
-      # `just agent-integrations-check`, without installing just.
-      - run: bash scripts/ci/agent-integrations.sh
+      # Only just from the pinned nixpkgs; Node, npm and Bun stay the ones above.
+      - run: nix shell --inputs-from . nixpkgs#just -c just agent-integrations-check
 
   # `just web-check` still runs both. The cache action saves only from main.
   web-vt:
@@ -375,12 +378,12 @@ jobs:
       - run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config mold curl xz-utils
-      - run: bash scripts/test-dev-setup.sh
+      - run: bash dev/test-dev-setup.sh
       - run: |
-          bash scripts/setup-rust.sh native
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          bash dev/setup-rust.sh native
+          bash dev/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
       # `just native-smoke`, without installing just.
-      - run: bash scripts/native-smoke.sh
+      - run: bash dev/native-smoke.sh
 
   # Fast-path PRs skip packaging and the second Linux host.
   rune:
@@ -416,13 +419,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - name: Strict CI aggregate v2
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
           DRAFT: ${{ github.event.pull_request.draft }}
           RECEIPT: ${{ needs.plan.outputs.receipt }}
-        run: bash scripts/ci/ci-aggregate.sh
+        run: bun tools/main.ts ci-aggregate
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: needs.plan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
@@ -460,6 +464,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/ci/prune-build-cache.sh
+        run: bun tools/main.ts prune-build-cache
