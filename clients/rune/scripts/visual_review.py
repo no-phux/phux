@@ -219,6 +219,21 @@ def settings_inventory():
              THEMES, ("standard", "ax5"), ("text-bigger", "interface-bigger"))
     })
     cases.update(theme_inventory(THEMES))
+    cases.update(machine_colour_inventory())
+    return cases
+
+
+def machine_colour_inventory():
+    desktop = (("desktop", 1100, 720, 1), ("desktop-min", 640, 360, 1))
+    phone = (("phone", 393, 852, 1), ("small", 320, 568, 1),
+             ("phone", 393, 852, 2), ("small", 320, 568, 2))
+    cases = {}
+    for form, width, height, scale in (*desktop, *phone):
+        states = ("ordinary",) if form.startswith("desktop") else (
+            "ordinary", "large", "keyboard", "large-keyboard")
+        for state, theme, focus in product(states, THEMES, ("", "-focused")):
+            name = f"settings/machine-colour-{form}-{state}-{theme}-{scale}x{focus}.png"
+            cases[name] = (width, height, scale)
     return cases
 
 
@@ -253,6 +268,8 @@ def inbox_exporter_for(stem):
 
 def exporter_for(family, stem):
     if family == "settings":
+        if stem.startswith("machine-colour-"):
+            return "machine_colour_visual_review_frames"
         if stem.startswith("size-"):
             return "settings_size_visual_review_frames"
         if stem.startswith("theme-"):

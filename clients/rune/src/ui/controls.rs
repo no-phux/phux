@@ -59,6 +59,7 @@ impl Sheet {
                     })
                     // What scrolls under the footer fades: there is more.
                     .scroll_edge_fade(s.s6)
+                    .scroll_margin(s.s6)
                     .child(body),
             )
             .children(foot.map(|foot| {
