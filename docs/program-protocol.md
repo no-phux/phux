@@ -207,15 +207,26 @@ app = "notes"
 command = ["notes", "${PHUX_RESUME_TOKEN}"]
 ```
 
-- A token counts only when the same report carries a valid `app`. An
-  invalid token is ignored and the previous one kept; `resume=` withdraws
-  it; a report without `resume` changes nothing.
+- A token counts only when the same report carries a valid `app` and the
+  foreground job, read at that moment, may set it. That job's process-group
+  leader must be a direct child of the pane's shell: its parent is the pane
+  process, and it is not the shell. A pane with no shell accepts a token
+  only while its own process is foreground. A report that fails this check
+  is ignored and the previous token kept, as is an invalid token. `resume=`
+  withdraws the token; a report without `resume` changes nothing. Where
+  those process queries have no answer (anything other than Linux and
+  macOS), the check fails closed and a token is not recorded.
 - phux reads `app` and `resume` apart from the record: the token is taken
   even from a discarded report, belongs to no `id`, and a pane holds one.
-- phux forgets it on withdrawal, on OSC 133 `A`, and when the pane's process
-  exits while the server runs. It survives server stop, upgrade, kill, and
-  reboot. A prompt and a token in the same output burst may lose the token;
-  the next `resume` report restores it.
+  While cat, ssh, or less is the foreground job, its output can still set
+  the token. OSC 7577 is what will narrow that; it is not in this rule yet.
+- phux forgets the token when the report withdraws it, when the job that
+  set it exits (a stopped job is still alive and keeps it), and when the
+  pane's process exits with a status while the server runs. OSC 133 `A`
+  does not forget it, including when the prompt and the token arrive in
+  one burst. A signal or an unknown pane exit keeps it, and a server
+  shutdown does not record a forget. It survives server stop, upgrade,
+  kill, and reboot when it was not forgotten.
 - At relaunch, a matching entry runs `command` in the pane's recorded
   directory instead of the recorded command, with no shell: each element
   exactly `${PHUX_RESUME_TOKEN}` becomes the token. No entry: the pane
@@ -237,10 +248,15 @@ pane can send one; records describe the pane, not a process.
   clients, can read records. Keep secrets out of `msg` and `title`.
 - A `resume` token is not a secret: it is ordinary pane output, stored
   unprotected on disk, and passed in argv.
-- Any writer can set a token for any `app`. A `[[restore.program]]` command
-  MUST treat it as untrusted (it may hold `/` and `..`): look it up among
-  things it created, never open it as a path or evaluate it as code
-  (`sh -c`). phux guarantees only its shape.
+- A token is recorded only when the foreground job is a direct child of the
+  pane shell, or when the pane's own process is that program (no shell).
+  The shell in the foreground, a background job, and a grandchild are
+  ignored, and OSC 133 `A` does not clear a stored token. cat, ssh, and
+  less can still set it while they are the foreground job, until OSC 7577
+  support lands. A `[[restore.program]]` command MUST treat the token as
+  untrusted (it may hold `/` and `..`): look it up among things it created,
+  never open it as a path or evaluate it as code (`sh -c`). phux guarantees
+  only its shape.
 
 ### Examples
 

@@ -139,7 +139,7 @@ impl TerminalActor {
         // Three samples, three clock reads. Drop guards around the same
         // intervals read the clock again on the way out and fold that probe
         // into `pty.vt_apply`.
-        self.resume.observe(payload);
+        self.observe_resume(payload);
         self.observe_program_resume(payload);
         self.observe_icon(payload);
         let started = std::time::Instant::now();

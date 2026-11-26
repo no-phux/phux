@@ -296,7 +296,7 @@ impl TerminalActor {
     /// path.
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
-        self.resume.observe(chunk);
+        self.observe_resume(chunk);
         self.observe_program_resume(chunk);
         self.observe_icon(chunk);
         self.vt_write_for_test(chunk);
@@ -369,13 +369,11 @@ impl TerminalActor {
                 effects::Effect::ProgramStatus(update) => {
                     changed |= self.program_status.apply(update.clone());
                 }
-                // ponytail: the write was scanned for `resume=` before its
-                // effects, so a token reported after a prompt in the same
-                // write is forgotten until the program reports again. Order
-                // the two when the engine reports the key itself.
+                // A prompt expires working and blocked records. It does not
+                // clear `resume=`: a prompt in the same write used to, and a
+                // forged OSC 133 `A` must not wipe a stored token.
                 effects::Effect::PromptStart => {
                     changed |= self.program_status.expire_active();
-                    self.resume.forget();
                 }
                 effects::Effect::Note(note) => {
                     if let Some(sink) = &self.program_note_sink {

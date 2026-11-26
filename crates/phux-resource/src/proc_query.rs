@@ -77,6 +77,16 @@ pub fn process_start_ms(pid: i32) -> Option<u64> {
     start::start_ms(pid)
 }
 
+/// `pid`'s parent, or `None` (gone, or no answer on this platform).
+/// Linux reads `/proc/<pid>/stat` field 4; macOS reads `pbi_ppid`.
+#[must_use]
+pub fn process_parent(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    start::parent(pid)
+}
+
 /// Start-time queries: macOS `PROC_PIDTBSDINFO` via `libc`, Linux `/proc`
 /// plus `sysconf(_SC_CLK_TCK)`.
 mod start {
@@ -386,7 +396,7 @@ mod platform {
 #[allow(clippy::expect_used, reason = "tests")]
 mod start_tests {
     use super::start::{parse_btime, parse_stat_starttime, ticks_since_boot_to_unix_ms};
-    use super::{process_start_ms, process_start_time};
+    use super::{process_parent, process_start_ms, process_start_time};
 
     /// A real `/proc/<pid>/stat` prefix, truncated after `starttime`.
     fn stat_line(comm: &str, starttime: u64) -> String {
@@ -456,6 +466,7 @@ mod start_tests {
         for pid in [0, -1, i32::MAX] {
             assert_eq!(process_start_time(pid), None);
             assert_eq!(process_start_ms(pid), None);
+            assert_eq!(process_parent(pid), None);
         }
     }
 
@@ -469,6 +480,7 @@ mod start_tests {
         assert_eq!(process_start_time(pid), Some(raw), "stable across calls");
 
         let first = process_start_ms(pid).expect("our own start ms is queryable");
+        assert!(process_parent(pid).is_some(), "a live process has a parent");
         assert_eq!(process_start_ms(pid), Some(first), "stable across calls");
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
