@@ -11,6 +11,36 @@ setting, with its default, is in the [config reference](./reference/config.md).
 The file is a sparse overlay: a key you set replaces the shipped value, and
 everything else keeps the default. You don't need one to start.
 
+## Coming from another multiplexer
+
+`phux migrate --source tmux` reads your tmux config, translates every key
+binding it can into phux config lines, and starts your coding agent to write
+them into your config and run `phux config check` and `phux config reload`.
+The agent reports what it could not translate. Pass `--prefix C-b` to keep
+tmux's prefix.
+
+```sh
+phux migrate --source tmux
+```
+
+[`phux config import-tmux`](./reference/cli.md#phux-config-import-tmux)
+reads a running tmux and writes a layer without an agent.
+[`phux migrate`](./reference/cli.md#phux-migrate) also reads zellij, Ghostty,
+herdr, and Rex configs. Neither binary reloads a running server; the migrate
+prompt is what runs `phux config reload`.
+
+`import-tmux --apply` writes `tmux-import.toml` beside your config and
+prepends it to `extends`, so your own settings still win. It refuses to
+overwrite an earlier import. To undo, remove it from `extends` and delete
+the file. Preview first:
+
+```sh
+phux config import-tmux > tmux-preview.toml && phux config check tmux-preview.toml
+```
+
+[Getting started](./getting-started.md#coming-from-tmux) lists what differs
+from tmux.
+
 ## Where it lives
 
 `$XDG_CONFIG_HOME/phux/config.toml`, else `~/.config/phux/config.toml`.
@@ -174,23 +204,3 @@ other users, and any device presenting a client certificate still need `phux
 pair`. If Tailscale can't answer, or this machine is tagged, nobody gets in
 this way. Each connection is audited as `tailnet:<login>`
 ([Security](./security.md)). Restart the server after changing it.
-
-## Coming from another multiplexer
-
-[`phux migrate`](./reference/cli.md#phux-migrate) has your coding agent
-translate tmux, zellij, Ghostty, herdr, or Rex bindings;
-[`phux config import-tmux`](./reference/cli.md#phux-config-import-tmux)
-writes a layer from a running tmux without an agent. Both write config;
-neither reloads a running server itself.
-
-`import-tmux --apply` writes `tmux-import.toml` beside your config and
-prepends it to `extends`, so your own settings still win. It refuses to
-overwrite an earlier import. To undo, remove it from `extends` and delete
-the file. Preview first:
-
-```sh
-phux config import-tmux > tmux-preview.toml && phux config check tmux-preview.toml
-```
-
-[Getting started](./getting-started.md#coming-from-tmux) lists what differs
-from tmux.
