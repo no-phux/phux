@@ -53,6 +53,10 @@ impl Desk {
             phone.reconcile(None, None);
             phone.picker = false;
             phone.page = None;
+            phone.menu = None;
+            // Session ids are each server's own: another computer's
+            // session 1 is not the one folded here.
+            phone.folded.clear();
             phone.release();
         }
         if let Some(native) = &mut self.native {

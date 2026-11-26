@@ -29,6 +29,7 @@ use usage::ValueEnum;
 
 mod add;
 mod add_code;
+mod add_mode;
 mod add_ssh;
 mod args;
 mod color;

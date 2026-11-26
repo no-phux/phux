@@ -212,3 +212,41 @@ fn a_listener_waiting_for_its_address_is_waiting_not_ok() {
     );
     assert_eq!(item.fix_command, None);
 }
+
+/// A capability that is off is a neutral mark, never a red failure: the
+/// checklist does not change doctor's exit code. Fixes sit under the reason,
+/// one command each, and a verdict newer than this binary reads as unknown.
+#[test]
+fn the_rendered_checklist_marks_off_as_neutral_with_fixes_under_it() {
+    let doc = serde_json::json!({"items": [
+        {"title": "Agent status", "status": "off", "reason": "no integration",
+         "fix_command": "a install\nb install"},
+        {"title": "File transfer", "status": "ok", "reason": "works"},
+        {"title": "Remote reach", "status": "waiting", "reason": "binding"},
+        {"title": "Restore", "status": "someday", "reason": "new verdict"},
+    ]});
+    let text = render_doc(&doc, "What works on mini", false, &|c| format!("run {c}"));
+    // The mark, a space, the 13-wide title column and its two-space gutter.
+    let under = " ".repeat(1 + 1 + 13 + 2);
+    assert_eq!(
+        text,
+        format!(
+            "\nWhat works on mini\n\
+             – Agent status   no integration\n\
+             {under}fix: run a install\n\
+             {under}fix: run b install\n\
+             ✓ File transfer  works\n\
+             … Remote reach   binding\n\
+             ? Restore        new verdict\n"
+        )
+    );
+    let colored = render_doc(&doc, "h", true, &str::to_owned);
+    assert!(
+        colored.contains("\n– Agent status"),
+        "off is never coloured: {colored}"
+    );
+    assert!(
+        colored.contains("\x1b[32m✓\x1b[0m File transfer"),
+        "{colored}"
+    );
+}

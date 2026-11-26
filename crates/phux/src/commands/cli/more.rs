@@ -275,7 +275,7 @@ pub(crate) struct GenReferenceDocsArgs {
 /// `phux archive <action>` — the session archive.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ArchiveAction {
-    /// Write the running server's sessions as a JSON archive.
+    /// Write the running server's sessions as a JSON archive
     Export {
         /// Write the archive to a path instead of stdout.
         #[usage(long, short = 'o', value_name = "PATH")]
@@ -293,7 +293,7 @@ pub(crate) enum ArchiveAction {
         projection: Option<String>,
     },
 
-    /// Recreate an archive's missing sessions without starting them.
+    /// Recreate an archive's missing sessions without starting them
     ///
     /// Each missing session becomes a persistent session with its archived
     /// host, project, project link, and directory, and each archived local

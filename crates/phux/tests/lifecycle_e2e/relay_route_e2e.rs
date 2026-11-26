@@ -118,19 +118,18 @@ impl Topology {
         let (tunnel_token, relay_fp) = enroll_route(&relay_home);
         let (relay, relay_addr) = start_relay(&relay_home);
 
+        // The server starts with no relay and no policy; `phux relay connect`
+        // writes both and restarts it in place, as an operator would.
         let server_home = Home::new();
-        let tunnel_file = server_home.secret_file("relay-route.token", &tunnel_token);
-        server_home.write_config(&format!(
-            "[[connector]]\nrelay = \"{relay_addr}\"\ntoken-file = \"{}\"\n\
-             cert-fingerprint = \"{relay_fp}\"\n\n[policy]\nmode = \"paired\"\n",
-            tunnel_file.display()
-        ));
+        server_home.write_config("");
         let server = server_home
             .command(&["server", "--exit-after-idle", "120"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn phux server");
+        wait_for_server(&server_home);
+        connect_relay(&server_home, &relay_addr, &relay_fp, &tunnel_token);
         Self {
             _relay_home: relay_home,
             server_home,
@@ -168,21 +167,57 @@ impl Topology {
     }
 }
 
-/// `phux relay pair --route ROUTE`: the tunnel token and the relay
-/// certificate fingerprint, read from its human output.
+/// `phux relay pair --route ROUTE --json`: the tunnel token and the relay
+/// certificate fingerprint. The human form names the command that hands
+/// both to the server.
 fn enroll_route(home: &Home) -> (String, String) {
-    let out = home.phux(&["relay", "pair", "--route", ROUTE]);
-    assert!(out.status.success(), "relay pair: {}", stderr(&out));
-    let text = stdout(&out);
-    let after = |heading: &str| {
-        let mut lines = text.lines();
-        let found = lines
-            .find(|line| line.starts_with(heading))
-            .and_then(|_| lines.next());
-        assert!(found.is_some(), "no {heading:?} section in: {text}");
-        found.unwrap().trim().to_owned()
-    };
-    (after("Tunnel token"), after("Relay certificate SHA-256"))
+    let human = home.phux(&["relay", "pair", "--route", ROUTE]);
+    assert!(human.status.success(), "relay pair: {}", stderr(&human));
+    assert!(
+        stdout(&human).contains("phux relay connect RELAY_HOST:PORT --cert-fingerprint "),
+        "{}",
+        stdout(&human)
+    );
+    // Pairing again rotates the token: the one this returns is current.
+    let out = home.phux(&["relay", "pair", "--route", ROUTE, "--json"]);
+    assert!(out.status.success(), "relay pair --json: {}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("relay pair --json");
+    assert_eq!(doc["route"], ROUTE);
+    let field = |key: &str| doc[key].as_str().expect(key).to_owned();
+    (field("token"), field("cert_fingerprint"))
+}
+
+/// Poll `phux status` until the freshly spawned server answers.
+fn wait_for_server(home: &Home) {
+    let start = Instant::now();
+    while !home.phux(&["status"]).status.success() {
+        assert!(start.elapsed() < DEADLINE, "the server never answered");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `phux relay connect` on the server host, the token on stdin: it writes
+/// the connector and paired mode, restarts the running server in place, and
+/// reports the tunnel up.
+fn connect_relay(home: &Home, relay: &str, fingerprint: &str, token: &str) {
+    let args = [
+        "relay",
+        "connect",
+        relay,
+        "--cert-fingerprint",
+        fingerprint,
+        "--json",
+    ];
+    let out = paired::output_with_stdin(home.command(&args), format!("{token}\n").as_bytes());
+    assert!(out.status.success(), "relay connect: {}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("connect --json");
+    assert_eq!(doc["tunnel"]["state"], "up", "{doc}");
+    assert_eq!(doc["policy_set"], true, "{doc}");
+    let config = home.config();
+    assert!(
+        config.contains("[[connector]]") && config.contains("mode = \"paired\""),
+        "{config}"
+    );
 }
 
 /// `phux relay run` on an ephemeral loopback port; returns the child and the

@@ -17,6 +17,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use phux_client_runtime::pairing::redact_uri;
 use phux_config::loader as config_loader;
 use phux_dial::TlsClientIdentity;
 use toml_edit::{Table, value};
@@ -176,7 +177,8 @@ impl Endpoint {
             return super::enroll::uri_destination(rest).map(Self::Ssh);
         }
         Err(format!(
-            "remote endpoint {trimmed:?} must start with quic://, wss://, ws://, or ssh://"
+            "remote endpoint {:?} must start with quic://, wss://, ws://, or ssh://",
+            redact_uri(trimmed)
         ))
     }
 
@@ -385,8 +387,9 @@ impl NewRemote {
         // registration puts the error where the operator can act on it.
         if parsed.needs_pairing() && cert_fingerprint.is_none() {
             return Err(format!(
-                "{endpoint} needs --cert-fingerprint (run `phux pair` on the remote host, \
-                 or let `phux host add HOST` fetch it over ssh)"
+                "{} needs --cert-fingerprint (run `phux pair` on the remote host, \
+                 or let `phux host add HOST` fetch it over ssh)",
+                redact_uri(endpoint)
             ));
         }
 

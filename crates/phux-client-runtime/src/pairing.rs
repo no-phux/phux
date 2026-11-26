@@ -93,6 +93,38 @@ pub fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
     })
 }
 
+/// Whether `raw` is meant as a connect link: it starts with a link prefix,
+/// after any shell quoting a paste kept. It says nothing about whether the
+/// link parses; [`parse_connect_link`] decides that.
+#[must_use]
+pub fn is_connect_link(raw: &str) -> bool {
+    let trimmed = raw.trim().trim_matches(['\'', '"']);
+    [
+        CONNECT_URI_PREFIX,
+        LEGACY_HOST_CONNECT_URI_PREFIX,
+        LEGACY_CONNECT_URI_PREFIX,
+    ]
+    .into_iter()
+    .any(|prefix| {
+        trimmed
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['?', '#']))
+    })
+}
+
+/// `raw` fit for an error message, cut after its first `?` or `#`.
+///
+/// That is where a connect link, or any URI, carries a token or a ticket. A
+/// value with neither comes back trimmed and whole.
+#[must_use]
+pub fn redact_uri(raw: &str) -> String {
+    let trimmed = raw.trim();
+    trimmed.find(['?', '#']).map_or_else(
+        || trimmed.to_owned(),
+        |at| format!("{}\u{2026}", &trimmed[..=at]),
+    )
+}
+
 fn connect_query(link: &str) -> Result<&str, String> {
     if link.len() > MAX_CONNECT_LINK_BYTES {
         return Err("connect code exceeds 16 KiB".into());
@@ -292,6 +324,34 @@ mod tests {
 
     const DIRECT: &str =
         "https://phux.sh/connect?url=wss://mini:8787&quic=quic://mini:8788&token=legacy-token";
+
+    /// A link is recognized under every prefix, quoted or not, and an
+    /// error message never carries what follows `?` or `#`.
+    #[test]
+    fn connect_links_are_recognized_and_redacted() {
+        for link in [
+            DIRECT.to_owned(),
+            format!("'{DIRECT}'"),
+            DIRECT.replace(CONNECT_URI_PREFIX, LEGACY_CONNECT_URI_PREFIX),
+            DIRECT.replace(CONNECT_URI_PREFIX, LEGACY_HOST_CONNECT_URI_PREFIX),
+            "https://phux.sh/connect#token=t".to_owned(),
+        ] {
+            assert!(is_connect_link(&link), "{link}");
+        }
+        for other in [
+            "quic://mini:8788",
+            "https://phux.sh/connected?token=t",
+            "https://example.com/connect?x=1",
+            "mini",
+        ] {
+            assert!(!is_connect_link(other), "{other}");
+        }
+        let fragment = "https://phux.sh/connect?url=wss://m:1#enroll=ticket&token=secret";
+        assert_eq!(redact_uri(fragment), "https://phux.sh/connect?\u{2026}");
+        assert_eq!(redact_uri(DIRECT), "https://phux.sh/connect?\u{2026}");
+        assert_eq!(redact_uri(" wss://m:1#token=x "), "wss://m:1#\u{2026}");
+        assert_eq!(redact_uri("quic://mini:8788"), "quic://mini:8788");
+    }
 
     #[test]
     fn pairing_preserves_cli_endpoint_selection_and_legacy_credentials() {

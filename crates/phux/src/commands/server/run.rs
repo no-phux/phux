@@ -128,7 +128,7 @@ fn load_config() -> Result<phux_config::Config, ExitCode> {
 fn listener_summary(
     listeners: &phux_protocol::wire::RemoteListenersReport,
     hub: bool,
-    connector_count: usize,
+    relays: &[String],
     exit_after_idle: Option<u64>,
 ) -> String {
     use phux_protocol::wire::RemoteListenerTransport;
@@ -140,6 +140,8 @@ fn listener_summary(
             RemoteListenerTransport::Quic => "quic://",
             // WebTransport session URLs are https:// (HTTP/3 CONNECT).
             RemoteListenerTransport::Wt => "webtransport https://",
+            // Relay tunnels are dialed, not bound; `relays` names them.
+            RemoteListenerTransport::Relay => continue,
             _ => "",
         };
         let addr = slot.addr.as_deref().unwrap_or("?");
@@ -157,8 +159,8 @@ fn listener_summary(
     if hub {
         extra.push_str(" [hub]");
     }
-    if connector_count > 0 {
-        let _ = write!(extra, " + connectors={connector_count}");
+    for relay in relays {
+        let _ = write!(extra, " + relay {relay}");
     }
     if let Some(secs) = exit_after_idle {
         let _ = write!(extra, " [exit-after-idle={secs}s]");
@@ -314,7 +316,10 @@ pub(crate) fn run_server(
     let banner_session = session.unwrap_or("none").to_owned();
     let restore_on_start = config.restore.on_start;
     let restore_socket = socket_path.clone();
-    let connector_count = connector_entries.len();
+    let relays: Vec<String> = connector_entries
+        .iter()
+        .map(|entry| entry.relay.clone())
+        .collect();
     let mut server = with_network_listeners(
         ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine)),
         listen,
@@ -323,7 +328,7 @@ pub(crate) fn run_server(
     )
     .on_listening(move |listeners| {
         crate::terminal_browser::install(&socket_path);
-        let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
+        let extra = listener_summary(listeners, hub, &relays, exit_after_idle);
         info!(
             "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
             socket_path.display(),

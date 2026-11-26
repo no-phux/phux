@@ -175,3 +175,24 @@ fn no_explicit_port_leaves_the_entry_untouched() {
         "a registered non-default port must survive a portless target"
     );
 }
+
+/// A relay link without an enrollment ticket is refused unless the machine
+/// already holds a client certificate for the entry; a direct link, or one
+/// with a ticket, is not judged.
+#[test]
+fn a_relay_link_without_a_ticket_needs_a_held_identity() {
+    use super::code::{RELAY_LINK_NEEDS_TICKET, cannot_enroll};
+    let parse = |link: &str| crate::commands::pair::parse_connect_link(link).expect("parses");
+    let relay =
+        parse("https://phux.sh/connect?quic=quic://127.0.0.1:4433&sni=lab&fp=AB:CD#token=secret");
+    assert!(cannot_enroll(&relay, false));
+    assert!(!cannot_enroll(&relay, true), "an enrolled device re-pairs");
+    let ticketed = parse(
+        "https://phux.sh/connect?quic=quic://127.0.0.1:4433&sni=lab&fp=AB:CD\
+         #enroll=ticket&token=secret",
+    );
+    assert!(!cannot_enroll(&ticketed, false));
+    let direct = parse("https://phux.sh/connect?url=wss://mini:8787&fp=AB:CD#token=secret");
+    assert!(!cannot_enroll(&direct, false));
+    assert!(RELAY_LINK_NEEDS_TICKET.contains("phux pair --relay-route ROUTE"));
+}

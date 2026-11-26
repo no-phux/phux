@@ -3,7 +3,7 @@ use usage::Subcommands;
 /// `phux config <action>` — local config inspection and scaffolding.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ConfigAction {
-    /// Bring tmux bindings and preferences into a native phux config layer.
+    /// Bring tmux bindings and preferences into a native phux config layer
     ///
     /// Reads global options and key tables from an already running tmux,
     /// without sourcing files or changing either server. By default, prints
@@ -31,14 +31,15 @@ pub(crate) enum ConfigAction {
         #[usage(long)]
         json: bool,
     },
-    /// Discover or switch distro layers without overwriting personal config.
+    /// Discover or switch distro layers without overwriting personal config
+    ///
     /// Changes are local only; run `phux config reload` afterwards for running
     /// clients. Server startup settings apply on the next server start.
     Distro {
         #[usage(subcommand)]
         action: DistroAction,
     },
-    /// Write a commented starter config to the canonical path.
+    /// Write a commented starter config to the canonical path
     ///
     /// The file is the shipped defaults, fully commented out: inert until
     /// you uncomment a line, so the binary's defaults stay authoritative.
@@ -60,7 +61,7 @@ pub(crate) enum ConfigAction {
         distro: Option<String>,
     },
 
-    /// Print the snippet that makes a shell mark prompts and commands.
+    /// Print the snippet that makes a shell mark prompts and commands
     ///
     /// phux reads the prompt and command marks a shell emits (OSC 133):
     /// `phux wait --output-only`, copy mode's "last command's output" key
@@ -77,11 +78,12 @@ pub(crate) enum ConfigAction {
         shell: super::CompletionShell,
     },
 
-    /// Print the resolved config path. Pure path math — prints the path
-    /// whether or not the file exists.
+    /// Print the resolved config path
+    ///
+    /// Pure path math: prints the path whether or not the file exists.
     Path,
 
-    /// Validate the config and report every problem, with full key paths.
+    /// Validate the config and report every problem, with full key paths
     ///
     /// The loader already refuses an unknown key, but it names only the leaf
     /// field (`unknown field 'enabledd'`) and stops at the first one. This
@@ -104,8 +106,9 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
-    /// Print the effective config (shipped defaults + your overrides) as
-    /// TOML. With `--default`, print the shipped defaults verbatim
+    /// Print the effective config (shipped defaults + your overrides) as TOML
+    ///
+    /// With `--default`, print the shipped defaults verbatim
     /// instead, ignoring any user config. With `--layers`, print which
     /// layer of the `extends` stack set each effective key instead of
     /// the values.
@@ -125,7 +128,7 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
-    /// List every key binding in effect and where it came from.
+    /// List every key binding in effect and where it came from
     ///
     /// Shows the shipped defaults, your config and its `extends` layers, and
     /// enabled plugins' keys merged exactly as the terminal UI merges them.
@@ -142,7 +145,7 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
-    /// List plugin manifests declared by `[[plugins]]`.
+    /// List plugin manifests declared by `[[plugins]]`
     Plugins {
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
@@ -150,7 +153,7 @@ pub(crate) enum ConfigAction {
     },
 
     /// List configured agents, merged with live pane state when a server is
-    /// running.
+    /// running
     Agents {
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
@@ -158,7 +161,7 @@ pub(crate) enum ConfigAction {
     },
 
     /// Re-read the layered config and apply it to running clients in
-    /// place.
+    /// place
     ///
     /// Validates the config locally first (a broken file fails here, with
     /// the parse error, and nothing is signalled), then rings the
@@ -169,7 +172,7 @@ pub(crate) enum ConfigAction {
     /// config file is never watched.
     Reload,
 
-    /// Execute one locally configured plugin action on this machine.
+    /// Execute one locally configured plugin action on this machine
     Run {
         /// Configured plugin id.
         plugin: String,
@@ -202,19 +205,20 @@ pub(crate) enum ConfigAction {
 /// Local distro selection; no server contact.
 #[derive(Debug, Subcommands)]
 pub(crate) enum DistroAction {
-    /// List bundled names in search precedence, sorted by name.
+    /// List bundled names in search precedence, sorted by name
     List {
         /// Emit a stable JSON document.
         #[usage(long)]
         json: bool,
     },
-    /// Show the selected managed distro, not arbitrary user extends layers.
+    /// Show the selected managed distro, not arbitrary user extends layers
     Current {
         /// Emit a stable JSON document.
         #[usage(long)]
         json: bool,
     },
-    /// Validate and select a bundled name or a layer file/directory path.
+    /// Validate and select a bundled name or a layer file/directory path
+    ///
     /// Preserves comments, user overrides, and other extends entries.
     Use {
         #[usage(value_name = "NAME_OR_PATH")]
@@ -223,7 +227,7 @@ pub(crate) enum DistroAction {
         #[usage(long)]
         json: bool,
     },
-    /// Remove only the managed distro entry, leaving personal config intact.
+    /// Remove only the managed distro entry, leaving personal config intact
     Off {
         /// Emit a stable JSON document.
         #[usage(long)]

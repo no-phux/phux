@@ -1,6 +1,6 @@
 //! The audit log check.
 
-use super::Check;
+use super::{Check, count};
 use crate::commands::cli_runtime;
 
 /// Is the audit log being written? A failed write never stops a command,
@@ -11,7 +11,8 @@ pub(super) fn check_audit(socket_path: &std::path::Path) -> Check {
         Some(failures) if failures > 0 => Check::warn(
             "audit",
             format!(
-                "the server failed to write {failures} audit record(s) to {}",
+                "the server failed to write {} to {}",
+                count(failures, "audit record", "audit records"),
                 log.display()
             ),
             "commands still ran, unrecorded; the reason is in `phux logs --server` \

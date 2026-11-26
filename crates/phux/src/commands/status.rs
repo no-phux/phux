@@ -22,6 +22,7 @@ use phux_config::socket::default_socket_path;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
+use phux_protocol::wire::{RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport};
 
 use crate::commands::{cli_runtime, json_err, ls};
 // Feature bits by their `snake_case` name (the `docs/protocol.md` constant
@@ -70,6 +71,9 @@ pub(crate) struct StatusReport {
     /// The server's keep-awake record (`phux_server::keep_awake::STATUS_KEY`);
     /// `None` when `defaults.keep-awake` is `off` or the server predates it.
     keep_awake: Option<serde_json::Value>,
+    /// How the server is reached off this machine: its remote listeners and
+    /// relay tunnels. `None` when it reports none.
+    remote: Option<RemoteListenersReport>,
 }
 
 /// `phux status` — report the running server: pid, up-since, protocol,
@@ -167,7 +171,34 @@ fn build_report(
         server_log: phux_config::instance::server_log_path(),
         client_log_dir: phux_config::instance::state_dir(),
         keep_awake: None,
+        remote: snapshot.listeners().cloned(),
     }
+}
+
+/// `remote: quic 0.0.0.0:8788, relay relay.example:4433 redialing (…)`, or
+/// `remote: local socket only` when nothing reaches the server from off
+/// this machine.
+fn remote_line(report: Option<&RemoteListenersReport>) -> String {
+    let rows: Vec<String> = report
+        .map(|report| report.listeners.iter().map(remote_row).collect())
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return "remote: local socket only".to_owned();
+    }
+    format!("remote: {}", rows.join(", "))
+}
+
+/// One listener or relay tunnel: where, and why it is not up when it is not.
+fn remote_row(slot: &RemoteListenerSlot) -> String {
+    let addr = slot.addr.as_deref().unwrap_or("?");
+    let transport = match slot.transport {
+        RemoteListenerTransport::Relay => "relay",
+        other => other.as_str(),
+    };
+    if slot.bound {
+        return format!("{transport} {addr}");
+    }
+    format!("{transport} {addr} {}", slot.unbound_label())
 }
 
 /// `keep awake: on (2 agents working)` / `idle` / `unavailable`, from the
@@ -267,6 +298,7 @@ fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
     for notice in &report.unreachable {
         lines.push(format!("  partial view: {notice}"));
     }
+    lines.push(remote_line(report.remote.as_ref()));
     if let Some(record) = &report.keep_awake {
         lines.push(keep_awake_line(record));
     }
@@ -343,6 +375,7 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
         "satellite_terminals": report.satellite_terminals,
         "unreachable": report.unreachable,
         "keep_awake": report.keep_awake,
+        "remote_listeners": report.remote.as_ref().map_or(&[][..], |r| r.listeners.as_slice()),
         "logs": {
             "server": report.server_log.display().to_string(),
             "client_dir": report.client_log_dir.display().to_string(),

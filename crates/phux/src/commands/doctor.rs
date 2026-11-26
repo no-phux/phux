@@ -20,6 +20,7 @@ pub(crate) mod other_host;
 mod permissions;
 mod remote;
 mod remote_cert;
+mod render;
 mod server_health;
 mod supervision;
 
@@ -31,6 +32,7 @@ use credentials::{check_client_certs, check_token_store, check_workload_authorit
 use permissions::check_permissions;
 use remote::{check_remote_listeners, check_remote_reachable, check_remote_replies};
 use remote_cert::{check_remote_cert, check_remote_cert_chain};
+use render::count;
 use server_health::check_server_health;
 use supervision::check_supervision;
 
@@ -47,11 +49,11 @@ pub(crate) enum Status {
 }
 
 impl Status {
-    const fn severity(self) -> crate::output::Severity {
+    const fn mark(self) -> render::Mark {
         match self {
-            Self::Pass => crate::output::Severity::Ok,
-            Self::Warn => crate::output::Severity::Warn,
-            Self::Fail => crate::output::Severity::Error,
+            Self::Pass => render::Mark::OK,
+            Self::Warn => render::Mark::WARN,
+            Self::Fail => render::Mark::FAIL,
         }
     }
 
@@ -139,10 +141,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     if json {
         return report_json(&checks, &checklist);
     }
-    let code = report_human(&checks);
-    let color = crate::output::color_enabled(std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    out!("{}", checklist::render_human(&checklist, color));
-    code
+    report_human(&checks, &checklist)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +205,7 @@ fn check_instance() -> Check {
     let reason = if std::env::var_os("PHUX_PROFILE").is_some() {
         "PHUX_PROFILE is set"
     } else {
-        "this is a development build (not an installed release)"
+        "a development build, not an installed release"
     };
     Check::warn(
         "instance",
@@ -251,8 +250,8 @@ pub(super) fn check_server(socket_path: &std::path::Path) -> Check {
 
     match rt.block_on(phux_client::state::get_state(socket_path)) {
         Ok(view) => {
-            let sessions = view.snapshot().sessions.len();
-            let panes = view.snapshot().resources.len();
+            let sessions = count(view.snapshot().sessions.len(), "session", "sessions");
+            let panes = count(view.snapshot().resources.len(), "pane", "panes");
             let protocol = format!(
                 "client protocol {}.{}.{}",
                 phux_protocol::PROTOCOL_VERSION.major,
@@ -265,7 +264,7 @@ pub(super) fn check_server(socket_path: &std::path::Path) -> Check {
                 Check::pass(
                     "server",
                     format!(
-                        "reachable at {} ({sessions} session(s), {panes} pane(s)); {protocol}",
+                        "reachable at {} ({sessions}, {panes}); {protocol}",
                         socket_path.display(),
                     ),
                 )
@@ -273,7 +272,7 @@ pub(super) fn check_server(socket_path: &std::path::Path) -> Check {
                 Check::warn(
                     "server",
                     format!(
-                        "reachable at {} ({sessions} session(s), {panes} pane(s)); {protocol}; \
+                        "reachable at {} ({sessions}, {panes}); {protocol}; \
                          but this hub could not reach every satellite: {}",
                         socket_path.display(),
                         view.degradation().notices().join("; "),
@@ -328,7 +327,10 @@ pub(super) fn server_probe_failure(
 fn check_plugins() -> Check {
     match valid_manifest_count() {
         Ok(0) => Check::pass("plugins", "none configured"),
-        Ok(n) => Check::pass("plugins", format!("{n} manifest(s) valid")),
+        Ok(n) => Check::pass(
+            "plugins",
+            format!("{} valid", count(n, "manifest", "manifests")),
+        ),
         Err(err) => Check::fail(
             "plugins",
             err,
@@ -349,16 +351,17 @@ fn check_logs() -> Check {
 
 /// [`check_logs`] against explicit paths.
 fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> Check {
-    let clients = crate::commands::logs::client_log_paths(state_dir).map_or(0, |paths| paths.len());
+    let clients = count(
+        crate::commands::logs::client_log_paths(state_dir).map_or(0, |paths| paths.len()),
+        "client log",
+        "client logs",
+    );
     let server = if server_log.exists() {
         format!("server log {}", server_log.display())
     } else {
         format!("server log {} (not created yet)", server_log.display())
     };
-    let detail = format!(
-        "{server}; {clients} client log(s); state dir {}",
-        state_dir.display()
-    );
+    let detail = format!("{server}; {clients}; state dir {}", state_dir.display());
 
     // `readonly()` is a plain stat (no write bits); a missing dir is normal.
     let unwritable =
@@ -382,71 +385,66 @@ fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> C
 // output
 // ---------------------------------------------------------------------------
 
-fn report_human(checks: &[Check]) -> ExitCode {
+fn report_human(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {
     use std::io::IsTerminal as _;
     let color = crate::output::color_enabled(std::io::stdout().is_terminal());
-    out!("{}", render_human(checks, color));
+    out!("{}", render_report(checks, checklist, color));
+    exit_code(checks)
+}
 
-    let failed = checks.iter().filter(|c| c.status == Status::Fail).count();
-    let warned = checks.iter().filter(|c| c.status == Status::Warn).count();
-    outln!();
-    if failed > 0 {
-        outln!(
-            "{}",
-            crate::output::human_line(
-                crate::output::Severity::Error,
-                format_args!("{failed} failed, {warned} warning(s)"),
-                color
-            )
-        );
-        return ExitCode::FAILURE;
-    }
-    if warned > 0 {
-        outln!(
-            "{}",
-            crate::output::human_line(
-                crate::output::Severity::Warn,
-                format_args!("no failures, {warned} warning(s)"),
-                color
-            )
-        );
+/// The whole human report: the check rows, the checklist, then the summary.
+fn render_report(checks: &[Check], checklist: &[checklist::Item], color: bool) -> String {
+    format!(
+        "{}{}\n{}\n",
+        render_human(checks, color),
+        checklist::render_human(checklist, color),
+        summary(checks),
+    )
+}
+
+/// Exit 1 when any check failed; warnings alone exit 0.
+fn exit_code(checks: &[Check]) -> ExitCode {
+    if checks.iter().any(|c| c.status == Status::Fail) {
+        ExitCode::FAILURE
     } else {
-        outln!(
-            "{}",
-            crate::output::human_line(
-                crate::output::Severity::Ok,
-                format_args!("all checks passed"),
-                color
-            )
-        );
+        ExitCode::SUCCESS
     }
-    ExitCode::SUCCESS
+}
+
+/// The report's last line: failures first, then warnings.
+fn summary(checks: &[Check]) -> String {
+    let tally = |status| checks.iter().filter(|c| c.status == status).count();
+    let (failed, warned) = (tally(Status::Fail), tally(Status::Warn));
+    let failures = count(failed, "failure", "failures");
+    let warnings = count(warned, "warning", "warnings");
+    match (failed, warned) {
+        (0, 0) => "all checks passed".to_owned(),
+        (0, _) => format!("{warnings}, no failures"),
+        (_, 0) => failures,
+        _ => format!("{failures}, {warnings}"),
+    }
 }
 
 /// The check rows as the human report prints them. The name column is as
 /// wide as the longest check name, so a long name (`workload-authority`)
 /// cannot push its detail out of alignment with every other row.
 fn render_human(checks: &[Check], color: bool) -> String {
-    use std::fmt::Write as _;
-
-    let width = checks.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    let mut out = String::new();
-    for check in checks {
-        let severity = check.status.severity();
-        let padding = 5 - severity.label().len();
-        let line = crate::output::human_line(
-            severity,
-            format_args!("{:padding$}{:<width$} {}", "", check.name, check.detail),
-            color,
-        );
-        let _ = writeln!(out, "{line}");
-        if let Some(hint) = &check.hint {
-            for line in hint.lines() {
-                let _ = writeln!(out, "  hint: {}: {}", check.name, line.trim_start());
-            }
-        }
-    }
-    out
+    let rows: Vec<_> = checks
+        .iter()
+        .map(|check| render::Row {
+            mark: check.status.mark(),
+            name: check.name,
+            detail: &check.detail,
+            label: "hint",
+            notes: check
+                .hint
+                .iter()
+                .flat_map(|hint| hint.lines())
+                .map(str::to_owned)
+                .collect(),
+        })
+        .collect();
+    render::rows(&rows, color)
 }
 
 fn report_json(checks: &[Check], checklist: &[checklist::Item]) -> ExitCode {

@@ -101,13 +101,15 @@ pub(super) fn remote_listeners_check(
             .listeners
             .iter()
             .filter(|slot| slot.bound)
-            .map(|slot| slot.transport.as_str())
+            .map(|slot| match (slot.transport, &slot.addr) {
+                (phux_protocol::wire::RemoteListenerTransport::Relay, Some(relay)) => {
+                    format!("relay {relay}")
+                }
+                (transport, _) => transport.to_string(),
+            })
             .collect::<Vec<_>>()
             .join(", ");
-        return Check::pass(
-            "remote-listeners",
-            format!("remote listeners bound ({bound})"),
-        );
+        return Check::pass("remote-listeners", format!("remote surface up: {bound}"));
     }
     let detail = unhealthy
         .iter()
@@ -204,6 +206,14 @@ pub(super) fn remote_listeners_hint(
             "fix the credential store (remove a pre-versioned file and pair again), \
              then restart or `phux upgrade` the server"
         };
+    }
+    if unhealthy
+        .iter()
+        .any(|slot| slot.transport == phux_protocol::wire::RemoteListenerTransport::Relay)
+    {
+        return "the server redials the relay by itself: check that `phux relay run` is up and \
+                reachable there, that the connector's token-file holds the token \
+                `phux relay pair` printed, and that cert-fingerprint matches the relay's";
     }
     if unhealthy.iter().any(|slot| slot.waiting.is_some()) {
         return "the server retries the bind by itself and listens as soon as it succeeds: \

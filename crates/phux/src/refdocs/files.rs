@@ -93,6 +93,7 @@ pub(crate) fn page() -> Page {
          │                       # org/v1.scrollback/ keeps `[restore] scrollback` (0700)\n\
          ├── remotes/            # credentials for each `[[remote]]` host\n\
          ├── satellites/         # credentials for each `[[satellites]]` host\n\
+         ├── connectors/         # tunnel tokens for each `[[connector]]` relay\n\
          ├── relay-cert.pem, relay-key.pem, relay-tokens  # `phux relay`\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
          ├── chats/              # private explicit conversation records and native identity files\n\
@@ -183,7 +184,9 @@ pub(crate) fn page() -> Page {
            and `-shm` files beside each.\n\
          - `remotes/` holds, per host, the bearer token `<name>.token` and the \
            enrolled client identity `<name>.client.<digest>.pem` and `.key`. \
-           `satellites/` holds a hub's `<name>.token` files.\n\
+           `satellites/` holds a hub's `<name>.token` files. `connectors/` holds \
+           the owner-only tunnel token `phux relay connect` wrote for each relay, \
+           `<host>-<port>.token`.\n\
          - `relay-cert.pem`, `relay-key.pem` and `relay-tokens` (the route-token \
            store) belong to `phux relay`. They are not profile-scoped: always \
            `$XDG_STATE_HOME/phux`.\n\

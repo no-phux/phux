@@ -17,7 +17,8 @@ def evidence():
     def control(id):
         return {"id": id, "frame": [8, 2, 44, 44], "enabled": True, "label": id, "shown": True}
     return {"schema": 1, "tapped": "phone-back", "terminal": [control(i) for i in glass.TOP_BAR],
-            "sessions": [{**control(glass.DOCK), "frame": [16, 780, 361, 44]}]}
+            "sessions": [{**control(glass.DOCK), "frame": [16, 780, 361, 44]},
+                         {**control(glass.DONE), "frame": [333, 60, 44, 44]}]}
 
 
 class GlassReportTests(unittest.TestCase):
@@ -43,7 +44,10 @@ class GlassReportTests(unittest.TestCase):
         def untapped(g):
             g["tapped"] = None
 
-        for change in (without_more, bar_over_page, small, hidden, disabled_dock, untapped):
+        def no_done(g):
+            g["sessions"] = g["sessions"][:1]
+
+        for change in (without_more, bar_over_page, small, hidden, disabled_dock, untapped, no_done):
             report = evidence()
             change(report)
             with self.subTest(change.__name__), self.assertRaises(ValueError):

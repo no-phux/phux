@@ -16,7 +16,7 @@ use crate::commands::cli_runtime;
 /// `phux agent doc open|publish|snapshot|follow`.
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum DocAction {
-    /// Open a document under the pane its producer runs in.
+    /// Open a document under the pane its producer runs in
     Open {
         /// The parent pane.
         target: String,
@@ -29,7 +29,7 @@ pub(crate) enum DocAction {
         #[usage(long)]
         json: bool,
     },
-    /// Replace the document from a file, or stdin.
+    /// Replace the document from a file, or stdin
     Publish {
         /// The document resource.
         target: String,
@@ -39,8 +39,10 @@ pub(crate) enum DocAction {
         #[usage(long)]
         json: bool,
     },
-    /// Write the newest document to a file, or stdout: text with control
-    /// characters shown as signs, binary only into a pipe.
+    /// Write the newest document to a file, or stdout
+    ///
+    /// Text goes out with control characters shown as signs; a binary
+    /// document goes only into a pipe.
     Snapshot {
         /// The document resource.
         target: String,
@@ -50,9 +52,11 @@ pub(crate) enum DocAction {
         #[usage(long)]
         json: bool,
     },
-    /// Produce a document over a pipe until stdin ends: each stdin line
-    /// `{"text": ...}` or `{"base64": ...}` replaces it; stdout prints an
-    /// `opened` line, then one `input` line per viewer intent.
+    /// Produce a document over a pipe until stdin ends
+    ///
+    /// Each stdin line `{"text": ...}` or `{"base64": ...}` replaces the
+    /// document; stdout prints an `opened` line, then one `input` line per
+    /// viewer intent.
     Serve {
         /// The content type, a MIME type such as `text/markdown`.
         #[usage(long = "type", value_name = "MIME")]
@@ -64,8 +68,9 @@ pub(crate) enum DocAction {
         #[usage(long, value_name = "PANE")]
         pane: Option<String>,
     },
-    /// Keep a directory listed as a Markdown document, refreshed on change;
-    /// a `navigate` intent opens a subdirectory.
+    /// Keep a directory listed as a Markdown document, refreshed on change
+    ///
+    /// A `navigate` intent opens a subdirectory.
     Folder {
         /// The directory.
         path: PathBuf,
@@ -80,7 +85,8 @@ pub(crate) enum DocAction {
         interval: Option<u64>,
     },
     /// Keep this host's desktop notifications as a Markdown document
-    /// (Linux, freedesktop Notifications on the session bus).
+    ///
+    /// Linux only: reads freedesktop Notifications on the session bus.
     Notifications {
         /// A name for the document (default `notifications`).
         #[usage(long, value_name = "NAME")]
@@ -92,7 +98,7 @@ pub(crate) enum DocAction {
         #[usage(long, value_name = "N")]
         keep: Option<usize>,
     },
-    /// Write every document as it arrives.
+    /// Write every document as it arrives
     Follow {
         /// The document resource.
         target: String,

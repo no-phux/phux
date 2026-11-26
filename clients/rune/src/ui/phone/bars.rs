@@ -8,8 +8,8 @@ use phux_design::State;
 use rune::{Color, El, col, row, text};
 
 use super::{
-    Look, badge, floating_round, glyph, hosted, icons, mark_ink, native_glass, news, round,
-    spatial, surface, touchable,
+    Look, badge, floating_round, glyph, hosted, icons, mark_ink, native_glass, news, spatial,
+    surface, touchable,
 };
 use crate::desk::Desk;
 use crate::ui::tokens::Paint;
@@ -202,10 +202,13 @@ pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
     for (index, tab) in desk.connection.tabs.list.iter().enumerate() {
         pills = pills.child(tab_pill(desk, index, tab, p));
     }
-    let new = round(
+    let new = floating_round(
+        desk,
         "phone-tab-new",
         "New tab",
-        glyph(&icons::PLUS, p.icon.grid, p.roles.text.text.paint()),
+        &icons::PLUS,
+        "plus",
+        None,
         p,
     )
     .on_press(Desk::new_tab);

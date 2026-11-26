@@ -3,7 +3,7 @@ use super::*;
 use crate::ui::element;
 
 #[test]
-fn session_anchors_and_nested_panes_share_ground_without_resting_slabs() {
+fn session_headers_sit_on_ground_over_grouped_cards_of_their_panes() {
     for width in [320.0, 393.0] {
         for contrast in [false, true] {
             let (_, mut rt) = fixture();
@@ -21,12 +21,14 @@ fn session_anchors_and_nested_panes_share_ground_without_resting_slabs() {
             for key in [
                 "phone-session-section-1",
                 "phone-session-section-2",
-                "phone-session-section-3",
+                "phone-quiet",
                 "phone-session-1",
                 "phone-session-pane-@1",
                 "phone-session-pane-@2",
                 "phone-session-connections",
             ] {
+                // Headers and rows rest on the page or their card; only the card
+                // (the grouped surface) is filled.
                 assert!(element(&rt, key).fill.a < 0.001, "resting fill: {key}");
             }
             let current = element(&rt, "phone-session-current-@1");
@@ -52,11 +54,16 @@ fn boxless_rows_reveal_complete_keyboard_rings_and_keep_pane_selection() {
         let (client, mut rt) = fixture();
         detailed_inventory(&mut rt);
         rt.set_viewport((width, 568.0), 2.0);
+        // Quiet shown, so its empty session's header is reached too.
+        rt.update(|d, _| d.phone.as_mut().unwrap().quiet_shown = true);
         rt.update(|d, _| d.open_phone_sessions());
         settle(&mut rt);
         for key in [
             "phone-session-1",
             "phone-session-pane-@2",
+            "phone-needs-you-pane-@2",
+            "phone-session-fold-1",
+            "phone-quiet",
             "phone-session-3",
         ] {
             focus_by_tab(&mut rt, key);

@@ -104,32 +104,60 @@ windows, and displays are in [Security](./security.md#scopes).
 
 ## Pairing with a link
 
-When you can't SSH to the server, run `phux pair` there. It prints a link
-and a QR code; on the client:
+When you can't SSH to the server, run `phux pair` there. It prints the
+link first, with what to do with it, then one block of facts:
 
-```sh
-phux attach --remote mini --code 'https://phux.sh/connect?...'
+```text
+Connect link (a secret: it carries the pairing token):
+  https://phux.sh/connect?url=wss://...#enroll=...&token=...
+
+  Phone      open the link on the phone, or scan the QR below (phux app 0.4.83 or newer)
+  Computer   phux host add mini --code 'https://phux.sh/connect?...' && phux attach mini
+
+  Expires    2026-11-25T08:06:26Z (10 minutes) unless a device pairs first; SINGLE USE
+  Revoke     phux pair revoke 2889fff155c8684dd596e2e222ad6af8 (a paired device works until then)
+  Ticket     t-6d3466f3 in the link; the device enrolls its own key with it
+  Server pin SHA-256 D5:AF:...
+  Server CA  sha256:7ea8... (pinned; survives leaf renewal)
 ```
+
+On another computer, paste the `Computer` line: `phux host add` registers
+the machine from the link (pasting the link as the endpoint,
+`phux host add mini 'https://phux.sh/connect?...'`, does the same) and
+refuses a spent or expired link without registering anything.
+`phux attach --remote mini --code LINK` registers and attaches in one step.
 
 **The link is a secret.** It works once and expires unused after ten
 minutes; the device that pairs keeps working until revoked. The token and
 enrollment ticket sit after the `#`, so a browser never sends them to
-phux.sh. `phux pair --qr` shows only the QR, for a phone.
+phux.sh. `phux pair --qr` shows only the QR, for a phone; `--json` prints
+one document for scripts.
 
 ## Relays
 
 When neither machine can reach the other, run a relay both can reach:
 
 ```sh
-phux relay pair --route home          # on the relay: prints a token and a fingerprint
+# on the relay
+phux relay pair --route home          # prints a token, a fingerprint, and the next command
 phux relay run --listen 0.0.0.0:4433
+
+# on the server: paste the token at the prompt
+phux relay connect relay.example:4433 --cert-fingerprint AB:CD:...
+phux pair --relay-route home          # a link for each device
 ```
 
-Give the server a `[[connector]]` entry with the relay address, token file,
-and fingerprint ([config](./reference/config.md)), then mint the client's
-link with `phux pair --relay-route home`. The server dials out, so it needs
-no open port. **The relay sees only ciphertext**: TLS runs end to end with
-the server inside the relayed stream.
+`phux relay connect` stores the token owner-only, writes the server's
+`[[connector]]` entry ([config](./reference/config.md)), sets
+`[policy] mode = "paired"` if it is unset, and restarts a running server in
+place, panes kept, then waits for the tunnel. The server dials out, so it
+needs no open port. **The relay sees only ciphertext**: TLS runs end to end
+with the server inside the relayed stream.
+
+`phux relay run` logs each tunnel and bridged consumer; on the server,
+`phux doctor` shows the tunnel as `Remote reach … through relay`. A token the
+relay refuses (rotated by a second `phux relay pair`) says so in the server
+log and in `phux doctor`; give the new one to `phux relay connect`.
 
 ## Linking machines
 

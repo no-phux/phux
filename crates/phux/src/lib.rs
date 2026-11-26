@@ -261,7 +261,12 @@ fn run_cli() -> ExitCode {
     if let Err(refusal) =
         phux_config::production::refuse_dev_on_production_state(&phux_config::instance::state_dir())
     {
-        return emit_usage_error(refusal);
+        // The refusal carries its own remedies; `--help` would not help.
+        return commands::json_err::emit(
+            json_output_requested(),
+            &commands::json_err::CliError::new(commands::json_err::codes::USAGE_ERROR, refusal, ""),
+            2,
+        );
     }
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Key material never belongs on a `phux workload` command line, and argv is

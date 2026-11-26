@@ -3,7 +3,7 @@ use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, col, el, text};
 
-use super::{Desk, Look, control, nested, separator};
+use super::{Desk, Look, card, control, nested, separator};
 use crate::keys::{self, Shortcut};
 use crate::ui::icons;
 use crate::ui::tokens::Paint;
@@ -40,19 +40,14 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
         .pb(s.s6)
         .gap(s.s4);
     for group in GROUPS {
-        let mut card = col()
-            .w_full()
-            .padding(s.s1)
-            .radius(p.radius.xl)
-            .continuous_corners()
-            .fill(p.roles.layer.raised.paint());
+        let mut surface = card(p);
         for (i, &(action, icon)) in group.iter().enumerate() {
             if i > 0 {
-                card = card.child(separator(p));
+                surface = surface.child(separator(p));
             }
-            card = card.child(action_row(desk, action, icon, p));
+            surface = surface.child(action_row(desk, action, icon, p));
         }
-        list = list.child(card);
+        list = list.child(surface);
     }
     col()
         .w_full()

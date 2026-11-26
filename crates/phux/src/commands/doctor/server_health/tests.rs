@@ -92,7 +92,7 @@ fn server_health_passes_when_nothing_applies() {
     let checks = server_health_checks(None, None, None, None, None, || 2);
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, Status::Pass);
-    assert!(checks[0].detail.contains("2 server start(s)"));
+    assert!(checks[0].detail.contains("2 server starts"));
 }
 
 /// Armed supervision is a warning carrying the shared explanation verbatim.

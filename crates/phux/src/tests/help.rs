@@ -199,4 +199,72 @@ fn misplaced_flag_hint_follows_the_flag_position() {
     );
     assert!(!after.contains("place it after the verb"), "{after}");
     assert_eq!(hint(&["phux", "ls", "--no-such-flag"]), None);
+
+    // The exact command is named, and nothing unrelated is listed.
+    let nested =
+        hint(&["phux", "relay", "run", "--listen", "127.0.0.1:0", "--json"]).expect("hint");
+    assert!(
+        nested.starts_with("`phux relay run` does not take `--json`;")
+            && nested.ends_with("see `phux relay run --help`"),
+        "{nested}"
+    );
+    assert!(!nested.contains("`phux ls`"), "{nested}");
+    // A relative under the same verb that takes the flag is offered.
+    let relative = hint(&["phux", "config", "path", "--json"]).expect("hint");
+    assert!(
+        relative.starts_with("`phux config path` does not take `--json`; `phux config "),
+        "{relative}"
+    );
+    assert!(
+        relative.ends_with("see `phux config path --help`"),
+        "{relative}"
+    );
+    assert!(!relative.contains("`phux ls`"), "{relative}");
+}
+
+/// A required flag reads as it is typed in a usage line, `--route <NAME>`,
+/// not angled like a positional; values, positionals, and the `--`
+/// separator keep their brackets, and prose is untouched.
+#[test]
+fn usage_lines_write_required_flags_bare() {
+    let bare = crate::help::bare_required_flags;
+    assert_eq!(
+        bare("Usage: phux relay pair <--route <NAME>>\n"),
+        "Usage: phux relay pair --route <NAME>\n"
+    );
+    assert_eq!(
+        bare(
+            "Usage: phux slot add <--to <PANE>> [--json] <PANE>\n       phux x <-q> <-- COMMAND>…\n"
+        ),
+        "Usage: phux slot add --to <PANE> [--json] <PANE>\n       phux x -q <-- COMMAND>…\n"
+    );
+    let coloured =
+        "\x1b[1mUsage:\x1b[0m phux relay pair <\x1b[1;36m--route\x1b[0m \x1b[36m<NAME>\x1b[0m>\n";
+    assert_eq!(
+        bare(coloured),
+        "\x1b[1mUsage:\x1b[0m phux relay pair \x1b[1;36m--route\x1b[0m \x1b[36m<NAME>\x1b[0m\n"
+    );
+    let prose = "Pass <--route <NAME>> to pick one.\n";
+    assert_eq!(bare(prose), prose);
+    let page = crate::render_help_page(
+        Cli::spec()
+            .root
+            .subcommands
+            .iter()
+            .find(|sub| sub.cmd.name == "relay")
+            .and_then(|relay| relay.subcommands.iter().find(|sub| sub.cmd.name == "pair"))
+            .expect("relay pair")
+            .cmd,
+        true,
+        usage::help::Style::PLAIN,
+    )
+    .expect("page");
+    let usage_line = page
+        .lines()
+        .find(|line| line.starts_with("Usage: phux relay pair "))
+        .expect("usage line");
+    assert!(
+        usage_line.contains(" --route <NAME>") && !usage_line.contains("<--route"),
+        "{page}"
+    );
 }

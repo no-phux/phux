@@ -126,6 +126,13 @@ fn a_native_tap_runs_the_controls_press_and_a_covering_page_hides_it() {
     assert_eq!(dock["symbol"], "plus");
     assert_eq!(dock["enabled"], true);
     assert_eq!(element(&rt, "phone-session-new").fill.a, 0.0);
+    // Done is the page's glass checkmark, and closes it.
+    let done = control(&rt, "phone-navigation-close");
+    assert_eq!(done["label"], "Done");
+    assert_eq!(done["symbol"], "checkmark");
+    assert!(crate::mobile::press(&mut rt, "phone-navigation-close"));
+    settle(&mut rt);
+    assert_eq!(rt.state.phone_page(), None);
 }
 
 #[test]

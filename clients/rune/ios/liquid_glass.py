@@ -11,6 +11,7 @@ import time
 SIGNAL = "sh.phux.rune.qualification.glass"
 TOP_BAR = ("phone-back", "phone-place", "phone-news", "phone-more")
 DOCK = "phone-session-new"
+DONE = "phone-navigation-close"
 
 
 def _controls(controls, phase):
@@ -36,7 +37,7 @@ def validate(glass):
     if not set(TOP_BAR).issubset(terminal) or not all(terminal[i]["enabled"] is True for i in TOP_BAR):
         raise ValueError(f"terminal top bar is not native glass: {sorted(terminal)}")
     sessions = _controls(glass.get("sessions"), "sessions")
-    if DOCK not in sessions or set(TOP_BAR) & set(sessions):
+    if DOCK not in sessions or DONE not in sessions or set(TOP_BAR) & set(sessions):
         raise ValueError(f"Sessions page glass is wrong: {sorted(sessions)}")
     if sessions[DOCK]["enabled"] is not True:
         raise ValueError("the connected Sessions dock is disabled")

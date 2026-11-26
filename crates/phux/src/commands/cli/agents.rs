@@ -266,7 +266,7 @@ pub(crate) struct MissionArgs {
     pub(crate) action: Option<MissionAction>,
 }
 
-/// Send, read and acknowledge mail between agents
+/// Send, read, and acknowledge mail between agents
 ///
 /// Mail lives in this host's work store beside `phux mission` tasks and
 /// survives restarts. An agent is addressed by its pane here, `@749`,

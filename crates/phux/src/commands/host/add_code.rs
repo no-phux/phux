@@ -12,10 +12,11 @@ use super::args::AddOpts;
 use super::enrollment::{EnrollmentReport, report_registered};
 use super::list::HostRow;
 
-/// Register `raw_name` from `--code`, failing when the link's ticket does not
+/// Register `raw_name` from `link` (the `--code` value, `-` for stdin, or a
+/// link pasted as the endpoint), failing when the link's ticket does not
 /// redeem: what `phux attach --remote NAME --code LINK` registers, without
 /// the attach, for a caller that dials the host itself.
-pub(super) fn run_add_from_code(raw_name: &str, opts: &AddOpts) -> ExitCode {
+pub(super) fn run_add_from_code(raw_name: &str, link: &str, opts: &AddOpts) -> ExitCode {
     let json = opts.json.json;
     let target = match RemoteTarget::parse_labeled(raw_name, "host add") {
         Ok(target) => target,
@@ -24,7 +25,7 @@ pub(super) fn run_add_from_code(raw_name: &str, opts: &AddOpts) -> ExitCode {
             return json_err::emit(json, &CliError::new(codes::REGISTRY, err, remedy), 2);
         }
     };
-    let link = match read_link(opts.code.as_deref().unwrap_or_default()) {
+    let link = match read_link(link) {
         Ok(link) => link,
         Err(err) => return json_err::emit(json, &code_error(err), 2),
     };

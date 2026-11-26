@@ -196,8 +196,8 @@ impl ServerConfig {
 }
 
 /// Maximum byte length of a Unix-domain-socket path: `sun_path` (108 bytes on
-/// Linux, 104 elsewhere) minus the trailing NUL.
-pub const MAX_SOCKET_PATH_LEN: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+/// Linux, 104 elsewhere) minus the trailing NUL. Clients check the same one.
+pub const MAX_SOCKET_PATH_LEN: usize = phux_config::socket::MAX_SOCKET_PATH_LEN;
 
 /// Check that `path` fits in a `sockaddr_un`, so bind and connect fail with a
 /// readable [`ServerError::SocketPathTooLong`] instead of the kernel's
@@ -222,9 +222,7 @@ pub enum ServerError {
 
     /// The socket path cannot fit in a `sockaddr_un`, so neither a server
     /// bind nor a client connect could ever succeed on it.
-    #[error(
-        "socket path {path} is {len} bytes, but unix domain socket paths on this platform are limited to {MAX_SOCKET_PATH_LEN} bytes; pick a shorter path (e.g. under /tmp) via PHUX_SOCKET or --socket"
-    )]
+    #[error("{}", phux_config::socket::path_too_long_message(.path, *.len))]
     SocketPathTooLong {
         /// The over-long socket path.
         path: PathBuf,

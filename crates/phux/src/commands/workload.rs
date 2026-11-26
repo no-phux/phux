@@ -47,7 +47,7 @@ impl From<Principal> for workload::EnrolledFor {
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum WorkloadAction {
-    /// Print the workload CA fingerprint.
+    /// Print the workload CA fingerprint
     ///
     /// Prints only the `sha256:` fingerprint clients pin. `--init` creates
     /// the CA first when none exists; an existing CA is never replaced.
@@ -67,7 +67,7 @@ pub(crate) enum WorkloadAction {
         #[usage(long)]
         rotate: bool,
     },
-    /// Enroll a client certificate, or sign a CSR into one.
+    /// Enroll a client certificate, or sign a CSR into one
     ///
     /// Reads one PEM client certificate issued by this authority, or one PEM
     /// certificate signing request, from stdin or from `--file`. Key material
@@ -130,13 +130,13 @@ pub(crate) enum WorkloadAction {
         #[usage(long, value_enum)]
         principal: Option<Principal>,
     },
-    /// List enrolled credentials.
+    /// List enrolled credentials
     List {
         /// Also print each credential's public key (hex DER).
         #[usage(long)]
         public_keys: bool,
     },
-    /// Restore full control to a device enrolled with the old pairing ceiling.
+    /// Restore full control to a device enrolled with the old pairing ceiling
     ///
     /// Adds organize and terminate only to the named active human device
     /// whose ceiling is exactly the legacy full-control pairing grant.
@@ -149,7 +149,7 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
-    /// Add one scope grant to an enrolled credential, without re-pairing.
+    /// Add one scope grant to an enrolled credential, without re-pairing
     ///
     /// The scope is `<verb>[,<verb>...]@<selector>`, as `add-key --scope`
     /// takes it, plus the control selectors `page`, `window`, `display`
@@ -166,7 +166,7 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "VERBS@SELECTOR")]
         scope: String,
     },
-    /// Remove one scope grant from an enrolled credential.
+    /// Remove one scope grant from an enrolled credential
     ///
     /// Removes every scope equal to the one given. A running server ends
     /// the device's live connections that relied on it; the device
@@ -180,7 +180,7 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "VERBS@SELECTOR")]
         scope: String,
     },
-    /// Revoke a credential: new connections are refused and live ones end.
+    /// Revoke a credential: new connections are refused and live ones end
     ///
     /// A running server observes the registry write and closes every
     /// connection the credential admitted; no restart is needed. `phux pair
@@ -194,7 +194,7 @@ pub(crate) enum WorkloadAction {
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
-    /// Replace an organization's managed credentials with one document.
+    /// Replace an organization's managed credentials with one document
     ///
     /// Reads `{"v":1,"org":NAME,"roots":[PEM CA...],"credentials":[...]}`
     /// from FILE, or stdin when FILE is `-` or omitted. Each credential is a
