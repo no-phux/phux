@@ -48,11 +48,6 @@ const DEFAULT_PLACEHOLDER: &str = "Type to filter";
 /// Rows the selection moves per wheel detent (matches copy-mode).
 pub const WHEEL_SCROLL_ROWS: usize = 3;
 
-/// The key legend in the bottom border, right-aligned.
-const FOOTER_KEYS: &str = "↑↓ move · ⏎ run · esc";
-/// The legend when Tab opens session management.
-const FOOTER_KEYS_MANAGE: &str = "↑↓ move · ⏎ run · tab manage · esc";
-
 /// The ratcn ids of the query field and the row list.
 const QUERY: &str = "query";
 const ROWS: &str = "rows";
@@ -216,16 +211,32 @@ impl SelectList {
         self.vi_navigation = false;
         self
     }
+
+    /// The selected session, if Tab has a management action for it.
+    fn manageable_session(&self) -> Option<&SelectItem> {
+        self.cursor_item().filter(|item| {
+            self.session_management
+                && matches!(
+                    item.action.action.as_str(),
+                    "switch-session" | "switch-host"
+                )
+                && item.action.args.contains_key("name")
+        })
+    }
+
+    /// Put optional hints first so the footer can drop them in tight spaces.
+    fn footer_keys(&self) -> &'static str {
+        if self.manageable_session().is_some() {
+            "↑↓ move · Tab manage · ⏎ select · Esc"
+        } else if self.model.cursor.is_some() {
+            "↑↓ move · ⏎ select · Esc"
+        } else {
+            "Esc close"
+        }
+    }
 }
 
 fn session_management_command(item: &SelectItem) -> OverlayCommand {
-    if !matches!(
-        item.action.action.as_str(),
-        "switch-session" | "switch-host"
-    ) || !item.action.args.contains_key("name")
-    {
-        return OverlayCommand::Stay;
-    }
     let mut action = item.action.clone();
     action.args.insert(
         "switch-action".to_owned(),
@@ -240,37 +251,27 @@ impl RenderOverlay for SelectList {
         self.outer.set(area);
         let modal = self.modal_area(area);
         let indices = self.filtered_indices();
+        let cursor_row = self.cursor_row(&indices);
 
         // Window the rows around the selection; the height is known only
         // here. ratcn settles the same offset from the same request, so the
         // scrollbar and the rows agree.
         let height = usize::from(Self::rows_area(modal).height);
-        let offset = cursor_visible_offset(
-            indices.len(),
-            height,
-            self.model.scroll.get(),
-            self.cursor_row(&indices),
-        );
+        let offset =
+            cursor_visible_offset(indices.len(), height, self.model.scroll.get(), cursor_row);
         self.model.scroll.set(offset);
 
-        let keys = if self.session_management {
-            FOOTER_KEYS_MANAGE
-        } else {
-            FOOTER_KEYS
-        };
+        let keys = self.footer_keys();
         let status = self.footer_status.as_deref().map_or_else(
-            || self.footer(&indices),
-            |status| clip_left(status, footer_status_budget(modal.width, keys)),
+            || cursor_row.map_or_else(String::new, |row| self.footer(&indices, row)),
+            |status| clip_left(status, footer_status_budget(modal.width, "⏎ select · Esc")),
         );
         Modal::new(&self.theme, self.title.clone(), Vec::new())
             .footer(status, keys)
             .render_into(modal, buf);
         self.paint_surface(buf, modal);
         paint::rule_under_query(buf, modal, &self.theme);
-        if let Some(row) = self
-            .cursor_row(&indices)
-            .and_then(|row| row.checked_sub(offset))
-        {
+        if let Some(row) = cursor_row.and_then(|row| row.checked_sub(offset)) {
             paint::selection_bar(buf, modal, Self::rows_area(modal), row, &self.theme);
         }
         paint_scrollbar(
@@ -332,12 +333,11 @@ impl RenderOverlay for SelectList {
         self.snap_cursor();
         match key.key {
             PhysicalKey::Escape => return OverlayCommand::Dismiss,
-            PhysicalKey::Tab if self.session_management => {
+            PhysicalKey::Tab => {
                 return self
-                    .cursor_item()
+                    .manageable_session()
                     .map_or(OverlayCommand::Stay, session_management_command);
             }
-            PhysicalKey::Tab => return OverlayCommand::Stay,
             _ => {}
         }
         let Some(event) = kit::key(key) else {

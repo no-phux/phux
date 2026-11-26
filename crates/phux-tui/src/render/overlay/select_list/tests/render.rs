@@ -198,6 +198,20 @@ fn box_height_caps_at_half_and_never_shrinks() {
 }
 
 #[test]
+fn live_results_grow_below_the_query() {
+    let area = Rect::new(0, 0, 100, 30);
+    let mut live = list(vec![SelectItem::header("Searching…")]).with_live_key("paths");
+    let before = live.bounds(area).expect("bounded");
+    assert!(live.refresh_items("paths", &long_list(40).items));
+    let after = live.bounds(area).expect("bounded");
+    assert!(after.height > before.height);
+    assert_eq!(
+        SelectList::query_area(before),
+        SelectList::query_area(after)
+    );
+}
+
+#[test]
 fn attention_rows_paint_hot_and_selection_owns_its_colors() {
     let theme = Theme::default();
     let sl = SelectList::new(

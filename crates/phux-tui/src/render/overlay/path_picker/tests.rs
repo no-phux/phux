@@ -45,6 +45,37 @@ fn footer_status_keeps_the_deepest_directory() {
 }
 
 #[test]
+fn loading_and_empty_search_keep_the_query_in_place() {
+    let area = Rect::new(0, 0, 100, 30);
+    let mut picker = PathPicker::new("/home".into(), &Theme::default());
+    let before = picker.bounds(area).expect("bounded");
+    let loading = painted(&picker, area).join("\n");
+    assert!(loading.contains("Searching host…"), "{loading}");
+    assert!(!loading.contains("⏎ select"), "{loading}");
+
+    browse_home(&mut picker);
+    let populated = painted(&picker, area).join("\n");
+    assert!(populated.contains("⏎ select · Esc"), "{populated}");
+    assert_eq!(picker.bounds(area).expect("bounded").y, before.y);
+
+    picker.handle_paste("missing");
+    picker.update_paths(&Ok(PathResults {
+        root: "/home".into(),
+        parent: Some("/".into()),
+        rows: vec![],
+        status: PathStatus::Complete,
+    }));
+    let empty = painted(&picker, area).join("\n");
+    assert!(empty.contains("No matches. Edit query."), "{empty}");
+    assert!(empty.contains("Esc close"), "{empty}");
+    assert!(!empty.contains("⏎ select"), "{empty}");
+    assert_eq!(
+        picker.handle_key(&press_text(PhysicalKey::Enter, None)),
+        OverlayCommand::Stay
+    );
+}
+
+#[test]
 fn browse_rows_insert_and_navigate_without_spawning() {
     let result = Ok(PathResults {
         root: "/home".into(),

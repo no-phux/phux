@@ -113,12 +113,34 @@ fn painted_row(sl: &SelectList, idx: usize, width: u16) -> String {
 }
 
 #[test]
-fn a_query_matching_nothing_says_no_matches_in_the_footer() {
+fn a_query_matching_nothing_explains_how_to_recover() {
     let mut sl = sample();
     type_str(&mut sl, "zzzz");
-    let out = render_to_string(&sl, 60, 12);
-    assert!(out.contains("no matches"), "{out}");
-    assert!(!out.contains("0 rows"), "{out}");
+    for width in [30, 60, 100] {
+        let out = render_to_string(&sl, width, 12);
+        assert!(out.contains("No matches. Edit query."), "{out}");
+        assert!(out.contains("Esc close"), "{out}");
+        assert!(!out.contains("⏎ select"), "{out}");
+    }
+    let narrow = render_to_string(&sl, 16, 12);
+    assert!(narrow.contains("No matches"), "{narrow}");
+    assert_eq!(commit(&mut sl), None);
+    for _ in 0..4 {
+        key(&mut sl, PhysicalKey::Backspace);
+    }
+    assert_eq!(commit(&mut sl).as_deref(), Some("split-pane"));
+}
+
+#[test]
+fn empty_inventory_and_status_rows_have_no_selection_hint() {
+    let empty = render_to_string(&list(vec![]), 40, 12);
+    assert!(empty.contains("Nothing to choose yet"), "{empty}");
+    assert!(empty.contains("Esc close"), "{empty}");
+    assert!(!empty.contains("⏎ select"), "{empty}");
+    let status = render_to_string(&list(vec![SelectItem::header("Searching…")]), 40, 12);
+    assert!(status.contains("Searching…"), "{status}");
+    assert!(!status.contains("Nothing to choose yet"), "{status}");
+    assert!(!status.contains("⏎ select"), "{status}");
 }
 
 #[test]
@@ -135,16 +157,22 @@ fn fuzzy_score_matches_ordered_subsequences_and_ranks_them() {
 }
 
 #[test]
-fn session_management_legend_names_tab() {
-    let sl = list(vec![SelectItem::new("a", action("switch-session"))]).with_session_management();
-    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
-    sl.render(Rect::new(0, 0, 80, 24), &mut buf);
-    let text: String = buf
-        .content()
-        .iter()
-        .map(ratatui::buffer::Cell::symbol)
-        .collect();
-    assert!(text.contains("tab manage"), "{text}");
+fn session_management_legend_tracks_the_highlight_and_fits() {
+    let mut sl = list(vec![
+        SelectItem::new("build", session_switch("build", 42, None, None)),
+        SelectItem::new("host", action("switch-host")),
+    ])
+    .with_session_management();
+    let text = render_to_string(&sl, 100, 24);
+    assert!(text.contains("Tab manage"), "{text}");
+    let narrow = render_to_string(&sl, 30, 12);
+    assert!(narrow.contains("1 of 2"), "{narrow}");
+    assert!(narrow.contains("⏎ select · Esc"), "{narrow}");
+    key(&mut sl, PhysicalKey::ArrowDown);
+    let text = render_to_string(&sl, 100, 24);
+    assert!(text.contains("⏎ select"), "{text}");
+    assert!(!text.contains("Tab manage"), "{text}");
+    assert_eq!(key(&mut sl, PhysicalKey::Tab), OverlayCommand::Stay);
 }
 
 #[test]

@@ -72,6 +72,9 @@ pub(super) fn rows(result: &PathQueryResult, browsing: bool) -> Vec<Row> {
                     .flat_map(|row| path_items(row, &found.root, browsing)),
             );
             items.extend(status_note(found.status));
+            if items.is_empty() {
+                items.push(Row::note("No matches. Edit query."));
+            }
             items
         }
     }
