@@ -41,6 +41,7 @@ impl Desk {
         if let Some(phone) = &mut self.phone {
             phone.reset_navigation();
             phone.release();
+            phone.swipe.arrival = None;
             phone.page = Some(page);
             phone.query.clear();
             phone.query.focused = false;

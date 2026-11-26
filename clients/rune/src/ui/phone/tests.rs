@@ -73,10 +73,28 @@ fn a_phone_takes_its_sheets_from_the_theme_or_the_ground_never_the_system() {
         Color::BLACK
     );
     desk.open_phone_sessions();
+    // The drawer is glass over the terminal: UIKit continues the layer it
+    // is tinted with.
+    assert!(
+        sheets
+            .glass(
+                crate::ui::tokens::GlassSurface::PhoneBar,
+                sheets.glass_tint_layer(),
+            )
+            .is_some(),
+        "the drawer is glass"
+    );
+    assert_eq!(
+        edge_color(&desk),
+        sheets.glass_tint_layer().paint(),
+        "UIKit continues the drawer's glass"
+    );
+    desk.set_reduce_transparency(true);
+    let sheets = page_look(&desk);
     assert_eq!(
         edge_color(&desk),
         sheets.roles.layer.ground.paint(),
-        "UIKit continues the navigation page's theme"
+        "an opaque drawer is the navigation page's theme"
     );
 }
 

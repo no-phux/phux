@@ -1,7 +1,7 @@
 //! The phone form: a live terminal with touch chrome outside its viewport:
 //! a top bar, navigation toolbar, tabs, accessory bar and keyboard. What
 //! Rune can't do on a phone yet (safe areas, the system keyboard) is drawn
-//! here instead; clients/rune/MOBILE.md lists each piece and what replaces it.
+//! here instead; clients/rune/MOBILE_GAPS.md lists each piece and what replaces it.
 //!
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock,
@@ -181,7 +181,14 @@ fn edge_fill(desk: &Desk, p: &Look) -> Color {
     if desk.settings_open {
         p.roles.layer.sidebar.paint()
     } else if desk.phone_page().is_some() {
-        p.roles.layer.ground.paint()
+        // The layer the drawer's glass is tinted with, which it reads as
+        // over the terminal it blurs; its ground where it is opaque.
+        let glass = p.glass(super::tokens::GlassSurface::PhoneBar, p.glass_tint_layer());
+        if glass.is_some() {
+            p.glass_tint_layer().paint()
+        } else {
+            p.roles.layer.ground.paint()
+        }
     } else {
         terminal_ground(desk)
     }
