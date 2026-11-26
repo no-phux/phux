@@ -2,8 +2,12 @@ use super::super::test_support::CtxFixture;
 use super::*;
 use phux_client::testkit::{OrgFixture, ScriptSpec, serve_one};
 use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
+use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{Command, ExecState, FrameKind, Refusal, SessionLifetime};
+use ratatui::{buffer::Buffer, layout::Rect};
 use std::collections::BTreeMap;
+
+use crate::render::overlay::{OverlayCommand, RenderOverlay};
 
 fn action(verb: &str) -> ResolvedAction {
     crate::attach::resolved(
@@ -30,7 +34,7 @@ async fn connect(
     (Connection::connect(&socket).await.unwrap(), server, dir)
 }
 
-fn confirm(result: Management) -> SessionConfirm {
+fn confirm(result: Management) -> ConfirmOverlay {
     match result {
         Management::Confirm(confirm) => *confirm,
         Management::Result(_) => panic!("expected confirmation"),
@@ -38,6 +42,13 @@ fn confirm(result: Management) -> SessionConfirm {
 }
 
 use crate::test_util::press as key;
+
+fn confirmed_action(confirm: &ConfirmOverlay) -> ResolvedAction {
+    let OverlayCommand::Commit(action) = confirm.clone().handle_key(&key(PhysicalKey::Y)) else {
+        panic!("explicit confirmation")
+    };
+    action
+}
 
 fn edits(seen: &[FrameKind]) -> Vec<&Command> {
     seen.iter()
@@ -65,7 +76,7 @@ async fn session_management_kill_confirms_then_sends_one_session_kill() {
             .unwrap(),
     );
     assert_eq!(
-        SessionKey::parse(&str_arg(&confirmation.action, "session-key").unwrap()),
+        SessionKey::parse(&str_arg(&confirmed_action(&confirmation), "session-key").unwrap()),
         Some(work)
     );
     // The prompt names the session and all member records, including retained ones.
@@ -82,7 +93,8 @@ async fn session_management_kill_confirms_then_sends_one_session_kill() {
             && text.contains("everything in it (2 now)")
             && text.contains("Anything added before this runs")
             && text.contains("attached client")
-            && text.contains("⏎ kill · esc")
+            && text.contains("Kill session")
+            && text.contains("Cancel")
             && !text.contains("any key"),
         "{text}"
     );
@@ -96,10 +108,11 @@ async fn session_management_kill_confirms_then_sends_one_session_kill() {
     repeated.action = KeyAction::Press;
     repeated.mods = ModSet::CTRL;
     assert_eq!(confirmation.handle_key(&repeated), OverlayCommand::Stay);
-    let OverlayCommand::Commit(committed) = confirmation.handle_key(&key(PhysicalKey::Enter))
-    else {
-        panic!("confirmation")
-    };
+    assert_eq!(
+        confirmation.handle_key(&key(PhysicalKey::Enter)),
+        OverlayCommand::Dismiss
+    );
+    let committed = confirmed_action(&confirmation);
     let Management::Result(lines) = manage(&mut conn, committed, &Theme::default())
         .await
         .unwrap()
@@ -151,10 +164,13 @@ async fn session_management_delete_empty_only_deletes() {
             .await
             .unwrap(),
     );
-    let Management::Result(lines) = manage(&mut conn, confirmation.action, &Theme::default())
-        .await
-        .unwrap()
-    else {
+    let Management::Result(lines) = manage(
+        &mut conn,
+        confirmed_action(&confirmation),
+        &Theme::default(),
+    )
+    .await
+    .unwrap() else {
         panic!("result")
     };
     assert!(lines[0].starts_with("Deleted"));
@@ -175,7 +191,7 @@ async fn session_management_rejects_changed_authority_missing_key_and_stale_live
             .await
             .unwrap(),
     );
-    let mut wrong_authority = confirmation.action.clone();
+    let mut wrong_authority = confirmed_action(&confirmation);
     wrong_authority.args.insert(
         "authority".to_owned(),
         toml::Value::String(AuthorityId::new([7; 16]).unwrap().to_string()),
@@ -187,7 +203,7 @@ async fn session_management_rejects_changed_authority_missing_key_and_stale_live
             .unwrap()
             .contains("authority changed")
     );
-    let mut missing = confirmation.action;
+    let mut missing = confirmed_action(&confirmation);
     missing.args.insert(
         "session-key".to_owned(),
         toml::Value::String(SessionKey::new([8; 16]).unwrap().to_string()),
@@ -238,10 +254,13 @@ async fn session_management_renamed_session_keeps_its_pinned_identity() {
     )
     .await
     .unwrap();
-    let Management::Result(lines) = manage(&mut conn, confirmation.action, &Theme::default())
-        .await
-        .unwrap()
-    else {
+    let Management::Result(lines) = manage(
+        &mut conn,
+        confirmed_action(&confirmation),
+        &Theme::default(),
+    )
+    .await
+    .unwrap() else {
         panic!("result")
     };
     assert!(lines[0].contains("renamed"), "{lines:?}");
@@ -277,7 +296,12 @@ async fn session_management_members_added_after_confirmation_are_killed_but_neve
         )
         .await
         .unwrap();
-        let result = manage(&mut conn, confirmation.action, &Theme::default()).await;
+        let result = manage(
+            &mut conn,
+            confirmed_action(&confirmation),
+            &Theme::default(),
+        )
+        .await;
         if deleting {
             assert!(result.err().unwrap().contains("never ends work"));
         } else {
@@ -312,10 +336,13 @@ async fn session_management_refusal_does_not_claim_success_or_retry_members() {
             .await
             .unwrap(),
     );
-    let Management::Result(lines) = manage(&mut conn, confirmation.action, &Theme::default())
-        .await
-        .unwrap()
-    else {
+    let Management::Result(lines) = manage(
+        &mut conn,
+        confirmed_action(&confirmation),
+        &Theme::default(),
+    )
+    .await
+    .unwrap() else {
         panic!("result")
     };
     assert!(lines[0].contains("Kill not confirmed"), "{lines:?}");
@@ -361,10 +388,14 @@ async fn session_management_replacement_with_same_name_is_not_the_confirmed_targ
     )
     .await
     .unwrap();
-    let error = manage(&mut conn, confirmation.action, &Theme::default())
-        .await
-        .err()
-        .unwrap();
+    let error = manage(
+        &mut conn,
+        confirmed_action(&confirmation),
+        &Theme::default(),
+    )
+    .await
+    .err()
+    .unwrap();
     assert!(error.contains("no longer exists"), "{error}");
     drop(conn);
     assert!(matches!(

@@ -55,6 +55,12 @@ phux attach work    # attach to it later
 phux kill work      # end it (asks first)
 ```
 
+In the terminal UI, kill, session deletion, paste warnings, and clipboard
+requests open with **Cancel** or **Deny** focused. Press <kbd>Tab</kbd>
+then <kbd>Enter</kbd> to accept, or press <kbd>y</kbd>. <kbd>Esc</kbd>
+always declines. If you submit a blank name or command, the prompt stays
+open so you can correct it.
+
 ## Run an agent
 
 phux does not install agents. In a pane, run `claude`, `codex`, `opencode`,

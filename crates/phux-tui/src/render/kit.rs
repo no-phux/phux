@@ -399,25 +399,29 @@ mod tests {
         assert_eq!(key(&composing), None);
     }
 
-    fn painted_at(depth: Depth) -> Buffer {
+    fn painted_at(depth: Depth, select_approval: bool) -> Buffer {
         use crate::render::overlay::{ConfirmOverlay, RenderOverlay};
         use crate::render::theme::Outer;
         let theme = Theme::house(&Outer {
             depth,
             ..Outer::default()
         });
-        let overlay =
+        let mut overlay =
             ConfirmOverlay::kill_pane("pane 3", &phux_protocol::ResourceId::local(3), &[], &theme);
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         overlay.render(area, &mut buf);
+        if select_approval {
+            overlay.handle_key(&crate::test_util::press(PhysicalKey::Tab));
+            overlay.render(area, &mut buf);
+        }
         buf
     }
 
     #[test]
     fn below_truecolor_nothing_ratcn_paints_is_24_bit() {
         for depth in [Depth::Ansi256, Depth::Ansi16, Depth::Mono] {
-            let buf = painted_at(depth);
+            let buf = painted_at(depth, false);
             for cell in &buf.content {
                 for color in [cell.fg, cell.bg] {
                     assert!(
@@ -439,15 +443,18 @@ mod tests {
     #[test]
     fn without_fills_the_focused_button_is_reverse_video() {
         for depth in [Depth::Ansi16, Depth::Mono] {
-            let buf = painted_at(depth);
-            let reversed: String = buf
-                .content
-                .iter()
-                .filter(|c| c.modifier.contains(Modifier::REVERSED))
-                .map(ratatui::buffer::Cell::symbol)
-                .collect();
-            assert!(reversed.contains("Kill"), "{depth:?}: {reversed:?}");
-            assert!(!reversed.contains("Cancel"), "{depth:?}: {reversed:?}");
+            for (selected, focused, unfocused) in
+                [(false, "Cancel", "Kill"), (true, "Kill", "Cancel")]
+            {
+                let reversed: String = painted_at(depth, selected)
+                    .content
+                    .iter()
+                    .filter(|c| c.modifier.contains(Modifier::REVERSED))
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                assert!(reversed.contains(focused), "{depth:?}: {reversed:?}");
+                assert!(!reversed.contains(unfocused), "{depth:?}: {reversed:?}");
+            }
         }
     }
 

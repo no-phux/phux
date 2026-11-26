@@ -1,8 +1,8 @@
 //! Yes/no confirmation modals on ratcn's [`Dialog`].
 //!
-//! Enter presses the focused button (focus starts on the confirming one),
-//! `y` confirms and Esc or `n` drops the held command from anywhere; Tab,
-//! arrows, and the mouse move between and press the buttons.
+//! Enter presses the focused button, initially Cancel or Deny. Tab or the
+//! mouse selects an action; `y` explicitly confirms, while Esc or `n`
+//! drops the held command from anywhere.
 //!
 //! - Paste protection: a paste that would reach a pane as typed input.
 //! - Clipboard writes under `defaults.clipboard-write = "ask"` (ADR-0158).
@@ -14,16 +14,17 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use phux_client_core::engine::ClipboardText;
+use phux_config::keybind::ResolvedAction;
 use phux_protocol::ResourceId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet};
 use phux_protocol::input::mouse::MouseEvent;
 use phux_protocol::input::paste::PasteEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, Ratcn};
+use ratcn::runtime::{DeclareCtx, Event, EventResult, FocusState, KeyCode, Ratcn};
 use ratcn::{Button, Dialog};
 
-use super::widgets::centered_panel;
+use super::widgets::{centered_panel, dialog_actions, stack_dialog_actions};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::kit::{self, Surface};
 use crate::render::{ChromeBreakpoints, Theme};
@@ -129,10 +130,8 @@ impl ConfirmOverlay {
             on_yes,
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
-            // Focus starts on the confirming action, so Enter commits as it
-            // always has.
             model: Model {
-                focus: FocusState::intent([DIALOG, YES]),
+                focus: FocusState::intent([DIALOG, NO]),
             },
             ui: Surface::new(runtime),
             outer: Cell::new(Rect::new(0, 0, 80, 24)),
@@ -144,11 +143,11 @@ impl ConfirmOverlay {
     #[must_use]
     pub fn paste(paste: PasteEvent, lines: usize, bracketed: bool, theme: &Theme) -> Self {
         let message = if bracketed {
-            "this paste could end bracketed paste early".to_owned()
+            "This paste can end bracketed paste early and run commands.".to_owned()
         } else if lines == 1 {
-            "the line break will press Enter".to_owned()
+            "The line break will press Enter in the pane.".to_owned()
         } else {
-            format!("{lines} lines will run as typed input")
+            format!("{lines} lines will be typed into the pane and may run commands.")
         };
         let on_yes = OverlayCommand::Paste(paste);
         let buttons = Buttons {
@@ -191,7 +190,7 @@ impl ConfirmOverlay {
         } else {
             format!("End {count} {noun} in tab {window}.")
         };
-        Self::kill("kill-window", "Kill tab?", targets, line, shared, theme)
+        Self::kill("kill-window", "Kill tab", targets, line, shared, theme)
     }
 
     /// Ask before terminating `target`, the focused pane's terminal, named
@@ -205,12 +204,12 @@ impl ConfirmOverlay {
     ) -> Self {
         let line = format!("End {label} and what runs in it.");
         let targets = std::slice::from_ref(target);
-        Self::kill("kill-pane", "Kill pane?", targets, line, shared, theme)
+        Self::kill("kill-pane", "Kill pane", targets, line, shared, theme)
     }
 
     fn kill(
         action: &str,
-        title: &'static str,
+        verb: &'static str,
         targets: &[ResourceId],
         first: String,
         shared: &[SharedTarget],
@@ -234,16 +233,32 @@ impl ConfirmOverlay {
             .iter()
             .map(|id| toml::Value::String(selector(id)))
             .collect();
-        let on_yes = OverlayCommand::Commit(crate::attach::resolved(
+        let action = crate::attach::resolved(
             action,
             BTreeMap::from([(KILL_TARGETS_ARG.to_owned(), toml::Value::Array(selectors))]),
-        ));
-        let buttons = Buttons {
-            yes: "Kill",
-            no: "Cancel",
-            destructive: true,
-        };
-        Self::new(title, lines, buttons, on_yes, theme)
+        );
+        Self::destructive_action(verb, verb, lines, action, theme)
+    }
+
+    /// Confirm a destructive action whose target and arguments are already pinned.
+    pub(crate) fn destructive_action(
+        title: &'static str,
+        verb: &'static str,
+        lines: Vec<String>,
+        action: ResolvedAction,
+        theme: &Theme,
+    ) -> Self {
+        Self::new(
+            title,
+            lines,
+            Buttons {
+                yes: verb,
+                no: "Cancel",
+                destructive: true,
+            },
+            OverlayCommand::Commit(action),
+            theme,
+        )
     }
 
     /// The lines the modal shows, top to bottom.
@@ -253,7 +268,14 @@ impl ConfirmOverlay {
     }
 
     fn modal_area(&self, outer: Rect) -> Rect {
-        dialog_area(outer, &self.lines.join("\n"), self.breakpoints)
+        let wide = dialog_width(outer, self.breakpoints);
+        let chrome_rows = DIALOG_CHROME_ROWS
+            + u16::from(stack_dialog_actions(
+                wide,
+                self.buttons.no,
+                self.buttons.yes,
+            ));
+        fit_dialog(outer, wide, &self.lines.join("\n"), chrome_rows)
     }
 
     /// Declare the dialog filling `area` (the modal rect).
@@ -265,6 +287,7 @@ impl ConfirmOverlay {
             no,
             destructive,
         } = self.buttons;
+        let stacked = stack_dialog_actions(area.width, no, yes);
         move |ctx| {
             let confirm = Button::new(yes).on_press(|| Msg::Yes);
             let confirm = if destructive {
@@ -272,14 +295,14 @@ impl ConfirmOverlay {
             } else {
                 confirm
             };
+            let cancel = Button::new(no).secondary().on_press(|| Msg::No);
             let dialog = Dialog::new()
                 .title(title)
                 .description(description.clone())
                 .outer_width(area.width)
                 .outer_height(area.height)
-                .on_dismiss(|| Msg::No)
-                .action(NO, Button::new(no).secondary().on_press(|| Msg::No))
-                .action(YES, confirm);
+                .on_dismiss(|| Msg::No);
+            let dialog = dialog_actions(dialog, (NO, cancel), (YES, confirm), stacked);
             ctx.component(DIALOG, dialog, area);
         }
     }
@@ -308,13 +331,25 @@ const DIALOG_CHROME_ROWS: u16 = 2 + 2 + 1 + 1;
 /// A half-width ratcn dialog exactly tall enough for `description` wrapped
 /// to its inner width, centered.
 pub(crate) fn dialog_area(outer: Rect, description: &str, bp: ChromeBreakpoints) -> Rect {
-    let wide = centered_panel(outer, 5, 40, DIALOG_CHROME_ROWS + 1, bp);
-    let inner = wide.width.saturating_sub(4);
-    let rows =
-        ratcn::geometry::wrapped_height(description, inner).saturating_add(DIALOG_CHROME_ROWS);
+    fit_dialog(
+        outer,
+        dialog_width(outer, bp),
+        description,
+        DIALOG_CHROME_ROWS,
+    )
+}
+
+fn dialog_width(outer: Rect, bp: ChromeBreakpoints) -> u16 {
+    centered_panel(outer, 5, 40, DIALOG_CHROME_ROWS + 1, bp).width
+}
+
+fn fit_dialog(outer: Rect, width: u16, description: &str, chrome_rows: u16) -> Rect {
+    let rows = ratcn::geometry::wrapped_height(description, width.saturating_sub(4))
+        .saturating_add(chrome_rows);
     let h = rows.min(outer.height);
+    let x = outer.x + (outer.width.saturating_sub(width)) / 2;
     let y = outer.y + (outer.height.saturating_sub(h)) / 2;
-    Rect::new(wide.x, y, wide.width, h)
+    Rect::new(x, y, width, h)
 }
 
 /// The canonical selector of `id`: `@N`, or `host/@N` for a satellite.
@@ -359,16 +394,24 @@ impl RenderOverlay for ConfirmOverlay {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;
         }
-        // The letter shortcuts answer whichever button has focus.
-        match key.key {
-            PhysicalKey::Y => return self.on_yes.clone(),
-            PhysicalKey::N => return OverlayCommand::Dismiss,
-            // Only Enter or `y` confirms, as before: a stray Space typed
-            // into a held paste must not press the focused button.
-            PhysicalKey::Space => return OverlayCommand::Stay,
-            _ => {}
+        let Some(event @ Event::Key(input)) = kit::key(key) else {
+            return OverlayCommand::Stay;
+        };
+        match input.code {
+            KeyCode::Esc => OverlayCommand::Dismiss,
+            _ if key
+                .mods
+                .intersects(ModSet::CTRL | ModSet::ALT | ModSet::SUPER) =>
+            {
+                OverlayCommand::Stay
+            }
+            // Recognize the typed letter rather than the keyboard position.
+            KeyCode::Char('y' | 'Y') => self.on_yes.clone(),
+            KeyCode::Char('n' | 'N') => OverlayCommand::Dismiss,
+            // Stray spaces must not operate a button in a held paste.
+            KeyCode::Char(' ') => OverlayCommand::Stay,
+            _ => self.route(event),
         }
-        kit::key(key).map_or(OverlayCommand::Stay, |event| self.route(event))
     }
 
     fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayCommand {
@@ -379,13 +422,13 @@ impl RenderOverlay for ConfirmOverlay {
 #[cfg(test)]
 mod tests {
     use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::input::key::PhysicalKey;
     use phux_protocol::input::paste::PasteTrust;
-
-    use phux_protocol::input::key::ModSet;
-    use phux_protocol::input::mouse::{MouseAction, MouseButton};
 
     use super::*;
     use crate::test_util::{press, rendered};
+
+    mod interaction;
 
     #[test]
     fn the_dialog_paints_its_title_message_and_both_buttons() {
@@ -400,48 +443,6 @@ mod tests {
         let mut overlay = ConfirmOverlay::paste(paste(b"rm -rf ~\n"), 1, false, &Theme::default());
         let space = crate::test_util::press_text(PhysicalKey::Space, Some(" "));
         assert_eq!(overlay.handle_key(&space), OverlayCommand::Stay);
-    }
-
-    #[test]
-    fn tab_moves_focus_to_the_declining_button_and_enter_presses_it() {
-        let mut overlay = clipboard();
-        let area = Rect::new(0, 0, 80, 24);
-        overlay.render(area, &mut Buffer::empty(area));
-        let back = crate::test_util::key_event(PhysicalKey::Tab, ModSet::SHIFT, None);
-        assert_eq!(overlay.handle_key(&back), OverlayCommand::Stay);
-        assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::Enter)),
-            OverlayCommand::Dismiss
-        );
-    }
-
-    #[test]
-    fn clicking_a_button_presses_it() {
-        let mut overlay = clipboard();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        overlay.render(area, &mut buf);
-        let (x, y) = (0..area.height)
-            .find_map(|y| {
-                let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-                row.find("Allow").map(|x| (x, y))
-            })
-            .expect("the Allow button is painted");
-        let at = |action| MouseEvent {
-            action,
-            button: MouseButton::Left,
-            mods: ModSet::empty(),
-            x: f64::from(u16::try_from(x).expect("fits") + 1),
-            y: f64::from(y),
-        };
-        assert_eq!(
-            overlay.handle_mouse(&at(MouseAction::Press)),
-            OverlayCommand::Stay
-        );
-        assert_eq!(
-            overlay.handle_mouse(&at(MouseAction::Release)),
-            OverlayCommand::SetClipboard(ClipboardText("secret".to_owned()))
-        );
     }
 
     fn paste(data: &[u8]) -> PasteEvent {
@@ -472,45 +473,21 @@ mod tests {
     }
 
     #[test]
-    fn enter_or_y_returns_the_held_command_and_esc_or_n_drops_it() {
-        let held = paste(b"make\nmake install\n");
-        let paste_confirm = ConfirmOverlay::paste(held.clone(), 2, false, &Theme::default());
-        for key in [PhysicalKey::Enter, PhysicalKey::Y] {
-            assert_eq!(
-                paste_confirm.clone().handle_key(&press(key)),
-                OverlayCommand::Paste(held.clone())
-            );
-            assert_eq!(
-                clipboard().handle_key(&press(key)),
-                OverlayCommand::SetClipboard(ClipboardText("secret".to_owned()))
-            );
-        }
-        for key in [PhysicalKey::Escape, PhysicalKey::N] {
-            assert_eq!(
-                paste_confirm.clone().handle_key(&press(key)),
-                OverlayCommand::Dismiss
-            );
-            assert_eq!(
-                kill_window(&[]).handle_key(&press(key)),
-                OverlayCommand::Dismiss
-            );
-        }
-        assert_eq!(
-            kill_window(&[]).handle_key(&press(PhysicalKey::A)),
-            OverlayCommand::Stay
-        );
-    }
-
-    #[test]
     fn the_paste_message_names_what_will_happen() {
         let theme = Theme::default();
         let lines =
             |n, bracketed| ConfirmOverlay::paste(paste(b"ls\n"), n, bracketed, &theme).lines;
-        assert_eq!(lines(2, false), ["2 lines will run as typed input"]);
-        assert_eq!(lines(1, false), ["the line break will press Enter"]);
+        assert_eq!(
+            lines(2, false),
+            ["2 lines will be typed into the pane and may run commands."]
+        );
+        assert_eq!(
+            lines(1, false),
+            ["The line break will press Enter in the pane."]
+        );
         assert_eq!(
             lines(1, true),
-            ["this paste could end bracketed paste early"]
+            ["This paste can end bracketed paste early and run commands."]
         );
     }
 
@@ -525,18 +502,16 @@ mod tests {
 
     #[test]
     fn a_kill_commits_its_exact_targets() {
-        for key in [PhysicalKey::Enter, PhysicalKey::Y] {
-            assert_eq!(
-                kill_args(kill_window(&[]).handle_key(&press(key))),
-                (
-                    "kill-window".to_owned(),
-                    Some(toml::Value::Array(vec![
-                        toml::Value::String("@1".to_owned()),
-                        toml::Value::String("edge/@9".to_owned()),
-                    ]))
-                )
-            );
-        }
+        assert_eq!(
+            kill_args(kill_window(&[]).handle_key(&press(PhysicalKey::Y))),
+            (
+                "kill-window".to_owned(),
+                Some(toml::Value::Array(vec![
+                    toml::Value::String("@1".to_owned()),
+                    toml::Value::String("edge/@9".to_owned()),
+                ]))
+            )
+        );
         let mut pane =
             ConfirmOverlay::kill_pane("pane 3", &ResourceId::local(3), &[], &Theme::default());
         assert_eq!(pane.lines, ["End pane 3 and what runs in it."]);
