@@ -1,11 +1,12 @@
 //! The Sessions page's floating New session dock: native Liquid Glass on
-//! the iOS host, Rune's frosted glass elsewhere.
+//! the iOS host, an opaque raised control elsewhere, floating over the
+//! drawer's own glass.
 
 use rune::{Color, El, text};
 
 use super::{Desk, Look, control};
 use crate::ui::icons;
-use crate::ui::tokens::{GlassSurface, Paint, Tier, Voice};
+use crate::ui::tokens::{Paint, Tier, Voice};
 
 /// New session, or Open or create `name` while a search names one; inert
 /// until a connection can run it. At large text sizes it is an opaque
@@ -45,7 +46,7 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
         };
         super::super::hosted(desk, footer, control)
     } else {
-        frosted(labelled(footer, title, ink, p), p)
+        floating(labelled(footer, title, ink, p), p)
     };
     if desk.connection.client.is_some() {
         footer
@@ -76,16 +77,11 @@ fn labelled(footer: El, title: &str, ink: Color, p: &Look) -> El {
         )
 }
 
-/// The session dock: glass over the scrolling list, the phone's one
-/// backdrop blur. Opaque under increased contrast, Reduce
-/// Transparency and forced colours. The native host draws it as the
-/// system's Liquid Glass instead ([`footer`]).
-fn frosted(e: El, p: &Look) -> El {
-    let e = p.glass_panel(
-        e,
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.raised,
-    );
-    p.elevate(e.continuous_corners(), Tier::Floating)
+/// The session dock over the scrolling list. The drawer behind it is the
+/// phone's one backdrop blur, so Rune's dock is the raised layer on the
+/// floating tier; the native host draws it as the system's Liquid Glass
+/// instead ([`footer`]).
+fn floating(e: El, p: &Look) -> El {
+    let e = e.continuous_corners().fill(p.roles.layer.raised.paint());
+    p.elevate(e, Tier::Floating)
 }

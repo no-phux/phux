@@ -278,7 +278,7 @@ fn surface_view(
 ) -> Option<El> {
     match surface {
         Surface::RawRelaunch => archived_relaunch::view(desk, p),
-        Surface::PhoneNavigation => phone::navigation::view(desk, top),
+        Surface::PhoneNavigation | Surface::PhonePull => phone::navigation::view(desk, top),
         Surface::Inbox => Some(inbox::view(desk, p)),
         Surface::Playground(_) => playground::open(desk, p, cx),
         // A phone's Settings is already painted in its stage, not a scrim.

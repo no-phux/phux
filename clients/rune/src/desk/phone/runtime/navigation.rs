@@ -11,6 +11,7 @@ mod organize;
 mod render;
 mod review;
 mod search;
+mod swipe;
 mod wheel;
 
 fn inventory(rt: &mut Runtime<Desk>) {

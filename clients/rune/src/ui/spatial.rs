@@ -37,6 +37,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
     } else {
         content
     };
+    let session = desk.selected_session_name().unwrap_or_default();
     // Only this viewport is measured and clipped. The toolbar is a sibling,
     // so neither terminal rows nor the camera can extend behind its controls.
     let viewport = el()
@@ -47,7 +48,8 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
         .min_w(0.0)
         .clip_rounded(0.0)
         .on_layout(|d: &mut Desk, r| d.phone_stage_laid_out([r[2], r[3]]))
-        .child(content);
+        .children(peek(desk, phone, &page))
+        .child(pager(phone, &session, content, &page));
     // The toolbar sits on the terminal's ground, so it takes that ground's
     // tokens, as the phone's other controls do.
     let mut stage = area.key("phone-spatial-shell").child(
@@ -163,6 +165,100 @@ fn canvas(
         );
     }
     canvas
+}
+
+/// One session's page of the stage. A sideways finger carries it one to one;
+/// lifted, it springs home, or slides off as the next session slides in
+/// from the other side, parked off the stage until that session shows.
+fn pager(phone: &Phone, session: &str, content: El, p: &Look) -> El {
+    let swipe = &phone.swipe;
+    let leaving = (swipe.leaving.as_ref()).is_some_and(|(name, _)| name == session);
+    let x = if leaving {
+        swipe.arrival.unwrap_or(0.0) * phone.stage[0]
+    } else if swipe.paging {
+        swipe.page
+    } else {
+        0.0
+    };
+    let page = el()
+        .key(format!("phone-session-page-{session}"))
+        .cover()
+        .offset(x, 0.0)
+        .offset_motion(if swipe.paging {
+            rune::Spring::NONE
+        } else {
+            page_spring(p)
+        })
+        .child(content);
+    let way = if swipe.paging {
+        (swipe.page != 0.0).then(|| swipe.page.signum())
+    } else {
+        swipe.arrival
+    };
+    let Some(way) = way else { return page };
+    let toward = |x: f32| rune::Effect {
+        offset_fraction: rune::Vec2::new(x, 0.0),
+        ..rune::Effect::IDENTITY
+    };
+    page.transition(
+        rune::Transition {
+            insertion: toward(-way),
+            removal: toward(way),
+            ..rune::Transition::offset(0.0, 0.0)
+        }
+        .springs(p.motion.page),
+    )
+}
+
+/// Under the sliding page, in the strip it uncovers: the session a lift
+/// goes to, lit once lifting commits. Nothing at either end, where the
+/// page only gives.
+fn peek(desk: &Desk, phone: &Phone, p: &Look) -> Option<El> {
+    let swipe = &phone.swipe;
+    if !swipe.paging {
+        return None;
+    }
+    let name = desk.page_target(swipe.page)?;
+    let w = phone.stage[0];
+    let progress =
+        (swipe.page.abs() / (w * crate::desk::phone::swipe::PAGE_COMMIT).max(1.0)).min(1.0);
+    let forward = swipe.page < 0.0;
+    let (fill, ink) = if progress >= 1.0 {
+        (
+            p.roles.accent.accent.paint(),
+            p.roles.accent.on_accent.paint(),
+        )
+    } else {
+        (p.roles.layer.raised.paint(), p.roles.text.text.paint())
+    };
+    let words = if forward {
+        format!("{name}  ›")
+    } else {
+        format!("‹  {name}")
+    };
+    let gap = swipe.page.abs().min(w);
+    let pill = el()
+        .key("phone-session-peek")
+        .min_h(p.space.touch_min)
+        .max_w((gap - 2.0 * p.space.s3).max(0.0))
+        .px(p.space.s4)
+        .radius(p.radius.full)
+        .continuous_corners()
+        .center()
+        .fill(fill)
+        .motion(p.motion.control.enter)
+        .opacity(progress)
+        .child(text(words).font(p.ty.label.medium()).color(ink).truncate());
+    // The uncovered strip reads as the layer under the page.
+    let lane = row()
+        .absolute(if forward { w - gap } else { 0.0 }, 0.0)
+        .w(gap)
+        .h_full()
+        .center()
+        .fill(p.roles.layer.sidebar.paint())
+        .inert()
+        .a11y_hidden();
+    Some(lane.child(p.elevate(pill, Tier::Floating)))
 }
 
 /// A touch control: the touch target's height, its words in the label

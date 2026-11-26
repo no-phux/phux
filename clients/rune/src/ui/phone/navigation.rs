@@ -10,7 +10,7 @@ use rune::{El, Key, Tx, col, el, row, text, text_input};
 
 use super::{Desk, Look};
 use crate::desk::phone::navigation::Page;
-use crate::ui::tokens::Paint;
+use crate::ui::tokens::{GlassSurface, Paint};
 use crate::ui::{icons, pressable};
 
 mod actions;
@@ -29,7 +29,11 @@ use resource::resource_row;
 use states::empty_state;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
-    let page = desk.phone_page()?;
+    let phone = desk.phone.as_ref()?;
+    // A finger pulling the drawer in from the left edge shows Sessions
+    // before it is open: inert, following the finger, not yet a modal.
+    let pull = phone.swipe.pull.filter(|_| desk.phone_page().is_none());
+    let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
     let p = &super::page_look(desk);
     let s = &p.space;
     let title = match page {
@@ -89,26 +93,67 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         Page::Sessions => sessions(desk, p),
         Page::Actions => actions(desk, p),
     };
-    Some(
-        col()
-            .key("phone-navigation-page")
-            .cover()
-            .items_center()
-            .pt(top)
-            .fill(p.roles.layer.ground.paint())
+    let sheet = col()
+        .key("phone-navigation-page")
+        .cover()
+        .items_center()
+        .pt(top)
+        .on_layout(|d: &mut Desk, rect| {
+            if let Some(phone) = &mut d.phone {
+                phone.page_size = [rect[2], rect[3]];
+            }
+        })
+        .label(title)
+        .child(header)
+        .child(body.max_w(column_max()))
+        .children(menu::view(desk, p));
+    let sheet = drawer(sheet, page, pull, phone.stage[0], p);
+    Some(match pull {
+        Some(_) => sheet.inert(),
+        None => sheet
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
-            .on_paste(|_: &mut Desk, _, _| {})
-            .on_layout(|d: &mut Desk, rect| {
-                if let Some(phone) = &mut d.phone {
-                    phone.page_size = [rect[2], rect[3]];
-                }
-            })
-            .label(title)
-            .child(header)
-            .child(body.max_w(column_max()))
-            .children(menu::view(desk, p)),
-    )
+            .on_paste(|_: &mut Desk, _, _| {}),
+    })
+}
+
+/// Sessions is a drawer from the left edge, where the thumb pulls it from:
+/// frosted glass over the blurred terminal, the phone's one blur. It slides
+/// in and out on the drawer spring, or follows a pulling finger exactly.
+/// Opaque where glass may not draw.
+fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El {
+    let sheet = p.glass_panel(
+        sheet,
+        GlassSurface::PhoneBar,
+        p.glass_tint_layer(),
+        p.roles.layer.ground,
+    );
+    if page != Page::Sessions {
+        return sheet;
+    }
+    let width = width.max(1.0);
+    let travel = pull.map_or(0.0, |pulled| pulled - width.max(pulled));
+    // The terminal the drawer is pulled over dims as it comes, and clears
+    // as an opened drawer covers it or a let-go one leaves.
+    let shade = el()
+        .key("phone-drawer-shade")
+        .absolute(width, 0.0)
+        .w(width)
+        .h_full()
+        .fill(p.roles.layer.scrim.paint())
+        .opacity(pull.map_or(0.0, |pulled| (pulled / width).min(1.0)))
+        .opacity_motion(p.motion.drawer.enter)
+        .inert()
+        .a11y_hidden();
+    sheet
+        .child(shade)
+        .offset(travel, 0.0)
+        .offset_motion(if pull.is_some() {
+            rune::Spring::NONE
+        } else {
+            p.motion.drawer.enter
+        })
+        .transition(rune::Transition::move_edge(rune::Edge::Leading).springs(p.motion.drawer))
 }
 
 /// The widest a phone column grows (an iPad's is centred).

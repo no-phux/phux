@@ -464,7 +464,8 @@ fn terminal_drag(d: &mut Desk, terminal: &ResourceId, drag: &rune::Drag, tx: &mu
             button: PointerButton::Primary,
         };
         let travel = [drag.dx, drag.dy];
-        return d.phone_touch(terminal, &step, travel, drag.cancelled(), tx);
+        let edge = drag.window_point()[0] <= crate::desk::phone::swipe::EDGE;
+        return d.phone_touch(terminal, &step, travel, drag.cancelled(), edge, tx);
     }
     // Only the primary button opens links; the rest are the program's.
     let cmd = mods.cmd && tx.button() == PointerButton::Primary;
