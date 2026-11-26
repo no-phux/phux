@@ -37,20 +37,27 @@ pub(super) fn configure(command: &mut Command, spec: &HostSpec) {
     command.env("PHUX_SOCKET", &spec.socket);
 }
 fn worker_env(command: &mut Command, env: &std::collections::BTreeMap<String, String>) {
-    command.env_clear().envs(env.iter().filter(|(name, _)| {
-        // Carry only explicit safe tool routing/UX context. Future PHUX_* state
-        // and inherited production transports/credentials are denied by default.
-        !name.starts_with("PHUX_")
-            || matches!(
-                name.as_str(),
-                "PHUX_BIN"
-                    | "PHUX_SOCKET"
-                    | "PHUX_TERMINAL_ID"
-                    | "PHUX_AGENT_REPORTING"
-                    | "PHUX_AGENT_TRANSCRIPT"
-                    | "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE"
-            )
-    }));
+    // Rex's resume token. `spec.env` is the host process environment, so a
+    // server started inside a Rex pane would otherwise hand it to the worker.
+    // OSC 7577 says a nested terminal must not pass that token on.
+    const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
+    command
+        .env_clear()
+        .envs(env.iter().filter(|(name, _)| {
+            // Carry only explicit safe tool routing/UX context. Future PHUX_* state
+            // and inherited production transports/credentials are denied by default.
+            !name.starts_with("PHUX_")
+                || matches!(
+                    name.as_str(),
+                    "PHUX_BIN"
+                        | "PHUX_SOCKET"
+                        | "PHUX_TERMINAL_ID"
+                        | "PHUX_AGENT_REPORTING"
+                        | "PHUX_AGENT_TRANSCRIPT"
+                        | "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE"
+                )
+        }))
+        .env_remove(OSC7577_TOKEN);
 }
 
 pub(super) fn text(
@@ -257,14 +264,17 @@ mod tests {
             ("PHUX_WS_TLS_CERT".into(), "certificate".into()),
             ("PHUX_WS_TLS_KEY".into(), "key".into()),
             ("PHUX_SOCKET".into(), "delegated".into()),
+            ("OSC7577_TOKEN".into(), "leaked-by-a-rex-pane".into()),
         ]);
         worker_env(&mut command, &env);
         let output = command.output().unwrap();
         assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap().trim(),
-            "PHUX_SOCKET=delegated"
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            !text.lines().any(|line| line.starts_with("OSC7577_TOKEN=")),
+            "OSC7577_TOKEN must not reach the worker; got {text:?}"
         );
+        assert_eq!(text.trim(), "PHUX_SOCKET=delegated");
     }
     #[test]
     fn permission_never_defaults_to_approval() {
