@@ -21,6 +21,7 @@ mod menu;
 mod resource;
 mod section;
 mod states;
+mod switcher;
 use crate::ui::Cover;
 use actions::actions;
 use connections::view as connections;
@@ -37,9 +38,13 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
     let p = &super::page_look(desk);
     let s = &p.space;
+    if page == Page::Switcher {
+        return Some(switcher::view(desk, top, p));
+    }
     let title = match page {
         Page::Sessions => "Sessions",
         Page::Actions => "Terminal actions",
+        Page::Switcher => unreachable!(),
     };
     let heading = text(title)
         .font(
@@ -84,6 +89,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let body = match page {
         Page::Sessions => sessions(desk, p),
         Page::Actions => actions(desk, p),
+        Page::Switcher => unreachable!(),
     };
     let sheet = col()
         .key("phone-navigation-page")
@@ -214,6 +220,7 @@ fn done(desk: &Desk, p: &Look) -> El {
         dark: p.dark(),
         ink: p.roles.accent.accent_text.paint(),
         badge: None,
+        painted: false,
     };
     let glass = super::hosted(desk, done.size(p.round(), p.round()).px(0.0), control);
     el().pr(p.space.s2).child(glass)

@@ -1,6 +1,7 @@
 //! Finite app-owned editing targets. Unknown or inert fields fail closed.
 use rune::{Key, KeyEvent, Runtime, TextEdit, Tx};
 
+use super::super::phone::composer;
 use super::super::questions::Owner;
 use super::super::{Desk, input::Modal};
 
@@ -13,6 +14,7 @@ pub(super) enum Field {
     Inbox,
     Machine,
     PhoneSessions,
+    Composer(composer::Owner),
     Question {
         owner: Owner,
         field: String,
@@ -36,6 +38,11 @@ impl Field {
             return Some((Self::PhoneSessions, "phone-sessions".into()));
         }
         let found = match (key, d.modal()) {
+            (composer::FIELD, None) => {
+                let owner = d.active_composer()?.clone();
+                let identity = format!("{owner:?}");
+                (Self::Composer(owner), identity)
+            }
             ("palette-query", Some(Modal::Palette)) => {
                 (Self::Palette, format!("{:?}", d.palette_mode))
             }
@@ -106,6 +113,7 @@ impl Field {
             Self::Inbox => &d.inbox.reply,
             Self::Machine => &d.machines.field,
             Self::PhoneSessions => &d.phone.as_ref()?.query,
+            Self::Composer(owner) => &d.composer_draft(owner)?.edit,
             Self::Question { owner, field, .. } => d.inbox.questions.field(owner, field)?,
         })
     }
@@ -119,6 +127,7 @@ impl Field {
             Self::Inbox => &mut d.inbox.reply,
             Self::Machine => &mut d.machines.field,
             Self::PhoneSessions => &mut d.phone.as_mut()?.query,
+            Self::Composer(owner) => &mut d.phone.as_mut()?.composer.draft_mut(owner)?.edit,
             Self::Question { owner, field, .. } => d.inbox.questions.field_mut(owner, field)?,
         })
     }
@@ -144,10 +153,11 @@ impl Field {
     pub(super) fn multiline(&self) -> bool {
         matches!(
             self,
-            Self::Question {
-                multiline: true,
-                ..
-            }
+            Self::Composer(_)
+                | Self::Question {
+                    multiline: true,
+                    ..
+                }
         )
     }
 
@@ -170,6 +180,11 @@ impl Field {
             Self::Inbox => d.inbox_key(event, tx),
             Self::Machine => d.machines_key(event, tx),
             Self::PhoneSessions => d.phone_navigation_key(event),
+            Self::Composer(_) if event.key == Key::Escape => {
+                d.close_composer(tx);
+                true
+            }
+            Self::Composer(_) => false,
             Self::Question { .. } => false,
         }
     }
@@ -258,9 +273,9 @@ fn control(d: &Desk, connection: &str) -> Option<Target> {
         Modal::Confirm => format!("confirm:{:?}", d.pending),
         Modal::PhonePicker => "picker".into(),
         Modal::PhoneNavigation
-            if d.phone_page() == Some(super::super::phone::navigation::Page::Actions) =>
+            if d.phone_page() != Some(super::super::phone::navigation::Page::Sessions) =>
         {
-            "phone-actions".into()
+            format!("phone-navigation:{:?}", d.phone_page())
         }
         _ => return None,
     };

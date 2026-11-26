@@ -172,7 +172,7 @@ pub fn controls(rt: &rune::Runtime<State>) -> Value {
                 "subtitle_ink": control.subtitle.as_ref().map(|(_, ink)| srgb(*ink)),
                 "leading": control.leading,
                 "enabled": control.enabled, "dark": control.dark, "ink": srgb(control.ink),
-                "badge": control.badge.map(srgb)})
+                "badge": control.badge.map(srgb), "painted": control.painted})
         })
     });
     // Reading order, so VoiceOver meets them as the eye does.

@@ -5,7 +5,7 @@
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::PHONE;
 use phux_design::State;
-use rune::{Color, El, col, row, text};
+use rune::{Color, El, col, el, row, text};
 
 use super::{
     Look, badge, floating_round, glyph, hosted, icons, mark_ink, native_glass, news, spatial,
@@ -19,13 +19,10 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
     let session = desk
         .selected_session_name()
         .unwrap_or_else(|| "phux".to_owned());
-    let full = desk.window_title();
     // With no terminal on screen the window title is only the app's name:
     // the capsule names the computer instead.
     let title = if desk.connection.shown.is_some() {
-        full.strip_suffix(&format!(" — {session}"))
-            .unwrap_or(full)
-            .to_owned()
+        pane_title(desk)
     } else {
         desk.machines.label().to_owned()
     };
@@ -42,7 +39,7 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .radius(p.radius.full)
         .items_center();
     let name = if desk.connection.shown.is_some() {
-        "Choose pane"
+        "Switch session"
     } else {
         "Connections"
     };
@@ -50,7 +47,7 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
     let tone = focused_tone(desk, p);
     let pressed = |d: &mut Desk| {
         if d.connection.shown.is_some() {
-            d.phone_picker();
+            d.open_phone_switcher();
         } else {
             d.toggle_machines();
         }
@@ -69,6 +66,7 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
             dark: p.dark(),
             ink: p.roles.text.text.paint(),
             badge: None,
+            painted: false,
         };
         hosted(desk, capsule.label(name), control).on_press(pressed)
     } else {
@@ -155,6 +153,88 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .child(place)
         .child(bell)
         .child(trailing)
+}
+
+pub(super) fn pane_title(desk: &Desk) -> String {
+    let full = desk.window_title();
+    desk.selected_session_name()
+        .and_then(|session| full.strip_suffix(&format!(" — {session}")))
+        .unwrap_or(full)
+        .to_owned()
+}
+
+/// The computer is separate from the pane and session. Reconnection keeps
+/// its existing full-width recovery banner instead of competing with this.
+pub(super) fn connection(desk: &Desk, p: &Look) -> Option<El> {
+    if desk.native.is_none() || desk.connection.shown.is_none() || desk.modal().is_some() {
+        return None;
+    }
+    computer(desk, p, false)
+}
+
+pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
+    if !in_switcher && desk.link_word() != "connected" {
+        return None;
+    }
+    let machine = desk.machines.label();
+    let s = &p.space;
+    let dot = s.s2;
+    let pill = row()
+        .max_w(PHONE.tab_max_w)
+        .min_h(s.s8)
+        .px(s.s3)
+        .gap(s.s2)
+        .items_center()
+        .radius(p.radius.full)
+        .child(
+            el().size(dot, dot).radius(p.radius.full).fill(
+                p.status
+                    .state(if desk.link_word() == "connected" {
+                        State::Done
+                    } else {
+                        State::Working
+                    })
+                    .tone
+                    .ink,
+            ),
+        )
+        .child(
+            text(machine.to_owned())
+                .min_w(0.0)
+                .shrink()
+                .font(p.ty.label.medium())
+                .color(p.roles.text.text.paint())
+                .truncate(),
+        )
+        .child(glyph(
+            &icons::CHEVRON,
+            p.icon.size.sm,
+            p.roles.text.dim.paint(),
+        ));
+    let label = format!("Connections · {machine} · {}", desk.link_word());
+    let key = if in_switcher {
+        "phone-switcher-computer"
+    } else {
+        "phone-connection"
+    };
+    let hit = el()
+        .key(key)
+        .min_h(p.round())
+        .min_w(p.round())
+        .center()
+        .label(&label)
+        .on_press(move |d: &mut Desk| {
+            if in_switcher {
+                d.close_phone_navigation();
+            }
+            d.toggle_machines();
+        })
+        .child(surface(pill, p));
+    Some(row().w_full().center().child(hosted(
+        desk,
+        touchable(hit, p),
+        crate::mobile::Control::painted(key, &label, true),
+    )))
 }
 
 fn focused_tone(desk: &Desk, p: &Look) -> Color {

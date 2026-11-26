@@ -20,6 +20,7 @@ final class NativeControls {
         var ink: [Double]
         var badge: [Double]?
         var circle: Bool
+        var painted: Bool
     }
 
     @MainActor
@@ -105,7 +106,8 @@ final class NativeControls {
         return Look(label: label, title: spec["title"] as? String, subtitle: spec["subtitle"] as? String,
                     subtitleInk: subtitleInk, leading: spec["leading"] as? Bool ?? false, symbol: symbol,
                     enabled: spec["enabled"] as? Bool ?? true, dark: spec["dark"] as? Bool ?? true,
-                    ink: ink, badge: badge, circle: abs(rect[2] - rect[3]) < 1)
+                    ink: ink, badge: badge, circle: abs(rect[2] - rect[3]) < 1,
+                    painted: spec["painted"] as? Bool ?? false)
     }
 
     private func make(_ id: String) -> Control {
@@ -122,6 +124,16 @@ final class NativeControls {
 
     private func apply(_ look: Look, to control: Control) {
         let button = control.button
+        if look.painted {
+            // Keep the Metal surface's text and colour; only the hit target
+            // and its accessibility name belong to UIKit.
+            button.configuration = .plain()
+            button.accessibilityLabel = look.label
+            button.isEnabled = look.enabled
+            control.badge.isHidden = true
+            control.look = look
+            return
+        }
         let ink = Self.color(look.ink)
         var configuration = UIButton.Configuration.glass()
         configuration.cornerStyle = .capsule

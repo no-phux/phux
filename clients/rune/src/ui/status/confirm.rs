@@ -34,6 +34,13 @@ pub(super) fn question(
                 keyed("Paste", "Paste (Return)"),
             )
         }
+        Pending::SendDraft(owner) => (
+            format!(
+                "Send this draft to {}? Line breaks may run as separate commands.",
+                called(owner.terminal())
+            ),
+            keyed("Send draft", "Send draft (Return)"),
+        ),
         Pending::Close(terminal) => (
             format!("Close {}? Anything running in it ends.", called(terminal)),
             keyed("Close", "Close (Return)"),

@@ -53,7 +53,7 @@ final class RuneInput: UITextView, UITextViewDelegate {
         }
         dismissedToken = nil
         context = next
-        accessibilityLabel = next.kind == "field" ? "Edit field" : "Terminal keyboard"
+        accessibilityLabel = next.label ?? (next.kind == "field" ? "Edit field" : "Terminal keyboard")
         if composition == nil { restoreDocument(next) }
         if !isFirstResponder { becomeFirstResponder() }
     }

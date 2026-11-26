@@ -42,8 +42,10 @@ impl Desk {
     /// Recheck queued clipboard work against today's foreground owner.
     /// A paste must never replace a held question or address a hidden pane.
     pub(super) fn pastes_allowed(&self) -> bool {
-        self.modal()
-            .is_none_or(|modal| modal.allows(Shortcut::Paste))
+        self.active_composer().is_none()
+            && self
+                .modal()
+                .is_none_or(|modal| modal.allows(Shortcut::Paste))
     }
 
     /// What has the keyboard instead of the terminal, if anything: the one
@@ -86,6 +88,14 @@ impl Desk {
         let action = keys::shortcut(&event.key, event.mods, tx.physical_key());
         if let Some(modal) = self.modal() {
             self.modal_key(modal, event, action, tx);
+            return true;
+        }
+        if self.active_composer().is_some() && action.is_none() {
+            // Rune and UIKit route to the bound editor. Unhandled keys
+            // must not escape to the PTY, even between focus commits.
+            if event.key == rune::Key::Escape {
+                self.close_composer(tx);
+            }
             return true;
         }
         // A focused control owns its keys, including ones it did not handle.
@@ -343,6 +353,7 @@ impl Desk {
     /// keyboard none of it is the terminal's.
     pub fn ime(&mut self, event: &rune::Ime) -> bool {
         if self.modal().is_some()
+            || self.active_composer().is_some()
             || self
                 .connection
                 .shown
@@ -392,45 +403,8 @@ impl Desk {
         self.send_paste(terminal, text);
     }
 
-    pub fn confirm_pending(&mut self) {
-        match self.pending.take() {
-            Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
-            Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
-            // Answered through `confirm_pending_tx`, which can reach the
-            // clipboard and the browser.
-            Some(
-                Pending::ClipboardRead(..)
-                | Pending::ClipboardWrite(..)
-                | Pending::OpenUrl(_)
-                | Pending::SshSign(_),
-            ) => {}
-            Some(Pending::Close(terminal)) => self.close_now(&terminal),
-            Some(Pending::CloseTab(terminals)) => {
-                let terminals = terminals
-                    .into_iter()
-                    .filter(|id| !self.is_document(id))
-                    .collect();
-                self.request_terminal_close(terminals);
-            }
-            Some(Pending::CloseSession(key, _)) => {
-                if let Some(client) = &self.connection.client
-                    && let Err(error) = client.kill_session(key)
-                {
-                    self.say(NoticeKind::Error, format!("Session not closed: {error}"));
-                }
-            }
-            None => {}
-        }
-    }
-
-    pub fn cancel_pending(&mut self) {
-        self.decline_open_url();
-        self.pending = None;
-        self.cancel_raw_relaunch();
-    }
-
     /// To the terminal it was meant for, wherever the keyboard went since.
-    fn send_paste(&mut self, terminal: &ResourceId, text: &str) {
+    pub(super) fn send_paste(&mut self, terminal: &ResourceId, text: &str) {
         if self.connection.topology.is_some() && !self.lists(terminal) {
             self.say(
                 NoticeKind::Error,

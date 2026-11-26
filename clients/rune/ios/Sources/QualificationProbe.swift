@@ -15,6 +15,9 @@ private final class GlassSignalBox: @unchecked Sendable {
 // from launch arguments or connect to an arbitrary host filesystem socket.
 @MainActor
 final class QualificationProbe {
+    private enum ComposerStep { case open, edit, receipt }
+    private var composerStep = ComposerStep.open
+    private let composerMarker = "RUNE_IOS_COMPOSER_OK"
     weak var surface: RuneView?
     private let glassBox = GlassSignalBox()
     /// The terminal's glass controls when the runner asked, until the tapped
@@ -130,7 +133,7 @@ final class QualificationProbe {
     fileprivate func glassRequested() {
         guard progress.finished, glassBefore == nil, !glassRecorded, let surface else { return }
         let before = surface.glassEvidence
-        guard surface.tapGlass("phone-back") else {
+        guard surface.tapNativeControl("phone-back") else {
             failure("The native Liquid Glass back button could not be tapped."); return
         }
         glassBefore = before
@@ -178,6 +181,10 @@ final class QualificationProbe {
         }
         injectInput(report, input: input, bridge: bridge)
         guard progress.injected, report["marker_seen"] as? Bool == true else { return }
+        if !resuming {
+            guard try exerciseComposer(input, bridge: bridge) else { return }
+            report["composer_through_native"] = true
+        }
         report["input_through_native"] = true
         report["transport"] = connectedEndpoint?.hasPrefix("wss://") == true ? "paired-wss" : "paired-quic"
         report["onboarding_import"] = imported
@@ -191,6 +198,32 @@ final class QualificationProbe {
             try QualificationEvidence.publish(report: report, tree: bridge.tree(), session: session,
                 marker: marker, didPresent: didPresent, write: { try self.write($0, name: $1) })
         }
+    }
+
+    /// Exercise the UIKit buttons and editor. The output marker is encoded
+    /// in the draft so shell echo alone cannot match it.
+    private func exerciseComposer(_ input: RuneInput, bridge: NativeBridge) throws -> Bool {
+        guard let surface else { return false }
+        switch composerStep {
+        case .open:
+            if surface.tapNativeControl("phone-compose") { composerStep = .edit }
+        case .edit:
+            guard input.isFirstResponder, input.context?.label == "Terminal message" else { return false }
+            if input.context?.text.isEmpty == true {
+                let octal = "[[\(composerMarker)]]\n".utf8
+                    .map { String(format: "\\%03o", Int($0)) }.joined()
+                input.insertText("printf '\(octal)'")
+                return false
+            }
+            guard try bridge.report(marker: composerMarker)["marker_seen"] as? Bool == false else {
+                failure("A terminal draft was delivered before Send."); return false
+            }
+            if surface.tapNativeControl("phone-compose-send") { composerStep = .receipt }
+        case .receipt:
+            guard input.context?.text.isEmpty == true else { return false }
+            return try bridge.report(marker: composerMarker)["marker_seen"] as? Bool == true
+        }
+        return false
     }
 
     private func recordResumedFrame(_ bridge: NativeBridge) throws {

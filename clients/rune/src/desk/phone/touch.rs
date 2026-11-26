@@ -256,6 +256,9 @@ impl Desk {
             return;
         }
         let tracked = self.tracks_mouse(terminal);
+        if self.active_composer().is_some() {
+            self.close_composer(tx);
+        }
         self.pointer(terminal, &press(Phase::Down, at, 1), tx);
         self.pointer(terminal, &press(Phase::Up, at, 1), tx);
         if !tracked && let Some(phone) = self.phone.as_mut() {

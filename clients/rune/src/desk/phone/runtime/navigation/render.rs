@@ -262,6 +262,7 @@ fn phone_navigation_native_render_frames() {
                 match page {
                     Page::Sessions => d.open_phone_sessions(),
                     Page::Actions => d.open_phone_actions(),
+                    Page::Switcher => d.open_phone_switcher(),
                 }
                 tx.instant();
             });

@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 pub(crate) fn editing(d: &Desk) -> bool {
     d.modal().is_some()
+        || d.active_composer().is_some()
         || d.inbox
             .questions
             .drafts
@@ -16,6 +17,13 @@ pub(crate) fn editing(d: &Desk) -> bool {
 }
 
 pub(crate) fn done(d: &mut Desk, tx: &mut Tx) {
+    if d.active_composer().is_some() {
+        d.close_composer(tx);
+        if let Some(phone) = &mut d.phone {
+            phone.keyboard = true;
+        }
+        return;
+    }
     if d.modal() == Some(Modal::PhoneNavigation) {
         d.blur_phone_search(tx);
         return;
@@ -63,7 +71,10 @@ pub(in crate::desk) fn soft(d: &mut Desk, soft: &Soft, tx: &mut Tx) -> bool {
             Some(Field::Inbox)
         }
         Some(Modal::Inbox) => return inbox(d, soft, tx),
-        None => return question(d, soft, tx),
+        None => match d.active_composer() {
+            Some(owner) => Some(Field::Composer(owner.clone())),
+            None => return question(d, soft, tx),
+        },
         _ => return false, // existing Settings/Palette/Find/confirm routes
     };
     if let Some(field) = field {

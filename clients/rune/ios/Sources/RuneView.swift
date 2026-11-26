@@ -300,8 +300,8 @@ final class RuneView: UIView {
 
     /// Simulator qualification: the Liquid Glass controls on screen now.
     var glassEvidence: [[String: Any]] { controls?.evidence ?? [] }
-    /// Simulator qualification: tap `id`'s real glass button.
-    func tapGlass(_ id: String) -> Bool { controls?.tap(id) ?? false }
+    /// Simulator qualification: tap `id`'s real UIKit button.
+    func tapNativeControl(_ id: String) -> Bool { controls?.tap(id) ?? false }
 
     /// A tap on a Liquid Glass control runs its Rune press in the next frame.
     private func press(_ id: String) {

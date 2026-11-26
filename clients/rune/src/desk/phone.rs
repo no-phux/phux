@@ -9,10 +9,12 @@ use super::input::Modal;
 use crate::keys::{self, Typed};
 
 pub mod attach;
+pub mod composer;
 pub mod navigation;
 mod refit;
 pub mod spatial;
 pub mod swipe;
+mod switcher;
 pub mod touch;
 
 /// Points the arrow pad travels per arrow key it sends.
@@ -42,7 +44,9 @@ pub struct Phone {
     pub travel: [f32; 2],
     pub picker: bool,
     pub page: Option<navigation::Page>,
+    pub(crate) switcher: Option<switcher::Switcher>,
     pub query: rune::TextEdit,
+    pub composer: composer::Composer,
     /// Sessions folded to their header on the Sessions page, by id.
     pub folded: std::collections::HashSet<u32>,
     /// The quiet sessions are unfolded under their band.
@@ -84,7 +88,9 @@ impl Default for Phone {
             travel: [0.0; 2],
             picker: false,
             page: None,
+            switcher: None,
             query: rune::TextEdit::new(""),
+            composer: composer::Composer::default(),
             folded: std::collections::HashSet::new(),
             quiet_shown: false,
             menu: None,
