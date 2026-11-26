@@ -20,8 +20,8 @@ pub struct RestoreCfg {
     #[serde(deserialize_with = "programs")]
     pub program: Vec<RestoreProgram>,
     /// Accept OSC 7577 program-resume reports and, when a record is trusted
-    /// and listed in [`Self::trust`], relaunch that command after a crash or
-    /// reboot. Off by default. A server running as root never resumes one.
+    /// and listed in `[[restore.trust]]`, relaunch that command after a crash
+    /// or reboot. Off by default. A server running as root never resumes one.
     pub program_resume: bool,
     /// `[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.
     /// Each `command` is argv[0], a bare name or an absolute path. There are

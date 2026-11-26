@@ -191,11 +191,13 @@ resolved.
 
 ### Resume (legacy)
 
-`resume` is a legacy phux extension of OSC 7501. It is unauthenticated: any
-text that reaches the pane, including `cat`, `tail -f`, `ssh`, or `less`, can
-plant a token. Prefer [OSC 7577](#program-resume-osc-7577). `resume` is an
-opaque token that lets `phux restore` relaunch the pane with a command the
-user configured for that `app`:
+`resume` is a legacy phux extension of OSC 7501. A foreground-job check
+ignores the shell, a background job, and a grandchild, and OSC 133 `A` does
+not clear a stored token. `cat`, `ssh`, or `less` can still plant one while
+that program is the foreground job, and an empty `resume=` from the shell
+can still withdraw it. Prefer [OSC 7577](#program-resume-osc-7577). `resume`
+is an opaque token that lets `phux restore` relaunch the pane with a command
+the user configured for that `app`:
 
 ```sh
 printf '\033]7501;state=working:app=notes:resume=%s\033\\' "$id" > /dev/tty
@@ -252,8 +254,9 @@ pane can send one; records describe the pane, not a process.
   pane shell, or when the pane's own process is that program (no shell).
   The shell in the foreground, a background job, and a grandchild are
   ignored, and OSC 133 `A` does not clear a stored token. cat, ssh, and
-  less can still set it while they are the foreground job, until OSC 7577
-  support lands. A `[[restore.program]]` command MUST treat the token as
+  less can still set it while they are the foreground job. When
+  `program-resume` is on, a trusted OSC 7577 record is what a relaunch runs
+  instead. A `[[restore.program]]` command MUST treat the token as
   untrusted (it may hold `/` and `..`): look it up among things it created,
   never open it as a path or evaluate it as code (`sh -c`). phux guarantees
   only its shape.

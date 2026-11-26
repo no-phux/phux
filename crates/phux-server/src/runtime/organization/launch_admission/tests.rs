@@ -354,6 +354,45 @@ fn program_resume_runs_after_an_agent_and_before_a_7501_token_without_a_shell() 
     );
 }
 
+/// Renamed from `known_gap_foreground_child_resume_is_still_accepted`.
+///
+/// Cat can still record an unsigned `resume=` while it is the foreground
+/// job. With program resume enabled, that token does not win admission over
+/// a trusted OSC 7577 record.
+#[test]
+fn a_foreground_child_resume_does_not_win_over_a_trusted_program_resume() {
+    let state = SharedState::new();
+    state.with_mut(|server| {
+        server.config_mut().restore.program_resume = true;
+        server.config_mut().restore.trust = vec![phux_config::RestoreTrust {
+            command: "nvim".into(),
+        }];
+        server.config_mut().restore.program = vec![phux_config::RestoreProgram {
+            app: "cat".into(),
+            command: vec!["cat".into(), phux_config::RESUME_TOKEN_PLACEHOLDER.into()],
+        }];
+    });
+    let planted = phux_core::TerminalLaunch {
+        program_resume: Some(Box::new(resume_record(true, Some("/"), false))),
+        resume: phux_core::ResumeToken::new("cat", "planted-by-foreground-child"),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &planted).expect("7577 wins"),
+        ["nvim", "-S", "/tmp/session.vim"],
+        "the unsigned foreground-child token does not win"
+    );
+    // The same unsigned token still wins when there is no trusted 7577 record.
+    let only_cat = phux_core::TerminalLaunch {
+        resume: phux_core::ResumeToken::new("cat", "planted-by-foreground-child"),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &only_cat).expect("legacy token"),
+        ["cat", "planted-by-foreground-child"]
+    );
+}
+
 #[test]
 fn an_agent_principal_cannot_approve_even_when_it_arrives_on_an_owner_socket() {
     let (ctx, resource, revision) = setup();
