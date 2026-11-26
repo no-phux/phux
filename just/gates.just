@@ -95,10 +95,11 @@ integration-check PACKAGE: worktree-claim
     esac
 
 
-# The `integrations` lane: every package, the shared runtime, and npm audit.
+# The `integrations` lane: every package, the shared runtime, and the voice bridge.
 [group('gates')]
-[doc('Every agent integration package and the shared runtime.')]
+[doc('Every agent integration, including the shared runtime and the Hex iOS bridge.')]
 agent-integrations-check: (integration-check "runtime") (integration-check "opencode-v2") (integration-check "omp") (integration-check "pi") (integration-check "claude") (integration-check "grok") (integration-check "muse")
+    python3 -B -m unittest discover -s integrations/hex-ios
 
 
 # Format every Rust file in place.
