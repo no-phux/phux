@@ -7,68 +7,42 @@ use crate::desk::phone::composer::{Draft, FIELD, Owner};
 use crate::ui::tokens::{Paint, Voice};
 
 pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
-    let owner = desk.composer_owner()?;
-    let draft = desk.composer_draft(&owner);
+    let owner = desk.active_composer()?.clone();
+    let draft = desk.composer_draft(&owner)?;
     let target = super::bars::pane_title(desk);
     let hint = format!("Message {target}…");
-    let card = match draft.filter(|_| desk.active_composer().is_some()) {
-        Some(draft) => editor(desk, owner, draft, hint, p),
-        None => launcher(desk, draft, hint, p),
-    };
+    let card = editor(desk, owner, draft, hint, p);
     Some(el().w_full().px(p.space.s3).py(p.space.s2).child(card))
 }
 
-fn launcher(desk: &Desk, draft: Option<&Draft>, hint: String, p: &Look) -> El {
+pub(super) fn toggle(desk: &Desk, active: bool, p: &Look) -> El {
     let r = &p.roles;
-    let saved = draft.filter(|draft| !draft.edit.text.is_empty());
-    let ink = if saved.is_some() {
-        r.text.text
-    } else {
-        r.text.dim
-    };
-    let caption = saved.map_or(hint, |draft| {
-        draft.edit.text.lines().next().unwrap_or("").to_owned()
-    });
     let key = "phone-compose";
-    let label = if saved.is_some() {
-        "Resume terminal draft"
+    let label = if active {
+        "Hide composer"
     } else {
-        "Compose terminal input"
+        "Show composer"
     };
-    let button = row()
+    let button = el()
         .key(key)
-        .grow(1.0)
-        .min_w(0.0)
-        .min_h(p.round())
-        .px(p.space.s3)
-        .gap(p.space.s2)
-        .items_center()
+        .size(p.round(), p.round())
+        .center()
         .radius(p.radius.full)
         .label(label)
+        .expanded(active)
         .preserve_focus_on_press(true)
-        .on_press_tx(Desk::open_composer)
-        .child(glyph(&icons::PENCIL, p.icon.size.md, r.text.dim.paint()))
-        .child(
-            text(caption)
-                .grow(1.0)
-                .min_w(0.0)
-                .font(p.ty.body)
-                .color(ink.paint())
-                .truncate(),
-        );
-    let tray = row()
-        .key("phone-compose-launcher")
-        .w_full()
-        .transition(rune::Transition::none())
-        .items_center()
-        .radius(p.radius.full)
-        .child(super::hosted(
-            desk,
-            touchable(button, p),
-            crate::mobile::Control::painted(key, label, true),
-        ))
-        .child(super::accessory::attach(p, &icons::PLUS));
-    surface(tray, p)
+        .fill(if active {
+            r.wash.selected.paint()
+        } else {
+            rune::Color::TRANSPARENT
+        })
+        .on_press_tx(Desk::toggle_composer)
+        .child(glyph(&icons::PENCIL, p.icon.size.md, r.text.text.paint()));
+    super::hosted(
+        desk,
+        touchable(button, p),
+        crate::mobile::Control::painted(key, label, true),
+    )
 }
 
 fn editor(desk: &Desk, owner: Owner, draft: &Draft, hint: String, p: &Look) -> El {
