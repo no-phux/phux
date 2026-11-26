@@ -28,10 +28,14 @@ enum HostSettings {
     /// Open a computer paired earlier: no pairing again, its token is kept.
     static func select(_ endpoint: String) throws -> [String: Any]? {
         guard var computer = computers.first(where: { $0["endpoint"] as? String == endpoint }) else { return nil }
-        if let name = computer.removeValue(forKey: "name") as? String { UserDefaults.standard.set(name, forKey: nameKey) }
+        let name = computer.removeValue(forKey: "name") as? String
+        // A locked/unreadable credential must leave the currently open host
+        // selected. Tokens belong only in the returned configuration.
+        let loaded = try load(computer)
+        if let name { UserDefaults.standard.set(name, forKey: nameKey) }
         else { UserDefaults.standard.removeObject(forKey: nameKey) }
         UserDefaults.standard.set(computer, forKey: "remote-host")
-        return try load()
+        return loaded
     }
 
     /// Forget a computer this phone does not have open: its token and,
@@ -58,8 +62,13 @@ enum HostSettings {
     }
 
     static func load() throws -> [String: Any]? {
-        guard var values = UserDefaults.standard.dictionary(forKey: "remote-host"),
-              let endpoint = values["endpoint"] as? String else { return nil }
+        guard let values = UserDefaults.standard.dictionary(forKey: "remote-host") else { return nil }
+        return try load(values)
+    }
+
+    private static func load(_ configuration: [String: Any]) throws -> [String: Any]? {
+        var values = configuration
+        guard let endpoint = values["endpoint"] as? String else { return nil }
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword,
             kSecAttrService as String:service, kSecAttrAccount as String:endpoint,
             kSecReturnData as String:true, kSecMatchLimit as String:kSecMatchLimitOne]
