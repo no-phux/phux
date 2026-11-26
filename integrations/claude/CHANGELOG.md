@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.8.0...claude-plugin-v0.8.1) (2026-11-26)
+
+
+### Refactors
+
+* dissolve scripts/ into dev, install, packaging and tools ([#2906](https://github.com/no-phux/phux/issues/2906)) ([e128078](https://github.com/no-phux/phux/commit/e1280780a92bb8aae9a543c664be22edb5768cbf))
+
 ## [0.8.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.3...claude-plugin-v0.8.0) (2026-11-24)
 
 
