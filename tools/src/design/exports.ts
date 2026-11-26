@@ -33,6 +33,12 @@ const COMMITTED: Record<string, string> = {
   "css/phux-tokens.css": "clients/phux-web/assets/phux-tokens.css",
   "ios/AccentColor.colorset/Contents.json":
     "clients/rune/ios/Assets/AccentColor.colorset/Contents.json",
+  ...Object.fromEntries(
+    ["NeedsYou", "Working", "Failed", "Done"].map((state) => [
+      `ios/Status${state}.colorset/Contents.json`,
+      `clients/rune/ios/Widgets/Assets/Status${state}.colorset/Contents.json`,
+    ]),
+  ),
 };
 /** Committed exports the mobile apps also take. */
 const SHARED = new Set(["ios/AccentColor.colorset/Contents.json"]);

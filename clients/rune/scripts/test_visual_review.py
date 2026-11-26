@@ -78,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1729)
+        self.assertEqual(len(manifest["cases"]), 1801)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                            {"inbox": 404, "settings": 226, "navigation": 1098, "resources": 1})
+                            {"inbox": 404, "settings": 298, "navigation": 1098, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -119,7 +119,10 @@ class VisualReview(unittest.TestCase):
         self.assertEqual(review.exporter_for("navigation", "connections-keyboard-dark-bottom-640"),
                          "phone_connections_keyboard_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "desktop"),
-                         "settings_native_render_frames")
+                          "settings_native_render_frames")
+        self.assertEqual(
+            review.exporter_for("settings", "machine-colour-small-large-keyboard-light-2x-focused"),
+            "machine_colour_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "size-small-dark-ax5-text-bigger-1x"),
                          "settings_size_visual_review_frames")
         self.assertEqual(review.exporter_for("settings", "theme-native-small-light-ax5-revealed-2x"),

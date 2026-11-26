@@ -8,6 +8,7 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+pub mod attach;
 pub mod navigation;
 mod refit;
 pub mod spatial;

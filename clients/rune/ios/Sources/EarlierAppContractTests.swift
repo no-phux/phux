@@ -73,14 +73,14 @@ enum EarlierAppContractTests {
     private static func hosts() throws {
         let both = [host("first"), host("second")]
         let (outcome, saved) = try carry(["v": 1, "data": both], last: both[1])
-        try require(saved.count == 1 && saved[0].name == "second" && outcome?.carried == "second",
-                    "the last used computer is the one carried")
-        try require(saved[0].values as? [String: String] == [
+        try require(saved.map(\.name) == ["first", "second"] && outcome?.carried == "second",
+                    "every computer carries, the last used saved last so it opens")
+        try require(saved[1].values as? [String: String] == [
             "endpoint": "quic://second.example:8788", "certificate_pin": pin, "authority_ca": authority,
             "token": secret, "chain_pem": "CHAIN", "key_id": keyID],
             "pins, token and device identity carry unchanged")
-        try NativeBridge.validate(saved[0].values)
-        try require(outcome?.notice?.contains("first was not carried over") == true, "the other computer is named")
+        try NativeBridge.validate(saved[1].values)
+        try require(outcome?.notice == nil, "nothing to say when every computer carries")
         let (single, only) = try carry([host("only")]) // Before the envelope.
         try require(only.count == 1 && single?.notice == nil, "one computer carries with nothing to say")
         try require(try carry([host("only")], paired: true).saved.isEmpty, "a paired computer is never replaced")
@@ -112,7 +112,7 @@ enum EarlierAppContractTests {
         try refused(["v": 2, "data": []], "the computers you had paired")
         // A computer that cannot come does not keep the next one from coming.
         let (outcome, saved) = try carry([host("a", drop: ["fingerprint"]), host("b")])
-        try require(saved.first?.name == "b" && outcome?.notice?.contains("a: it was reached") == true,
+        try require(saved.map(\.name) == ["b"] && outcome?.notice?.contains("a: it was reached") == true,
                     "the next computer is carried, with the reason the first was not")
     }
 

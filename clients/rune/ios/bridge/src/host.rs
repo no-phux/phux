@@ -347,12 +347,60 @@ pub unsafe extern "C" fn phux_rune_ios_press(pointer: *mut c_void, id: *const c_
     })
 }
 
+/// A tapped card, widget or Dynamic Island: true when the link was one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_open_link(pointer: *mut c_void, url: *const c_char) -> bool {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        Ok(mobile::open_link(host.layer.runtime_mut(), unsafe {
+            text(url)?
+        }))
+    })
+}
+
+/// The phone's Live Activity gateway and grant, for every computer it attaches to.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_set_live(
+    pointer: *mut c_void,
+    device: *const c_char,
+    gateway: *const c_char,
+    grant: *const c_char,
+) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        let (device, gateway, grant) = unsafe { (text(device)?, text(gateway)?, text(grant)?) };
+        mobile::set_live(host.layer.runtime_mut(), device, gateway, grant);
+        Ok(())
+    });
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *const c_char) {
     attempt(|| {
         // Oversized or invalid text is refused aloud, not silently dropped.
         let pasted = unsafe { text(pasted) }.ok();
         mobile::paste(unsafe { host(pointer)? }.layer.runtime_mut(), pasted);
+        Ok(())
+    });
+}
+
+/// One picked file for attachment request `id`; null `data` when UIKit
+/// couldn't read it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_attach(
+    pointer: *mut c_void,
+    id: u64,
+    extension: *const c_char,
+    data: *const u8,
+    length: usize,
+) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        let extension = unsafe { text(extension)? };
+        // SAFETY: Bridge.h requires `length` readable bytes for this call.
+        let data =
+            (!data.is_null()).then(|| unsafe { std::slice::from_raw_parts(data, length) }.to_vec());
+        mobile::attach(host.layer.runtime_mut(), id, extension, data);
         Ok(())
     });
 }

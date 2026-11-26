@@ -20,21 +20,70 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
     let copied = copied.as_ref().map(|write| write.content().text());
     let urls = rt.take_url_requests();
     let state = &mut rt.state;
+    let presence = state.take_presence();
     let feedback = state.phone.as_mut().and_then(|phone| phone.feedback.take());
     let feedback = feedback.map(|feedback| match feedback {
         Feedback::Hold => "hold",
         Feedback::Copied => "copied",
         Feedback::Detent => "detent",
     });
+    let attached = state.connection.status == phux_client_runtime::control::Status::Attached;
     let native = state.native.as_mut();
-    let (connection, paste) = native.map_or((false, false), |native| {
-        (
-            std::mem::take(&mut native.connection_requested),
-            std::mem::take(&mut native.paste_requested),
-        )
+    let (connection, paste, attach, attaching) =
+        native.map_or((false, false, false, None), |native| {
+            let attaching = native.attaching.front().map(|asked| asked.id);
+            (
+                std::mem::take(&mut native.connection_requested),
+                std::mem::take(&mut native.paste_requested),
+                std::mem::take(&mut native.attach_requested),
+                attaching,
+            )
+        });
+    // Where the menu opens from: the paperclip, or a hardware key's nowhere.
+    let attach = attach.then(|| {
+        rt.presented("phone-attach")
+            .map_or([0.0; 4], |(rect, _)| rect)
     });
-    json!({"connection": connection, "paste": paste, "copied_text": copied,
-        "open_urls": urls, "feedback": feedback})
+    // `attaching` names the pane a menu's picks or a pasted image answer.
+    let attaching = attaching.filter(|_| paste || attach.is_some());
+    json!({"connection": connection, "paste": paste, "attach": attach,
+        "attaching": attaching, "copied_text": copied,
+        "open_urls": urls, "feedback": feedback, "presence": presence, "attached": attached})
+}
+
+/// A tap on the phone's card, widget or Dynamic Island: `phux://inbox`, or a
+/// pane to show once the computer's sessions are known. The host holds it
+/// until attached. False for any other link, which is the host's to handle.
+pub fn open_link(rt: &mut rune::Runtime<State>, url: &str) -> bool {
+    use crate::desk::presence::INBOX;
+    use crate::desk::reveal::{Link, target};
+    let inbox = url.trim_end_matches('/') == INBOX;
+    if !inbox && !matches!(target(url), Some(Ok(Link::Pane(_)))) {
+        return false;
+    }
+    rt.update(|state, tx| {
+        if !inbox {
+            state.close_inbox();
+            state.open_system_link(url);
+        } else if !state.inbox.open {
+            state.close_phone_navigation();
+            state.toggle_inbox();
+        }
+        tx.instant();
+    });
+    true
+}
+
+/// Where the phone's Live Activity gateway takes agent counts for it, and
+/// its grant there; written to every computer it attaches to.
+pub fn set_live(rt: &mut rune::Runtime<State>, device: &str, gateway: &str, grant: &str) {
+    rt.update(|state, _| {
+        if let Some(native) = state.native.as_mut() {
+            let live =
+                crate::desk::presence::Live::new(device.into(), gateway.into(), grant.into());
+            native.live = Some(live);
+        }
+    });
 }
 
 /// The host's pasteboard text, answering a `paste` request. `None`: it
@@ -45,6 +94,15 @@ pub fn paste(rt: &mut rune::Runtime<State>, text: Option<&str>) {
             Some(text) => state.paste_from_host(text),
             None => state.paste_too_large(),
         }
+        tx.instant();
+    });
+}
+
+/// One file for the attachment request `id`, or `None` when the host
+/// couldn't read it.
+pub fn attach(rt: &mut rune::Runtime<State>, id: u64, extension: &str, data: Option<Vec<u8>>) {
+    rt.update(|state, tx| {
+        state.attach_from_host(id, extension, data);
         tx.instant();
     });
 }
@@ -185,6 +243,24 @@ mod tests {
     }
 
     #[test]
+    fn a_tapped_card_opens_the_inbox_or_its_pane_and_nothing_else() {
+        let mut rt = runtime();
+        assert!(open_link(&mut rt, "phux://inbox"));
+        assert!(open_link(&mut rt, "phux://inbox/"), "open already");
+        assert!(rt.state.inbox.open);
+        assert!(open_link(&mut rt, "phux://pane/@3"));
+        assert!(!rt.state.inbox.open);
+        for other in [
+            "phux://connect?quic=quic://mini:8788",
+            "phux://folder/tmp",
+            "phux://session/work",
+            "phux://pane/3",
+        ] {
+            assert!(!open_link(&mut rt, other), "{other}");
+        }
+    }
+
+    #[test]
     fn a_pinch_steps_the_text_size_both_ways() {
         // Its own preferences: a text size is saved as it changes.
         let mut rt = crate::test_support::runtime(
@@ -207,8 +283,9 @@ mod tests {
             "mobile::host::tests::a_frames_requests_are_taken_once_and_copies_leave_as_plain_text",
             || {
                 let mut rt = runtime();
-                let quiet = json!({"connection": false, "paste": false, "copied_text": null,
-            "open_urls": [], "feedback": null});
+                let quiet = json!({"connection": false, "paste": false, "attach": null,
+            "attaching": null, "copied_text": null,
+            "open_urls": [], "feedback": null, "presence": null, "attached": false});
                 assert_eq!(take_requests(&mut rt), quiet);
                 rt.update(|state, tx| {
                     state.toggle_machines();
@@ -219,8 +296,10 @@ mod tests {
                 });
                 assert_eq!(
                     take_requests(&mut rt),
-                    json!({"connection": true, "paste": true, "copied_text": "selected words",
-                "open_urls": [], "feedback": "hold"})
+                    json!({"connection": true, "paste": true, "attach": null,
+                "attaching": null, "copied_text": "selected words",
+                "open_urls": [], "feedback": "hold", "presence": null,
+                "attached": false})
                 );
                 assert_eq!(take_requests(&mut rt), quiet, "each request is served once");
             },

@@ -27,7 +27,12 @@ final class RuneView: UIView {
     private var nextIdentity: UInt64 = 0
     private var cadence = FrameCadence()
     private var controls: NativeControls?
+    private let attachments = Attachments()
     private let path = NWPathMonitor()
+    /// A tapped card's link, until Rune can take it.
+    private var link: String?
+    /// Rune's link to its computer is up, as of the last drawn frame.
+    private(set) var attached = false
     private var pathSettled = false
     private var pathWork: DispatchWorkItem?
     isolated deinit { close() }
@@ -49,6 +54,14 @@ final class RuneView: UIView {
         editor.send = { [weak self] operation, context in self?.send(operation, context: context) }
         editor.didDismiss = { [weak self] context in _ = self?.send(["op":"dismiss"], context: context) }
         addSubview(editor)
+        attachments.covering = { [weak self] covered in
+            self?.editor.covered = covered
+            if !covered { self?.wake() }
+        }
+        attachments.picked = { [weak self] request, file in
+            self?.bridge?.attach(file, request: request)
+            self?.wake()
+        }
         // The text size and contrast are the view's own traits; the
         // appearance is the scene's (see `systemDark`).
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitAccessibilityContrast.self]) {
@@ -87,6 +100,9 @@ final class RuneView: UIView {
                     scale: window?.screen.scale ?? 1, dark: systemDark,
                     configuration: configuration, wake: box)
                 configuration.removeValue(forKey: "token")
+                if let gateway = LivePush.gateway {
+                    bridge?.setLive(device: LivePush.device, gateway: gateway + "/live", grant: LivePush.grant)
+                }
             }
             bridge?.resize(bounds.size, scale: window?.screen.scale ?? 1)
             bridge?.traits(dark: systemDark, reducedMotion: UIAccessibility.isReduceMotionEnabled,
@@ -184,6 +200,8 @@ final class RuneView: UIView {
         drawing = true
         defer { drawing = false }
         do {
+            // A cold tap from the card waits for the computer.
+            if attached, let link { self.link = nil; _ = bridge.openLink(link) }
             let frame = try bridge.frame()
             synchronizeInput(frame)
             // Not on an undrawn frame: the controls stay where it last drew.
@@ -194,6 +212,11 @@ final class RuneView: UIView {
             try qualification?.observe(bridge: bridge, input: editor, surfaceAtScale: showsPixelsAtScale,
                                        didPresent: frame["drew"] as? Bool == true)
         } catch { fail(error) }
+    }
+
+    func openLink(_ link: String) {
+        self.link = link
+        wake()
     }
 
     private func synchronizeInput(_ frame: [String: Any]) {
@@ -228,9 +251,9 @@ final class RuneView: UIView {
     /// opener or haptics from inside a layer, so UIKit answers for it.
     private func serve(_ requests: [String: Any]) {
         if let text = requests["copied_text"] as? String { UIPasteboard.general.string = text }
-        if requests["paste"] as? Bool == true, let text = UIPasteboard.general.string {
-            bridge?.paste(text)
-            wake()
+        if requests["paste"] as? Bool == true { paste(requests["attaching"] as? UInt64) }
+        if let at = requests["attach"] as? [Double], at.count == 4, let request = requests["attaching"] as? UInt64 {
+            attachments.show(request: request, over: self, at: CGRect(x: at[0], y: at[1], width: at[2], height: at[3]))
         }
         for link in requests["open_urls"] as? [String] ?? [] {
             guard let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "")
@@ -243,7 +266,16 @@ final class RuneView: UIView {
         case "detent": UIImpactFeedbackGenerator(style: .light).impactOccurred()
         default: break
         }
+        attached = requests["attached"] as? Bool ?? false
+        if qualification == nil { AgentCard.shared.update(requests["presence"]) }
         if requests["connection"] as? Bool == true { connectionRequested?() }
+    }
+
+    /// The pasteboard's text, or its image as an attachment to `request`.
+    private func paste(_ request: UInt64?) {
+        if let text = UIPasteboard.general.string { bridge?.paste(text) }
+        else if let request, let image = Attachments.pasted() { bridge?.attach(image, request: request) }
+        wake()
     }
 
     private func nativeControls() -> NativeControls {

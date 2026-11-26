@@ -1,8 +1,8 @@
 # Developing phux on Rune
 
 `--phone` opens the phone form, where the phone app is growing ahead of
-Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and what
-waits on upstream.
+Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and
+[MOBILE_GAPS.md](./MOBILE_GAPS.md) what waits on upstream.
 
 The [native iOS host](./ios/README.md) renders the same phone view inside
 UIKit using upstream's embedded Metal host, with system input and layout

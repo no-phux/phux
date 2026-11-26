@@ -215,6 +215,18 @@ including Done and Terminal actions. Exercise both final touch actions,
 hostile-but-valid names, input trapping and unchanged literal arrangement.
 The toolbar remains 44 points: picker typography must not resize the terminal.
 
+Machines colour cases exercise the actual sheet in the desktop-hosted phone,
+not the separate native UIKit connection controller. Compare the open palette
+and keyboard-focused Auto at both desktop widths and both phone widths,
+light/dark, standard/AX5 text, drawn keyboard open/closed and true 2×.
+Each revealed phone radio must have a complete visible and effective touch
+target of at least 44 points, containing its scaled artwork without overlapping
+neighbours. Keyboard reveal must leave the focused Auto above the sheet's edge
+fade, not merely inside its clipping rectangle. Retain desktop sizing and radio names/roles, real touch at the
+enlarged edge, keyboard/accessibility activation, cancelled touches, the field
+draft and terminal input/layout ownership. The inherited large-text sheet
+header and drawn-keyboard clipping are not claimed fixed or native iOS proof.
+
 Inspect full images and the changed region's surroundings. Explain upstream
 rendering changes too. Reproduce regressions, fix their cause and recapture.
 Never delete hard cases, weaken assertions or regenerate until it looks good.

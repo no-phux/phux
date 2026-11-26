@@ -1,7 +1,7 @@
 //! The phone form: a live terminal with touch chrome outside its viewport:
 //! a top bar, navigation toolbar, tabs, accessory bar and keyboard. What
 //! Rune can't do on a phone yet (safe areas, the system keyboard) is drawn
-//! here instead; clients/rune/MOBILE.md lists each piece and what replaces it.
+//! here instead; clients/rune/MOBILE_GAPS.md lists each piece and what replaces it.
 //!
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock,

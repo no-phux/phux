@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::{PUSH_GRANT_KEY_PREFIX, Scope};
+use phux_protocol::wire::frame::{LIVE_GRANT_KEY_PREFIX, PUSH_GRANT_KEY_PREFIX, Scope};
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -52,9 +52,10 @@ pub(crate) struct GrantValue {
     pub(crate) finished: bool,
 }
 
-/// Whether a metadata write names a push grant.
+/// Whether a metadata write names a push grant or a Live Activity grant.
 pub(crate) fn is_grant_key(scope: &Scope, key: &str) -> bool {
-    matches!(scope, Scope::Global) && key.starts_with(PUSH_GRANT_KEY_PREFIX)
+    matches!(scope, Scope::Global)
+        && (key.starts_with(PUSH_GRANT_KEY_PREFIX) || key.starts_with(LIVE_GRANT_KEY_PREFIX))
 }
 
 /// Parse and bound a grant value; a refusal names what is wrong.
@@ -154,6 +155,8 @@ impl Gateway {
 pub(crate) struct PushGrants {
     setters: HashMap<String, ClientId>,
     last_ask: HashMap<String, String>,
+    /// What each Live Activity grant's card was last sent.
+    synced: HashMap<String, live::Counts>,
 }
 
 impl PushGrants {
@@ -171,6 +174,7 @@ impl PushGrants {
     pub(crate) fn forget(&mut self, key: &str) {
         self.setters.remove(key);
         self.last_ask.remove(key);
+        self.synced.remove(key);
     }
 
     /// Whether `ask_id` on `key` has not been pushed yet; records it.
@@ -207,30 +211,31 @@ pub(crate) const BLOCKED_QUESTION: &str = "blocked";
 /// The `pane` an approval that names no single Terminal carries.
 pub(crate) const SERVER_PANE: &str = "server";
 
-/// The grants to push `notice` to: every registered device whose writing
-/// connection is gone, filtered by [`Notice`]. A key whose value no longer
+/// Every grant under `prefix` that parses, with its key and whether the
+/// connection that wrote it is still here. A key whose value no longer
 /// parses (rewritten by hand) is skipped, not refused.
-pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue> {
-    let keys: Vec<String> = s
-        .metadata()
+fn grants(s: &ServerState, prefix: &str) -> Vec<(String, GrantValue, bool)> {
+    s.metadata()
         .list(&Scope::Global)
         .into_iter()
-        .filter(|key| key.starts_with(PUSH_GRANT_KEY_PREFIX))
-        .collect();
+        .filter(|key| key.starts_with(prefix))
+        .filter_map(|key| {
+            let grant = parse_grant(&s.metadata().get(&Scope::Global, &key)?).ok()?;
+            let live = s
+                .push_grants()
+                .setters
+                .get(&key)
+                .is_some_and(|client| s.client_connection_cancellation(*client).is_some());
+            Some((key, grant, live))
+        })
+        .collect()
+}
+
+/// The grants to push `notice` to: every registered device whose writing
+/// connection is gone, filtered by [`Notice`].
+pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue> {
     let mut out = Vec::new();
-    for key in keys {
-        let Some(grant) = s
-            .metadata()
-            .get(&Scope::Global, &key)
-            .and_then(|value| parse_grant(&value).ok())
-        else {
-            continue;
-        };
-        let live = s
-            .push_grants()
-            .setters
-            .get(&key)
-            .is_some_and(|client| s.client_connection_cancellation(*client).is_some());
+    for (key, grant, live) in grants(s, PUSH_GRANT_KEY_PREFIX) {
         if live {
             continue;
         }
@@ -239,10 +244,9 @@ pub(crate) fn targets(s: &mut ServerState, notice: Notice<'_>) -> Vec<GrantValue
             Notice::Blocked | Notice::Approve(_) => true,
             Notice::Finished => grant.finished,
         };
-        if !wanted {
-            continue;
+        if wanted {
+            out.push(grant);
         }
-        out.push(grant);
     }
     out
 }
@@ -365,7 +369,6 @@ pub(crate) async fn send(
     action: &str,
     question: Option<&str>,
 ) -> Result<u16, String> {
-    let gateway = Gateway::parse(&target.gateway)?;
     let mut body = serde_json::json!({
         "schema_version": 1,
         "host": target.host,
@@ -375,6 +378,12 @@ pub(crate) async fn send(
     if let Some(question) = question {
         body["question"] = question.into();
     }
+    post_json(target, &body).await
+}
+
+/// One `POST` of `body` to the grant's gateway; the HTTP status on success.
+async fn post_json(target: &GrantValue, body: &serde_json::Value) -> Result<u16, String> {
+    let gateway = Gateway::parse(&target.gateway)?;
     let body = body.to_string();
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {grant}\r\n\
@@ -459,6 +468,8 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         .ok_or_else(|| format!("not an HTTP status line: {line:?}"))?;
     Ok(status)
 }
+
+pub(crate) mod live;
 
 #[cfg(test)]
 mod tests;

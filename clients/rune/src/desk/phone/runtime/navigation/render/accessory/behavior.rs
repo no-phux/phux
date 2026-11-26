@@ -156,8 +156,10 @@ fn native_accessory_targets_and_content_fit_at_all_supported_text_sizes() {
                             "phone-key-Slash",
                             "phone-key-Hyphen",
                             "phone-key-Paste",
+                            "phone-attach",
                         ]);
                     } else {
+                        assert!(rt.find("phone-attach").is_none());
                         assert!(rt.find("phone-latch-Control").is_none());
                         assert!(
                             element(&rt, "phone-pad")
