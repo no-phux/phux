@@ -33,6 +33,8 @@ pub struct Platform {
     pub(crate) attachments: u64,
     /// What [`crate::desk::presence`] last told the host it came from.
     pub(crate) presence: Option<crate::desk::presence::Inputs>,
+    /// Where a computer posts this phone's agent counts while it is closed.
+    pub(crate) live: Option<crate::desk::presence::Live>,
     pub active: bool,
     /// When the app left the foreground. Wall time: a monotonic clock may
     /// stand still while the device sleeps.
@@ -86,6 +88,7 @@ impl Platform {
             attaching: VecDeque::new(),
             attachments: 0,
             presence: None,
+            live: None,
             away_since: None,
             controls: RefCell::default(),
         }
@@ -373,6 +376,7 @@ fn with_target(target: Target, session: Option<String>) -> State {
         attaching: VecDeque::new(),
         attachments: 0,
         presence: None,
+        live: None,
         active: true,
         away_since: None,
         controls: RefCell::default(),
@@ -452,6 +456,7 @@ mod host;
 mod invite;
 pub use host::{
     attach, controls, edge_srgb, open_link, paste, path_changed, press, set_accessibility,
+    set_live,
     take_requests, viewport_changed, zoom,
 };
 pub use invite::parse_pairing_invite;

@@ -83,7 +83,11 @@ final class AgentCard {
             return
         }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        do { _ = try Activity.request(attributes: AgentActivity(), content: content) }
+        do {
+            let activity = try Activity.request(attributes: AgentActivity(), content: content,
+                                                pushType: LivePush.gateway == nil ? nil : .token)
+            await LivePush.follow(activity)
+        }
         catch { NSLog("The Lock Screen card did not start: %@", error.localizedDescription) }
     }
 }

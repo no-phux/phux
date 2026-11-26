@@ -73,6 +73,18 @@ pub fn open_link(rt: &mut rune::Runtime<State>, url: &str) -> bool {
     true
 }
 
+/// Where the phone's Live Activity gateway takes agent counts for it, and
+/// its grant there; written to every computer it attaches to.
+pub fn set_live(rt: &mut rune::Runtime<State>, device: &str, gateway: &str, grant: &str) {
+    rt.update(|state, _| {
+        if let Some(native) = state.native.as_mut() {
+            let live =
+                crate::desk::presence::Live::new(device.into(), gateway.into(), grant.into());
+            native.live = Some(live);
+        }
+    });
+}
+
 /// The host's pasteboard text, answering a `paste` request. `None`: it
 /// held more than the bridge carries, which is said rather than dropped.
 pub fn paste(rt: &mut rune::Runtime<State>, text: Option<&str>) {

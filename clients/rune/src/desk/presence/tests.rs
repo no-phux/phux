@@ -91,3 +91,47 @@ fn a_desktop_window_tells_no_phone() {
     agent(&mut desk, 1, "working");
     assert_eq!(desk.take_presence(), None);
 }
+
+#[test]
+fn each_connection_hears_the_live_grant_once() {
+    use phux_client_runtime::Runtime;
+    use phux_client_runtime::control::{ControlOptions, ControlPlane};
+    let fresh = || {
+        let client = std::sync::Arc::new(Runtime::embedded(ControlOptions::default()));
+        client.with_control(ControlPlane::connection_opened);
+        client.feed(crate::wire_fixture::hello(1, false)).unwrap();
+        let _ = client.take_outbound();
+        client
+    };
+    let grants = |client: &phux_client_runtime::Client| -> Vec<(String, serde_json::Value)> {
+        (crate::wire_fixture::outbound(client).into_iter())
+            .filter_map(|frame| match frame {
+                FrameKind::SetMetadata { key, value, .. }
+                    if key.starts_with(LIVE_GRANT_KEY_PREFIX) =>
+                {
+                    Some((key, serde_json::from_slice(&value).unwrap()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut desk = phone();
+    let gateway = "https://live.example/live";
+    let live = Live::new("phone-1".into(), gateway.into(), "0123456789abcdef".into());
+    desk.native.as_mut().unwrap().live = Some(live);
+    let client = fresh();
+    desk.connection.client = Some(client.clone());
+    let _ = desk.take_presence();
+    let value =
+        serde_json::json!({"gateway": gateway, "grant": "0123456789abcdef", "host": "mini"});
+    assert_eq!(
+        grants(&client),
+        [("phux.live/v1/phone-1".to_owned(), value)]
+    );
+    let _ = desk.take_presence();
+    assert!(grants(&client).is_empty(), "told once");
+    let other = fresh();
+    desk.connection.client = Some(other.clone());
+    let _ = desk.take_presence();
+    assert_eq!(grants(&other).len(), 1, "a new connection hears it again");
+}

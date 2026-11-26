@@ -100,6 +100,9 @@ final class RuneView: UIView {
                     scale: window?.screen.scale ?? 1, dark: systemDark,
                     configuration: configuration, wake: box)
                 configuration.removeValue(forKey: "token")
+                if let gateway = LivePush.gateway {
+                    bridge?.setLive(device: LivePush.device, gateway: gateway + "/live", grant: LivePush.grant)
+                }
             }
             bridge?.resize(bounds.size, scale: window?.screen.scale ?? 1)
             bridge?.traits(dark: systemDark, reducedMotion: UIAccessibility.isReduceMotionEnabled,
