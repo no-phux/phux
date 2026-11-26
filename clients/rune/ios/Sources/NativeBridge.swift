@@ -128,6 +128,10 @@ final class NativeBridge {
     func press(_ id: String) -> Bool { id.withCString { phux_rune_ios_press(pointer, $0) } }
     /// A tapped card, widget or Dynamic Island: true when the link was one.
     func openLink(_ link: String) -> Bool { link.withCString { phux_rune_ios_open_link(pointer, $0) } }
+    /// Where the phone's computers post its agent counts while it is closed.
+    func setLive(device: String, gateway: String, grant: String) {
+        device.withCString { d in gateway.withCString { g in grant.withCString { phux_rune_ios_set_live(pointer, d, g, $0) } } }
+    }
     func paste(_ text: String) {
         // A C string ends at its first NUL; a pasteboard's text need not.
         text.replacingOccurrences(of: "\0", with: "").withCString { phux_rune_ios_paste(pointer, $0) }

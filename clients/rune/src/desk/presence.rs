@@ -3,6 +3,7 @@
 //! the widgets. Never what an agent asks: the phone may be locked.
 
 use phux_client_runtime::control::Status;
+use phux_protocol::wire::frame::{FrameKind, LIVE_GRANT_KEY_PREFIX, Scope};
 use serde::Serialize;
 
 use super::Desk;
@@ -43,13 +44,67 @@ pub struct Row {
     pub link: String,
 }
 
+/// Where a computer posts this phone's agent counts while its app is closed,
+/// written to each connection as `phux.live/v1/<device>`.
+pub struct Live {
+    pub device: String,
+    pub gateway: String,
+    pub grant: String,
+    /// The connection it was last written on: the computer pushes only once
+    /// that connection is gone, so every new one writes it again.
+    written: Option<(usize, u64)>,
+}
+
+impl Live {
+    pub fn new(device: String, gateway: String, grant: String) -> Self {
+        Self {
+            device,
+            gateway,
+            grant,
+            written: None,
+        }
+    }
+}
+
 impl Desk {
+    /// Register the phone's Live Activity grant on a connection that has not
+    /// heard it yet.
+    fn write_live(&mut self) {
+        let Some(client) = self.connection.client.clone() else {
+            return;
+        };
+        let host = self
+            .machines
+            .current
+            .clone()
+            .unwrap_or_else(|| "phux".to_owned());
+        let Some(live) = self.native.as_mut().and_then(|n| n.live.as_mut()) else {
+            return;
+        };
+        let connection = (
+            std::sync::Arc::as_ptr(&client) as usize,
+            client.with_control(|control| control.connection_epoch()),
+        );
+        if live.written == Some(connection) {
+            return;
+        }
+        live.written = Some(connection);
+        let value = serde_json::json!({"gateway": live.gateway, "grant": live.grant, "host": host});
+        client.queue_frame(&FrameKind::SetMetadata {
+            request_id: client.next_request_id(),
+            scope: Scope::Global,
+            key: format!("{LIVE_GRANT_KEY_PREFIX}{}", live.device),
+            value: value.to_string().into_bytes(),
+        });
+    }
+
     /// The presence when it may have moved since the host last took it.
     /// `None` while not attached: a dropped link says nothing about agents.
     pub fn take_presence(&mut self) -> Option<Presence> {
         if self.connection.status != Status::Attached {
             return None;
         }
+        self.write_live();
         let inputs = Inputs {
             marks: self.activities.revision(),
             listed: self.listed(),

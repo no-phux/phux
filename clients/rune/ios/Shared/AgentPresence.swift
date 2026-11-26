@@ -21,9 +21,10 @@ struct AgentPresence: Codable, Hashable, Sendable {
 
     var quiet: Bool { waiting == 0 && working == 0 }
     var date: Date { Date(timeIntervalSince1970: at) }
-    /// What a tap off any row opens: the one pane that waits, else the inbox.
+    /// What a tap off any row opens: the one pane that waits, else the
+    /// inbox. A pushed update carries no rows, so it opens the inbox.
     var link: URL? {
-        waiting == 1 ? rows.first.flatMap { URL(string: $0.link) } : Self.inbox
+        (waiting == 1 ? rows.first.flatMap { URL(string: $0.link) } : nil) ?? Self.inbox
     }
     static let inbox = URL(string: "phux://inbox")
 }

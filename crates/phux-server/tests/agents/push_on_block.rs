@@ -4,6 +4,11 @@
 //! `asked` event is ever raised here, so before the blocked notice existed
 //! nothing was sent.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
+)]
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -26,7 +31,7 @@ const PUSH_DEADLINE: Duration = Duration::from_secs(60);
 
 /// A fake `claude` that waits for `go`, then paints the permission dialog
 /// the `claude` rules match, then idles.
-fn write_gated_agent(dir: &Path) -> std::path::PathBuf {
+pub(crate) fn write_gated_agent(dir: &Path) -> std::path::PathBuf {
     let gate = format!(
         "while [ ! -f '{}' ]; do sleep 0.1; done",
         dir.join("go").display()
@@ -35,7 +40,7 @@ fn write_gated_agent(dir: &Path) -> std::path::PathBuf {
 }
 
 /// A loopback gateway: every JSON body posted to it, answered 202.
-fn gateway() -> (String, mpsc::Receiver<Value>) {
+pub(crate) fn gateway() -> (String, mpsc::Receiver<Value>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://127.0.0.1:{}/v1/push",

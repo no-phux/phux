@@ -338,6 +338,15 @@ pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 /// an agent finishes.
 pub const PUSH_GRANT_KEY_PREFIX: &str = "phux.push/v1/";
 
+/// `Global`-scope key family a device registers its Lock Screen card under
+/// (`docs/protocol-files.md#live-activity`).
+///
+/// `phux.live/v1/<device>` holds the same object as a push grant, its
+/// `gateway` the device's Live Activity endpoint. While the connection that
+/// wrote the key is gone, the server posts how many agents wait and work
+/// there whenever either count moves.
+pub const LIVE_GRANT_KEY_PREFIX: &str = "phux.live/v1/";
+
 /// A decision's value: release the held action once.
 pub const APPROVAL_APPROVE: &[u8] = b"approve";
 

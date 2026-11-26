@@ -11,6 +11,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         EarlierApp.clearBadge()
+        LivePush.listen()
         NotificationCenter.default.addObserver(self, selector: #selector(connecting),
                                                name: UIScene.willConnectNotification, object: nil)
         return true

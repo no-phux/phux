@@ -53,6 +53,9 @@ bool phux_rune_ios_press(void *host, const char *id);
 // A tapped card, widget or Dynamic Island: `phux://inbox` or
 // `phux://pane/@N`. False when the link is neither.
 bool phux_rune_ios_open_link(void *host, const char *url);
+// Where the phone's Live Activity gateway takes agent counts, and its grant
+// there: written to every computer it attaches to.
+void phux_rune_ios_set_live(void *host, const char *device, const char *gateway, const char *grant);
 // Answers a frame's `paste` request with the system pasteboard's text.
 void phux_rune_ios_paste(void *host, const char *text);
 // One picked file for a frame's `attaching` request, borrowed for this call.

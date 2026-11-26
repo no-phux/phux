@@ -358,6 +358,22 @@ pub unsafe extern "C" fn phux_rune_ios_open_link(pointer: *mut c_void, url: *con
     })
 }
 
+/// The phone's Live Activity gateway and grant, for every computer it attaches to.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_set_live(
+    pointer: *mut c_void,
+    device: *const c_char,
+    gateway: *const c_char,
+    grant: *const c_char,
+) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        let (device, gateway, grant) = unsafe { (text(device)?, text(gateway)?, text(grant)?) };
+        mobile::set_live(host.layer.runtime_mut(), device, gateway, grant);
+        Ok(())
+    });
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *const c_char) {
     attempt(|| {

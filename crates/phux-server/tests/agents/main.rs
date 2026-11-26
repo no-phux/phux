@@ -10,5 +10,6 @@
 
 mod agent_detect;
 mod fake_agent;
+mod live_on_block;
 mod program_status;
 mod push_on_block;

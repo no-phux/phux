@@ -136,6 +136,12 @@ impl ServerState {
         self.approvals.pending.get(&id)
     }
 
+    /// How many held actions await a decision.
+    #[must_use]
+    pub fn pending_approval_count(&self) -> usize {
+        self.approvals.pending.len()
+    }
+
     /// Every pending approval's id, in no particular order.
     #[cfg(test)]
     #[must_use]
