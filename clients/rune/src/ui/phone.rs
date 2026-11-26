@@ -181,7 +181,14 @@ fn edge_fill(desk: &Desk, p: &Look) -> Color {
     if desk.settings_open {
         p.roles.layer.sidebar.paint()
     } else if desk.phone_page().is_some() {
-        p.roles.layer.ground.paint()
+        // The layer the drawer's glass is tinted with, which it reads as
+        // over the terminal it blurs; its ground where it is opaque.
+        let glass = p.glass(super::tokens::GlassSurface::PhoneBar, p.glass_tint_layer());
+        if glass.is_some() {
+            p.glass_tint_layer().paint()
+        } else {
+            p.roles.layer.ground.paint()
+        }
     } else {
         terminal_ground(desk)
     }

@@ -101,6 +101,9 @@ impl Playground {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     PhoneNavigation,
+    /// The Sessions drawer a finger is pulling in from the left edge:
+    /// painted where the open drawer is, never the keyboard's owner.
+    PhonePull,
     Inbox,
     Playground(Playground),
     Settings,
@@ -137,7 +140,7 @@ impl Surface {
             Self::Chief => Modal::Chief,
             Self::ContextMenu => Modal::ContextMenu,
             Self::RawRelaunch => Modal::RawRelaunch,
-            Self::Toasts => return None,
+            Self::Toasts | Self::PhonePull => return None,
         })
     }
 }
@@ -153,7 +156,9 @@ impl Desk {
     pub fn surfaces(&self) -> impl DoubleEndedIterator<Item = Surface> {
         [
             (self.phone.is_some() && self.settings_open).then_some(Surface::Settings),
-            self.phone_page().map(|_| Surface::PhoneNavigation),
+            self.phone_page()
+                .map(|_| Surface::PhoneNavigation)
+                .or_else(|| self.phone_pulling().then_some(Surface::PhonePull)),
             self.inbox.open.then_some(Surface::Inbox),
             self.playground
                 .filter(|_| self.phone.is_none() || !self.settings_open)

@@ -8,6 +8,7 @@ mod header;
 mod reconnect;
 mod search;
 mod states;
+mod swipe;
 
 #[test]
 fn session_browser_renders_realistic_dark_light_and_search_states() {
@@ -131,7 +132,7 @@ fn paint(
     );
     let tree = rt.accessibility_json();
     touch_targets(&tree, name);
-    // The dock is the phone's one blur.
+    // The Sessions drawer is the phone's one blur.
     assert!(
         crate::ui::glass_panels(rt) <= 1,
         "{name}: more than one blur on the phone"
@@ -320,7 +321,7 @@ fn retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports() {
 /// The design fixture on the phone: the house look and catalog
 /// themes, each standard, at increased contrast, with Reduce Transparency
 /// and at the largest text size, over the terminal and the session page.
-/// The dock is the phone's one glass, and only where glass may draw.
+/// The Sessions drawer is the phone's one glass, and only where glass may draw.
 #[test]
 fn the_phone_paints_the_design_fixture() {
     let gpu = rune::render::Gpu::headless();
@@ -372,9 +373,10 @@ fn the_phone_paints_the_design_fixture() {
                 .iter()
                 .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
                 .count();
-            // Large text uses an inline action, not glass over the list.
-            let glass = mode == "standard";
-            assert_eq!(blurs, usize::from(glass), "{name}: the dock's glass");
+            // The drawer is the one blur, where glass may draw; the dock
+            // over it is opaque, and at large text an inline action.
+            let glass = matches!(mode, "standard" | "largest-text");
+            assert_eq!(blurs, usize::from(glass), "{name}: the drawer's glass");
             paint(
                 &gpu,
                 &mut renderer,
@@ -387,7 +389,7 @@ fn the_phone_paints_the_design_fixture() {
                 settle_for_snapshot(&mut rt);
                 let button = crate::ui::element(&rt, "phone-session-new");
                 assert!(button.visible[3] >= button.rect[3] - 0.5, "{button:?}");
-                assert_eq!(crate::ui::glass_panels(&rt), 0, "inline, not a blur");
+                assert_eq!(crate::ui::glass_panels(&rt), 1, "the drawer's alone");
                 paint(
                     &gpu,
                     &mut renderer,

@@ -146,7 +146,6 @@ fn native_accessory_targets_and_content_fit_at_all_supported_text_sizes() {
                         keys.extend([
                             "phone-latch-Control",
                             "phone-latch-Option",
-                            "phone-latch-Shift",
                             "phone-key-Interrupt",
                             "phone-key-Left",
                             "phone-key-Down",
@@ -468,7 +467,6 @@ fn large_drawn_settings_reveal_every_relocated_accessory_key() {
             "phone-key-Tab",
             "phone-latch-Control",
             "phone-latch-Option",
-            "phone-latch-Shift",
             "phone-key-Interrupt",
             "phone-key-Left",
             "phone-key-Down",

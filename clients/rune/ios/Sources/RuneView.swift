@@ -240,6 +240,7 @@ final class RuneView: UIView {
         switch requests["feedback"] as? String {
         case "hold": UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         case "copied": UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case "detent": UIImpactFeedbackGenerator(style: .light).impactOccurred()
         default: break
         }
         if requests["connection"] as? Bool == true { connectionRequested?() }

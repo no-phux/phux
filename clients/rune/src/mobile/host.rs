@@ -24,6 +24,7 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
     let feedback = feedback.map(|feedback| match feedback {
         Feedback::Hold => "hold",
         Feedback::Copied => "copied",
+        Feedback::Detent => "detent",
     });
     let native = state.native.as_mut();
     let (connection, paste) = native.map_or((false, false), |native| {

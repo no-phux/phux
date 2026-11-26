@@ -1,5 +1,6 @@
 //! The accessory bar: Commands, a scrolling strip of the keys a terminal
-//! needs that a phone keyboard buries, and a pinned keyboard toggle or Done.
+//! needs that a phone keyboard buries, and a pinned keyboard toggle and
+//! Return (or Done while the system keyboard edits a field).
 //! The pad joins the strip when editing or making room for large text.
 //! Every key is a full touch target.
 
@@ -48,7 +49,7 @@ const TYPED: [(&str, &str, char); 4] = [
     ("-", "Hyphen", '-'),
 ];
 
-fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
+fn strip(phone: &Phone, native_field: bool, pad: Option<El>, enter: Option<El>, p: &Look) -> El {
     let send = |label: &'static str, name: &'static str, key: Key| {
         chip(format!("phone-key-{name}"), name, label, false, p)
             .on_press_tx(move |d: &mut Desk, tx| d.soft(Soft::Key(key.clone()), tx))
@@ -77,6 +78,7 @@ fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
             .scroll_edge_fade(p.space.s5),
         p,
     )
+    .children(enter)
     .child(send("esc", "Escape", Key::Escape))
     .child(send("⇥", "Tab", Key::Tab));
     // A field being edited by the system keyboard takes neither chords nor
@@ -91,7 +93,6 @@ fn strip(phone: &Phone, native_field: bool, pad: Option<El>, p: &Look) -> El {
     let strip = strip
         .child(latch(Latch::Ctrl, "⌃", "Control"))
         .child(latch(Latch::Alt, "⌥", "Option"))
-        .child(latch(Latch::Shift, "⇧", "Shift"))
         .child(interrupt)
         .child(send("←", "Left", Key::Left))
         .child(send("↓", "Down", Key::Down))
@@ -191,12 +192,21 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     } else {
         (None, Some(pad))
     };
+    // Return stays pinned under the right thumb unless the largest text
+    // leaves no room beside it: then it leads the strip, first in view.
+    let enter = (!native_field).then(|| return_key(p));
+    let (strip_enter, pair_enter) = if scrolling_pad {
+        (enter, None)
+    } else {
+        (None, enter)
+    };
     let pair = surface(
         row().key("phone-pair").radius(p.radius.full).items_center(),
         p,
     )
     .children(pair_pad)
-    .child(keyboard_control(desk, native_field, p));
+    .child(keyboard_control(desk, native_field, p))
+    .children(pair_enter);
     let command = touchable(
         surface(
             el().key("phone-command")
@@ -229,8 +239,27 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
         .gap(s.s2)
         .items_center()
         .child(el().pb(s.s2).child(command))
-        .child(strip(phone, native_field, strip_pad, p))
+        .child(strip(phone, native_field, strip_pad, strip_enter, p))
         .child(el().pb(s.s2).child(pair))
+}
+
+/// Return, pinned under the right thumb where a keyboard's return sits,
+/// so the one key a terminal reaches for most never scrolls away. A field
+/// the system keyboard edits has that keyboard's own return instead.
+fn return_key(p: &Look) -> El {
+    let ink = p.roles.accent.on_accent.paint();
+    touchable(
+        el().key("phone-key-Enter")
+            .min_w(p.round())
+            .min_h(p.round())
+            .radius(p.radius.full)
+            .center()
+            .fill(p.roles.accent.accent.paint()),
+        p,
+    )
+    .label("Return")
+    .on_press_tx(|d: &mut Desk, tx| d.soft(Soft::Key(Key::Enter), tx))
+    .child(glyph(&icons::RETURN, p.icon.size.lg, ink))
 }
 
 fn keyboard_control(desk: &Desk, native_field: bool, p: &Look) -> El {

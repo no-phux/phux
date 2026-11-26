@@ -21,11 +21,11 @@ fn settings_search_shows_its_keyboard_without_changing_terminal_choice() {
     assert!(rt.find("phone-cap-116").is_none());
     tap(&mut rt, "settings-query", 0.1);
     assert!(rt.state.settings_search_focused());
-    tap(&mut rt, "phone-latch-Shift", 0.3);
+    tap(&mut rt, "phone-cap-shift", 0.3);
     tap(&mut rt, "phone-cap-116", 0.5);
     tap(&mut rt, "phone-cap-104", 0.7);
     assert_eq!(rt.state.settings_ui.query.text, "Th");
-    assert!(!rt.state.phone.as_ref().unwrap().shift);
+    assert!(!rt.state.phone.as_ref().unwrap().capital);
     tap(&mut rt, "phone-keyboard-toggle", 0.9);
     assert!(!rt.state.settings_search_focused());
     assert_eq!(rt.state.settings_ui.query.text, "Th");

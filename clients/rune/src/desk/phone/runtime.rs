@@ -94,14 +94,14 @@ fn the_drawn_keyboard_keeps_palette_focus_and_field_editing() {
     rt.state.palette_open = true;
     rt.frame(0.0);
     rt.state.palette_picked = 1;
-    tap(&mut rt, "phone-latch-Shift", 0.1);
+    tap(&mut rt, "phone-cap-shift", 0.1);
     tap(&mut rt, "phone-cap-116", 0.3);
     tap(&mut rt, "phone-cap-104", 0.5);
     assert!(rt.state.palette_open);
     assert!(rt.state.palette_query.focused);
     assert_eq!(rt.state.palette_query.text, "Th");
     assert_eq!(rt.state.palette_picked, 0, "query change callback ran");
-    assert!(!rt.state.phone.as_ref().unwrap().shift);
+    assert!(!rt.state.phone.as_ref().unwrap().capital);
     rt.update(|desk, tx| desk.soft(Soft::Key(Key::Left), tx));
     settle(&mut rt);
     tap(&mut rt, "phone-cap-backspace", 0.7);
