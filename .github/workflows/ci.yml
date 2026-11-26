@@ -304,6 +304,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Before setup-node: the installer's PATH entries otherwise put the
+      # image's /usr/local/bin/node (22) ahead of setup-node's 26.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       # No npm cache: a PR-scoped entry is unrestorable after the PR closes
       # and only evicts main's build caches.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -314,12 +317,7 @@ jobs:
       # change that only breaks under it fails here instead of at release.
       - run: npm install --global npm@12.2.1
       # Only just from the pinned nixpkgs; Node, npm and Bun stay the ones above.
-      # Build it and call it by path: under `nix shell` the image's
-      # /usr/local/bin/node (22) wins over setup-node's 26.
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - run: |
-          just="$(nix build --no-link --print-out-paths --inputs-from . "nixpkgs#just^out")/bin/just"
-          "$just" agent-integrations-check
+      - run: nix shell --inputs-from . nixpkgs#just -c just agent-integrations-check
 
   # `just web-check` still runs both. The cache action saves only from main.
   web-vt:
