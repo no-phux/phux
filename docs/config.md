@@ -13,11 +13,11 @@ everything else keeps the default. You don't need one to start.
 
 ## Coming from another multiplexer
 
-`phux migrate --source tmux` reads your tmux config, translates every key
-binding it can into phux config lines, and starts your coding agent to write
-them into your config and run `phux config check` and `phux config reload`.
-The agent reports what it could not translate. Pass `--prefix C-b` to keep
-tmux's prefix.
+`phux migrate --source tmux` reads your tmux config and translates every key
+binding it can into phux config lines. It then starts your coding agent, which
+writes those lines into your config, runs `phux config check` and `phux config
+reload`, and reports what it could not translate. Migrate asks when your tmux
+prefix differs; `--prefix C-b` picks tmux's default up front.
 
 ```sh
 phux migrate --source tmux
@@ -26,8 +26,8 @@ phux migrate --source tmux
 [`phux config import-tmux`](./reference/cli.md#phux-config-import-tmux)
 reads a running tmux and writes a layer without an agent.
 [`phux migrate`](./reference/cli.md#phux-migrate) also reads zellij, Ghostty,
-herdr, and Rex configs. Neither binary reloads a running server; the migrate
-prompt is what runs `phux config reload`.
+herdr, and Rex configs. Neither command reloads a running server itself; the
+agent `phux migrate` starts runs `phux config reload`.
 
 `import-tmux --apply` writes `tmux-import.toml` beside your config and
 prepends it to `extends`, so your own settings still win. It refuses to
