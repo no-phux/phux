@@ -226,10 +226,8 @@ impl SelectList {
             .max(self.tallest.get())
             .min(roomy.height);
         self.tallest.set(fit);
-        // Anchored in the upper third, where the eye starts, as every
-        // palette is: results grow downward and the field never jumps.
-        let slack = roomy.height - fit;
-        Rect::new(roomy.x, roomy.y + slack / 3, roomy.width, fit)
+        // Keep the query fixed when a live refresh grows the list.
+        Rect::new(roomy.x, roomy.y, roomy.width, fit)
     }
 
     /// The query field: the first interior row, inside the padding.
@@ -264,22 +262,12 @@ impl SelectList {
     }
 
     /// The bottom-left border text: the selection's position among the
-    /// selectable rows (`3 of 61`), the match count alone when nothing is
-    /// selected, or `no matches` when the query filtered every row out.
-    pub(super) fn footer(&self, indices: &[usize]) -> String {
+    /// selectable rows (`3 of 61`). Empty states explain themselves in the body.
+    pub(super) fn footer(&self, indices: &[usize], row: usize) -> String {
         let selectable = indices
             .iter()
             .filter(|&&idx| !self.items[idx].is_header())
             .count();
-        if selectable == 0 && !self.query().is_empty() {
-            return "no matches".to_owned();
-        }
-        let Some(row) = self
-            .cursor_row(indices)
-            .filter(|&row| self.row_selectable(indices, row))
-        else {
-            return format!("{selectable} rows");
-        };
         let at = indices[..=row]
             .iter()
             .filter(|&&idx| !self.items[idx].is_header())

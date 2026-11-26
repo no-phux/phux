@@ -34,9 +34,6 @@ const DIALOG: &str = "path-picker";
 const QUERY: &str = "query";
 const ROWS: &str = "rows";
 
-/// The key legend at the footer's right.
-const FOOTER_KEYS: &str = "↑↓ move · ⏎ pick · esc";
-
 /// Dialog rows that are not list rows: border and padding above and below,
 /// the query field, the gap row, and the footer.
 const CHROME_ROWS: u16 = 2 + 2 + 1 + 1 + 1;
@@ -113,8 +110,9 @@ impl PathPicker {
     }
 
     /// The modal rect: a box just tall enough for every row, up to half the
-    /// viewport (min 30 wide), centered; a row-starved viewport takes the
-    /// full height. The box never shrinks below the tallest one painted.
+    /// viewport (min 30 wide), with a fixed query row; a row-starved
+    /// viewport takes the full height. The box never shrinks below the
+    /// tallest one painted.
     fn modal_area(&self, outer: Rect) -> Rect {
         let bp = self.breakpoints;
         let roomy = centered_panel(outer, 5, 30, CHROME_ROWS + 3, bp);
@@ -127,8 +125,7 @@ impl PathPicker {
             .max(self.tallest.get())
             .min(roomy.height);
         self.tallest.set(fit);
-        let slack = roomy.height - fit;
-        Rect::new(roomy.x, roomy.y + slack / 2, roomy.width, fit)
+        Rect::new(roomy.x, roomy.y, roomy.width, fit)
     }
 
     /// Rows the list shows in the box laid out over the last viewport.
@@ -141,10 +138,14 @@ impl PathPicker {
     fn declare(&self, area: Rect) -> impl FnMut(&mut DeclareCtx<'_, Model, Msg>) + use<> {
         let theme = self.theme;
         let inner = area.width.saturating_sub(4);
-        let budget = usize::from(inner).saturating_sub(display_width(FOOTER_KEYS) + 1);
-        let status = clip_left(&self.status, budget);
+        let footer = footer_line(
+            &self.status,
+            self.selected_action().is_some(),
+            inner,
+            &theme,
+        );
         move |ctx| {
-            let footer = footer_line(&status, inner, &theme);
+            let footer = footer.clone();
             let list_rows = area.height.saturating_sub(CHROME_ROWS);
             let dialog = Dialog::new()
                 .title("Insert path")
@@ -337,15 +338,23 @@ fn row_line(row: &Row, selected: bool, width: usize, theme: &Theme) -> Line<'sta
     ])
 }
 
-/// The footer: the root (already clipped from the left) and the key legend
-/// right-aligned, `width` cells wide.
-fn footer_line(status: &str, width: u16, theme: &Theme) -> Line<'static> {
+/// Keep the root's tail and advertise selection only when there is a result.
+fn footer_line(root: &str, can_select: bool, width: u16, theme: &Theme) -> Line<'static> {
+    let width = usize::from(width);
+    let keys = if can_select {
+        "⏎ select · Esc"
+    } else {
+        "Esc close"
+    };
+    let keys = clip_text(keys, width);
+    let keys_width = display_width(&keys);
+    let status = clip_left(root, width.saturating_sub(keys_width + 1));
     let dim = Style::default().fg(theme.dim);
-    let gap = usize::from(width).saturating_sub(display_width(status) + display_width(FOOTER_KEYS));
+    let gap = width.saturating_sub(display_width(&status) + keys_width);
     Line::from(vec![
-        Span::styled(status.to_owned(), dim),
+        Span::styled(status, dim),
         Span::raw(" ".repeat(gap)),
-        Span::styled(FOOTER_KEYS, dim),
+        Span::styled(keys, dim),
     ])
 }
 

@@ -15,6 +15,21 @@ use super::paint::{header_line, input_style, item_line, list_style};
 use super::{QUERY, ROWS, SelectList};
 use crate::render::kit::{self, Surface};
 use crate::render::overlay::OverlayCommand;
+use crate::render::{clip_text, display_width};
+
+fn empty_message(query: &str, width: usize) -> String {
+    let message = if query.trim().is_empty() {
+        "Nothing to choose yet"
+    } else {
+        let recovery = "No matches. Edit query.";
+        if display_width(recovery) <= width {
+            recovery
+        } else {
+            "No matches"
+        }
+    };
+    clip_text(message, width)
+}
 
 /// What a list's ratcn surface reads: the query field's text, the cursor
 /// (an index into the unfiltered items, the rows' ratcn value), and the
@@ -101,7 +116,9 @@ impl SelectList {
         let (query_area, rows_area) = (Self::query_area(modal), Self::rows_area(modal));
         let width = rows_area.width;
         let placeholder = self.placeholder;
-        let empty = format!("No matches for \u{201c}{}\u{201d}", self.query().trim());
+        let empty = rows
+            .is_empty()
+            .then(|| empty_message(self.query(), usize::from(width)));
         move |ctx| {
             let prompt = Span::styled(
                 "›",
@@ -115,8 +132,8 @@ impl SelectList {
                 .placeholder(placeholder)
                 .style(input_style);
             ctx.component(QUERY, input, query_area);
-            if rows.is_empty() {
-                let none = Line::styled(empty.clone(), Style::default().fg(theme.dim));
+            if let Some(empty) = &empty {
+                let none = Line::styled(empty.clone(), Style::default().fg(theme.text));
                 ctx.paint_widget(none, rows_area);
                 return;
             }

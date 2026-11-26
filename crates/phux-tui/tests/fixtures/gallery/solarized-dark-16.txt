@@ -85,5 +85,5 @@
   0-0 gray/-, 47-47 gray/-
 08|│                                              │|
   0-0 gray/-, 47-47 gray/-
-09|╰ 1 of 3 ─────────────── ↑↓ move · ⏎ run · esc ╯|
+09|╰ 1 of 3 ──────────── ↑↓ move · ⏎ select · Esc ╯|
   0-47 gray/-
