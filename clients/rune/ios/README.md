@@ -224,9 +224,9 @@ shown; the class is recorded as `enroll_unreachable`, `enroll_code_rejected`
 or `enroll_device_key` in the support file described below. A valid scan and a
 completed pairing answer with a success haptic.
 
-Once a computer is saved the screen is titled **Change computer**, names the
-computer this phone is paired with, and says that pairing another replaces it.
-The name is a preference of its own, beside the saved configuration.
+Once a computer is saved the screen is titled **Change computer** and lists
+every paired computer: tap one to open it, swipe to forget it. Pairing adds
+one; the Swift app's update carries all it can. Names live beside them.
 
 The camera requires permission and supported hardware; denied/unavailable
 camera access leaves Paste available. The scanner always shows what to scan,
