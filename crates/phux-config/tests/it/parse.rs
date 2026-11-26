@@ -89,8 +89,10 @@ fn empty_input_is_full_defaults() {
     assert!(cfg.keybindings.which_key);
     assert_eq!(cfg.keybindings.which_key_delay_ms, 400);
     assert_eq!(cfg.experimental.predictive_echo, None);
-    assert!(!cfg.experimental.predictive_echo_for(false));
-    assert!(cfg.experimental.predictive_echo_for(true));
+    assert!(!cfg.developer.mode);
+    assert!(cfg.labs.flags.is_empty());
+    assert!(!cfg.labs.predictive_echo_for(&cfg.experimental, false));
+    assert!(cfg.labs.predictive_echo_for(&cfg.experimental, true));
     assert!(cfg.sidebar.enabled);
     assert_eq!(cfg.sidebar.width, 20);
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
@@ -222,10 +224,31 @@ fn spanless_schema_error_renders_no_fabricated_position() {
 /// directions.
 #[test]
 fn explicit_predictive_echo_beats_the_transport_default() {
+    let cfg = parse_and_round_trip("[labs]\npredictive-echo = true\n");
+    assert!(cfg.labs.predictive_echo_for(&cfg.experimental, false));
+    let cfg = parse_and_round_trip("[labs]\npredictive-echo = false\n");
+    assert!(!cfg.labs.predictive_echo_for(&cfg.experimental, true));
+    // The legacy key is still read, and `[labs]` wins over it.
     let cfg = parse_and_round_trip("[experimental]\npredictive-echo = true\n");
-    assert!(cfg.experimental.predictive_echo_for(false));
-    let cfg = parse_and_round_trip("[experimental]\npredictive-echo = false\n");
-    assert!(!cfg.experimental.predictive_echo_for(true));
+    assert!(cfg.labs.predictive_echo_for(&cfg.experimental, false));
+    let cfg = parse_and_round_trip(
+        "[experimental]\npredictive-echo = true\n[labs]\npredictive-echo = false\n",
+    );
+    assert!(!cfg.labs.predictive_echo_for(&cfg.experimental, true));
+}
+
+/// A lab no longer registered still loads (so an old file keeps working)
+/// and `phux config check` names it.
+#[test]
+fn a_retired_lab_loads_and_check_names_it() {
+    let cfg = parse_and_round_trip("[labs]\nretired-lab = true\n");
+    assert_eq!(cfg.labs.get("retired-lab"), Some(true));
+    let report =
+        phux_config::check::check("[labs]\nretired-lab = true\n", &path()).expect("check runs");
+    assert!(
+        report.findings.iter().any(|f| f.path == "labs.retired-lab"),
+        "{report:?}"
+    );
 }
 
 /// Replace the `:COL:` in `path:LINE:COL: message` with `:<col>:` so

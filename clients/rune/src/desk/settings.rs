@@ -19,6 +19,7 @@ pub fn interface_size(size: Option<u16>) -> u16 {
 }
 
 mod bars;
+mod labs;
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -29,6 +30,8 @@ pub enum Category {
     Notifications,
     RemoteHosts,
     Developer,
+    /// Feature flags; listed only in developer mode, so not in [`Self::ALL`].
+    Labs,
     About,
 }
 
@@ -49,6 +52,7 @@ impl Category {
             Self::Notifications => "Notifications",
             Self::RemoteHosts => "Remote hosts",
             Self::Developer => "Developer",
+            Self::Labs => "Labs",
             Self::About => "About & updates",
         }
     }
@@ -60,8 +64,18 @@ impl Category {
             Self::Notifications => "settings-notifications",
             Self::RemoteHosts => "settings-hosts",
             Self::Developer => "settings-developer",
+            Self::Labs => "settings-labs",
             Self::About => "settings-about",
         }
+    }
+
+    /// The destinations Settings lists: [`Self::ALL`], with Labs after
+    /// Developer while developer mode is on.
+    pub fn shown(developer_mode: bool) -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().flat_map(move |category| {
+            let labs = (developer_mode && category == Self::Developer).then_some(Self::Labs);
+            std::iter::once(category).chain(labs)
+        })
     }
 }
 

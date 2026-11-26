@@ -113,6 +113,7 @@ fn category_icon(category: Category, t: &Tokens) -> El {
         Category::Notifications => &icons::INBOX,
         Category::RemoteHosts => &icons::PAD,
         Category::Developer => &icons::KEYBOARD,
+        Category::Labs => &icons::BOLT,
         Category::About => &icons::MORE,
     };
     let side = t.icon.button.md;
@@ -186,6 +187,11 @@ fn category_copy(category: Category, desk: &Desk, t: &Tokens, phone: bool) -> El
 }
 
 fn categories(desk: &Desk, t: &Tokens) -> El {
+    let last: &[Category] = if desk.developer_mode {
+        &[Category::Developer, Category::Labs, Category::About]
+    } else {
+        &[Category::Developer, Category::About]
+    };
     let groups: [&[Category]; 3] = [
         &[
             Category::Appearance,
@@ -193,7 +199,7 @@ fn categories(desk: &Desk, t: &Tokens) -> El {
             Category::Notifications,
         ],
         &[Category::RemoteHosts],
-        &[Category::Developer, Category::About],
+        last,
     ];
     col()
         .w_full()
@@ -402,11 +408,7 @@ fn desktop(desk: &Desk, t: &Tokens) -> El {
         .gap(s.s1)
         .role("navigation")
         .label("Settings categories")
-        .children(
-            Category::ALL
-                .into_iter()
-                .map(|c| category_row(c, desk, t, false)),
-        );
+        .children(Category::shown(desk.developer_mode).map(|c| category_row(c, desk, t, false)));
     let panel = col()
         .key("settings")
         .w_full()

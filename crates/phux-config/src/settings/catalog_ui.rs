@@ -300,18 +300,6 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  at most one a second per pane. Read by the server when it starts.",
         applies: Applies::NextSpawn,
     },
-    // -- [experimental] -----------------------------------------------------
-    SettingSpec {
-        key: "experimental.predictive-echo",
-        section: SettingSection::Experimental,
-        kind: SettingKind::OptionalBool,
-        summary: "Mosh-class predictive local echo; unset lets the dial decide",
-        detail: "Unset means the transport decides: on over a remote dial, off over the \
-                 local Unix socket (a loopback QUIC or WebSocket dial counts as local). true \
-                 engages prediction everywhere including UDS; false disables it everywhere \
-                 including remote dials. Experimental: may change without notice.",
-        applies: Applies::NextAttach,
-    },
     // -- [voice] ------------------------------------------------------------
     SettingSpec {
         key: "voice.transcriber",
@@ -376,5 +364,30 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  is checked against its own 4096-byte limit only after this cap, so a lower \
                  cap would silently break session-create, rename, and keep-empty metadata too.",
         applies: Applies::NextSpawn,
+    },
+    // -- [developer] ------------------------------------------------------
+    SettingSpec {
+        key: "developer.mode",
+        section: SettingSection::Developer,
+        kind: SettingKind::Bool,
+        summary: "Developer mode: show the Labs section in every client",
+        detail: "The terminal UI, Rune and phux config labs read the same key, so one \
+                 switch reveals Labs everywhere. Off hides the switches only: a lab you \
+                 set keeps its effect.",
+        applies: Applies::LiveReload,
+    },
+    // -- [labs] -----------------------------------------------------------
+    // One row per `phux_config_core::labs::LABS` entry; a test pins them.
+    SettingSpec {
+        key: "labs.predictive-echo",
+        section: SettingSection::Labs,
+        kind: SettingKind::OptionalBool,
+        summary: "Mosh-class predictive local echo; unset lets the dial decide",
+        detail: "Unset means the transport decides: on over a remote dial, off over the \
+                 local Unix socket (a loopback QUIC or WebSocket dial counts as local). true \
+                 engages prediction everywhere including UDS; false disables it everywhere \
+                 including remote dials. Replaces experimental.predictive-echo, which is \
+                 still read when this is unset.",
+        applies: Applies::NextAttach,
     },
 ];

@@ -311,7 +311,7 @@ fn theme_slots_edit_colors_with_validation_and_a_preview() {
 
 #[test]
 fn argv_and_optional_kinds_round_trip_unset() {
-    let (dir, mut page) = page_over("");
+    let (dir, mut page) = page_over("[developer]\nmode = true\n");
     page.focus("voice.transcriber");
     edit(&mut page, "curl -sf 'a b' \"c\"");
     assert!(
@@ -322,7 +322,7 @@ fn argv_and_optional_kinds_round_trip_unset() {
     edit(&mut page, "unset");
     assert!(!file(&dir).contains("transcriber"), "{}", file(&dir));
 
-    page.focus("experimental.predictive-echo");
+    page.focus("labs.predictive-echo");
     page.handle_key(&press(PhysicalKey::Space, None));
     assert!(file(&dir).contains("predictive-echo = true"));
     page.handle_key(&press(PhysicalKey::Space, None));
@@ -393,9 +393,42 @@ fn tab_steps_sections_and_shift_tab_steps_back() {
     page.handle_key(&back);
     assert_eq!(
         SettingSection::ALL[page.section],
-        SettingSection::Limits,
-        "wraps"
+        SettingSection::Developer,
+        "wraps past the hidden Labs tab"
     );
+}
+
+#[test]
+fn labs_show_only_in_developer_mode() {
+    let (dir, mut page) = page_over("");
+    assert!(!page.sections().contains(&SettingSection::Labs));
+    type_text(&mut page, "predictive");
+    assert!(
+        page.visible_specs()
+            .iter()
+            .all(|s| s.section != SettingSection::Labs),
+        "a search does not reach a hidden section"
+    );
+    page.query.clear();
+
+    page.focus("developer.mode");
+    assert_eq!(
+        page.handle_key(&press(PhysicalKey::Enter, None)),
+        OverlayCommand::ReloadConfig
+    );
+    assert!(file(&dir).contains("[developer]\nmode = true"));
+    assert!(page.sections().contains(&SettingSection::Labs));
+    page.focus("labs.predictive-echo");
+    assert_eq!(page.current_section(), SettingSection::Labs);
+
+    // Off again from the Labs tab: the tab goes, the index stays in range.
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[developer]\nmode = false\n",
+    )
+    .expect("write");
+    page.reload_snapshot();
+    assert_eq!(page.current_section(), SettingSection::Developer);
 }
 
 #[test]

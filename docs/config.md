@@ -70,7 +70,7 @@ whose own re-read fails keeps its previous settings and shows a toast.
 | --- | --- |
 | Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, clipboard policy, `[[sessions]]` colours, plugin actions, panes and sidebar sections | On `phux config reload` |
 | `[[satellites]]`, `[[uplink]]` | On `phux config reload`, by the server |
-| `[sidebar]`, `mouse`, `[experimental] predictive-echo` | On the next attach |
+| `[sidebar]`, `mouse`, `[labs] predictive-echo` | On the next attach |
 | The rest of `[defaults]`, `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]`, `[[restore.program]]` | When the server starts |
 
 `phux upgrade` restarts the server in place without closing panes, which is
@@ -176,10 +176,41 @@ three-second deadline and a 2 MiB output cap, falling back to source on
 failure. It is trusted local configuration, not a sandbox: pick one that
 never executes document code or fetches assets.
 
+## Developer mode and labs
+
+A lab is a feature that ships off, or decided for you, until it is ready.
+`[labs]` holds your choices by lab id. The server, `phux attach`, Rune and
+the CLI read the same file, so one choice reaches every part of phux that
+acts on that lab; its scope (`server`, `client` or `system`) says which.
+
+```toml
+[developer]
+mode = true             # show Labs in Settings, in every client
+
+[labs]
+predictive-echo = true  # absent: the lab's default
+```
+
+Developer mode only shows the switches: the terminal UI's Settings page and
+Rune's Settings list Labs while `[developer] mode` is on. Turning it off
+hides them and keeps every lab you set. From a shell:
+
+```sh
+phux config labs list            # every lab, its state and scope
+phux config labs set predictive-echo on    # on, off or default
+phux config labs developer on
+```
+
+A client-scoped lab applies on each client's next attach (Rune applies it
+at once); a server-scoped one on `phux config reload` or the next server
+start. A lab that is removed from phux still loads from an old file;
+`phux config check` names it.
+
 ## Predictive echo
 
-`[experimental] predictive-echo` draws your typing before the server echoes
-it, in `phux attach` and in Rune. Unset, it is on for another machine's
+`[labs] predictive-echo` draws your typing before the server echoes
+it, in `phux attach` and in Rune. It replaces `[experimental]
+predictive-echo`, which is still read when `[labs]` leaves it unset. Unset, it is on for another machine's
 terminals and off for this computer's. It cannot see when a program turns
 echo off, so a typed password can flash on your screen for up to about five
 seconds; nothing extra is sent. Set it to `false` before typing secrets on a

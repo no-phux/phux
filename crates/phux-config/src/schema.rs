@@ -62,8 +62,12 @@ pub struct Config {
     pub icons: Vec<IconConfigEntry>,
     /// Color slots: free-form `slot -> color` strings.
     pub theme: ThemeCfg,
-    /// Opt-in unstable features; may change without notice.
+    /// Superseded by `[labs]`; its one key is still honored.
     pub experimental: ExperimentalCfg,
+    /// `[developer]`: developer mode, which shows each client's Labs section.
+    pub developer: DeveloperCfg,
+    /// `[labs]`: feature flags by id (`phux_config_core::labs::LABS`).
+    pub labs: LabsCfg,
     /// `[policy]`: the server's authorization posture
     /// (`docs/remote.md#who-can-connect`).
     pub policy: PolicyCfg,
@@ -385,7 +389,7 @@ pub struct HookEntry {
 // [experimental] / [theme] / [policy] / [voice]
 // ---------------------------------------------------------------------------
 
-pub use phux_config_core::ExperimentalCfg;
+pub use phux_config_core::{DeveloperCfg, ExperimentalCfg, LabsCfg};
 
 /// `[theme]`: free-form `slot -> color` map; the renderer interprets it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]

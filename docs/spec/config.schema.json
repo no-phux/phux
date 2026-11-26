@@ -359,13 +359,25 @@
       },
       "type": "object"
     },
+    "DeveloperCfg": {
+      "additionalProperties": false,
+      "description": "`[developer]`: settings for people working on phux or on top of it.",
+      "properties": {
+        "mode": {
+          "default": false,
+          "description": "Developer mode: every client shows its Labs section. Off hides the\nswitches; labs already set keep their effect.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ExperimentalCfg": {
       "additionalProperties": false,
-      "description": "`[experimental]`: opt-in flags that may change without a `SemVer` bump.",
+      "description": "`[experimental]`: superseded by `[labs]` ([`crate::labs`]). Its one key\nis still honored when `[labs]` leaves the same lab unset.",
       "properties": {
         "predictive-echo": {
           "default": null,
-          "description": "Mosh-class predictive local echo (ADR-0090). Unset lets the transport\ndecide (see [`Self::predictive_echo_for`]); an explicit value wins.",
+          "description": "Deprecated: use `[labs] predictive-echo`, which wins when both are set.",
           "type": [
             "boolean",
             "null"
@@ -570,6 +582,13 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "LabsCfg": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "description": "`[labs]`: lab id to on or off. An absent id is the lab's default.",
       "type": "object"
     },
     "LimitsCfg": {
@@ -1969,6 +1988,17 @@
       },
       "description": "Server-wide defaults: shell, `TERM`, scrollback, spawn policy."
     },
+    "developer": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/DeveloperCfg"
+        }
+      ],
+      "default": {
+        "mode": false
+      },
+      "description": "`[developer]`: developer mode, which shows each client's Labs section."
+    },
     "experimental": {
       "allOf": [
         {
@@ -1978,7 +2008,7 @@
       "default": {
         "predictive-echo": null
       },
-      "description": "Opt-in unstable features; may change without notice."
+      "description": "Superseded by `[labs]`; its one key is still honored."
     },
     "extends": {
       "description": "Config layers merged under this file, in order: a path, or a name for `layers/<name>.toml` beside it.",
@@ -2053,6 +2083,15 @@
         "which-key-delay-ms": 400
       },
       "description": "Prefix, prefix-table, and global keybindings."
+    },
+    "labs": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LabsCfg"
+        }
+      ],
+      "default": {},
+      "description": "`[labs]`: feature flags by id (`phux_config_core::labs::LABS`)."
     },
     "limits": {
       "allOf": [

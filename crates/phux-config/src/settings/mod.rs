@@ -37,8 +37,10 @@ pub enum SettingSection {
     Notifications,
     /// `[theme]`.
     Theme,
-    /// `[experimental]`.
-    Experimental,
+    /// `[developer]`.
+    Developer,
+    /// `[labs]`: shown only while `developer.mode` is on.
+    Labs,
     /// `[voice]`.
     Voice,
     /// `[organize]`.
@@ -57,10 +59,11 @@ impl SettingSection {
         Self::Chrome,
         Self::Notifications,
         Self::Theme,
-        Self::Experimental,
         Self::Voice,
         Self::Organize,
         Self::Limits,
+        Self::Developer,
+        Self::Labs,
     ];
 
     /// Human title for a section header.
@@ -74,7 +77,8 @@ impl SettingSection {
             Self::Chrome => "Chrome",
             Self::Notifications => "Notifications",
             Self::Theme => "Theme",
-            Self::Experimental => "Experimental",
+            Self::Developer => "Developer",
+            Self::Labs => "Labs",
             Self::Voice => "Voice",
             Self::Organize => "Organize",
             Self::Limits => "Limits",
@@ -92,11 +96,21 @@ impl SettingSection {
             Self::Chrome => "chrome",
             Self::Notifications => "notifications",
             Self::Theme => "theme",
-            Self::Experimental => "experimental",
+            Self::Developer => "developer",
+            Self::Labs => "labs",
             Self::Voice => "voice",
             Self::Organize => "organize",
             Self::Limits => "limits",
         }
+    }
+
+    /// The sections an editor shows: [`Self::ALL`] without
+    /// [`Self::Labs`] unless developer mode is on.
+    pub fn visible(developer_mode: bool) -> impl Iterator<Item = Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(move |section| developer_mode || *section != Self::Labs)
     }
 }
 

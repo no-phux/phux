@@ -85,6 +85,8 @@ fn fully_populated_sample() -> Config {
         .slots
         .insert("fg".to_owned(), "#cdd6f4".to_owned());
     config.experimental.predictive_echo = Some(true);
+    config.developer.mode = true;
+    config.labs.flags.insert("predictive-echo".to_owned(), true);
     config
 }
 

@@ -156,7 +156,7 @@ impl std::fmt::Debug for SettingsOverlay {
         f.debug_struct("SettingsOverlay")
             .field("path", &self.path)
             .field("loaded", &self.snapshot.is_ok())
-            .field("section", &SettingSection::ALL[self.section])
+            .field("section", &self.current_section())
             .field("query", &self.query)
             .field("selected", &self.selected)
             .field("editor", &self.editor)
@@ -229,7 +229,8 @@ impl SettingsOverlay {
             .copied()
             .find(|s| s.key == key)
             .unwrap_or_else(|| panic!("{key} is not a settings row"));
-        let section = SettingSection::ALL
+        let section = self
+            .sections()
             .iter()
             .position(|s| *s == spec.section)
             .expect("section listed");
@@ -250,9 +251,32 @@ impl SettingsOverlay {
 
     // ---- data -----------------------------------------------------------
 
-    /// Re-read the file and resolve the layer stack.
+    /// Re-read the file and resolve the layer stack. Turning developer mode
+    /// off from the Labs tab hides it, so the tab index is held in range.
     fn reload_snapshot(&mut self) {
         self.snapshot = load_snapshot(&self.path);
+        let count = self.sections().len();
+        if self.section >= count {
+            self.select_section(count - 1);
+        }
+    }
+
+    /// `developer.mode` as the file sets it; off when it does not load.
+    fn developer_mode(&self) -> bool {
+        self.value_at("developer.mode")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// The sections the page shows: Labs only in developer mode.
+    fn sections(&self) -> Vec<SettingSection> {
+        SettingSection::visible(self.developer_mode()).collect()
+    }
+
+    /// The section whose tab is selected.
+    fn current_section(&self) -> SettingSection {
+        let sections = self.sections();
+        sections[self.section.min(sections.len() - 1)]
     }
 
     /// The settings the list shows: the current section's rows while the
@@ -260,7 +284,7 @@ impl SettingsOverlay {
     /// best first. Layout-independent, so `selected` always indexes this.
     fn visible_specs(&self) -> Vec<&'static SettingSpec> {
         if self.query.is_empty() {
-            let section = SettingSection::ALL[self.section];
+            let section = self.current_section();
             return self
                 .specs
                 .iter()
@@ -269,10 +293,12 @@ impl SettingsOverlay {
                 .collect();
         }
         let q = self.query.to_lowercase();
+        let sections = self.sections();
         let hays = self
             .specs
             .iter()
             .enumerate()
+            .filter(|(_, spec)| sections.contains(&spec.section))
             .map(|(i, spec)| (i, format!("{} {}", spec.key, spec.summary)));
         fuzzy_rank(&q, hays)
             .into_iter()
@@ -364,7 +390,7 @@ impl SettingsOverlay {
     }
 
     fn select_section(&mut self, index: usize) {
-        self.section = index % SettingSection::ALL.len();
+        self.section = index % self.sections().len();
         self.query.clear();
         self.selected = 0;
         self.model.scroll.set(0);
@@ -387,7 +413,7 @@ impl SettingsOverlay {
 
     /// Tab / Shift-Tab: the next or previous section, wrapping.
     fn step_section(&mut self, backwards: bool) {
-        let count = SettingSection::ALL.len();
+        let count = self.sections().len();
         let next = if backwards {
             (self.section + count - 1) % count
         } else {

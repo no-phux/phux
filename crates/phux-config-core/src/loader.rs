@@ -57,8 +57,20 @@ pub struct ClientConfig {
     pub rune: RuneCfg,
     /// `[defaults]`: the few keys a client applies itself.
     pub defaults: crate::ClientDefaults,
-    /// `[experimental]`: predictive echo, which each client draws itself.
+    /// `[experimental]`: the legacy predictive-echo key `[labs]` replaced.
     pub experimental: crate::ExperimentalCfg,
+    /// `[developer]`: whether this client shows its Labs section.
+    pub developer: crate::DeveloperCfg,
+    /// `[labs]`: the feature flags ([`crate::labs::LABS`]).
+    pub labs: crate::LabsCfg,
+}
+
+impl ClientConfig {
+    /// The explicit predictive-echo choice, `[labs]` before `[experimental]`.
+    #[must_use]
+    pub fn predictive_echo(&self) -> Option<bool> {
+        self.labs.predictive_echo(&self.experimental)
+    }
 }
 
 /// Parse `user_input` and its `extends` layers into a [`ClientConfig`].

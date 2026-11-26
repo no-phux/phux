@@ -5,8 +5,8 @@ use super::{
     Alignment, Buffer, Cell, Checkbox, CheckboxStyle, ChromeBreakpoints, Component, Cycle,
     DeclareCtx, Event, EventResult, FIXED_ROWS, FocusState, Input, InputState, Line, MODAL_PAD,
     OverlayCommand, PaintCtx, Rect, ScopeOptions, ScrollArea, ScrollAreaStyle, SettingKind,
-    SettingSection, SettingSpec, SettingsOverlay, Style, TOGGLE_COLS, TRI_STATE, Tab, Tabs,
-    TabsActivation, display_width, kit, modal_inner_width, scroll_into_view,
+    SettingSpec, SettingsOverlay, Style, TOGGLE_COLS, TRI_STATE, Tab, Tabs, TabsActivation,
+    display_width, kit, modal_inner_width, scroll_into_view,
 };
 
 /// Identities on the ratcn surface: the section tabs, the row viewport, and
@@ -233,7 +233,7 @@ impl SettingsOverlay {
     /// filled when the section holds overrides, so an edit never reflows
     /// the row; `true` dims a section that holds no match while filtering.
     pub(super) fn tab_labels(&self) -> Vec<(String, bool)> {
-        SettingSection::ALL
+        self.sections()
             .iter()
             .map(|section| {
                 let dot = if self.overridden_in(*section) > 0 {

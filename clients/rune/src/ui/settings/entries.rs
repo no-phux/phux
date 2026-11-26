@@ -2,6 +2,7 @@
 
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::SETTINGS_LINK as GEOMETRY;
+use phux_config_core::labs::{LABS, Lab};
 use phux_config_core::rune::TitleBar;
 use rune::{El, col, el, row, text};
 
@@ -9,6 +10,9 @@ use super::super::{icons, pressable, updates};
 use super::controls;
 use crate::desk::{Desk, SettingsCategory as Category};
 use crate::ui::tokens::{Paint, Tokens};
+
+mod developer;
+use developer::{diagnostics, lab_toggle};
 
 #[derive(Clone, Copy)]
 pub(super) enum Entry {
@@ -26,13 +30,16 @@ pub(super) enum Entry {
     Notifications,
     Hosts,
     PairPhone,
+    DeveloperMode,
     Diagnostics,
+    /// One row per `[labs]` flag; not in [`Self::ALL`], which is fixed.
+    Lab(&'static Lab),
     GetStarted,
     Updates,
 }
 
 impl Entry {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::Theme,
         Self::HoverToolbar,
         Self::InterfaceSize,
@@ -47,10 +54,16 @@ impl Entry {
         Self::Notifications,
         Self::Hosts,
         Self::PairPhone,
+        Self::DeveloperMode,
         Self::Diagnostics,
         Self::GetStarted,
         Self::Updates,
     ];
+
+    /// Every row: the fixed ones, then one per lab.
+    fn every() -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().chain(LABS.iter().map(Self::Lab))
+    }
 
     const fn category(self) -> Category {
         match self {
@@ -65,7 +78,8 @@ impl Entry {
             | Self::QuickChord => Category::Terminal,
             Self::Notifications => Category::Notifications,
             Self::Hosts | Self::PairPhone => Category::RemoteHosts,
-            Self::Diagnostics => Category::Developer,
+            Self::DeveloperMode | Self::Diagnostics => Category::Developer,
+            Self::Lab(_) => Category::Labs,
             Self::GetStarted | Self::Updates => Category::About,
         }
     }
@@ -86,7 +100,9 @@ impl Entry {
             Self::Notifications => "Notifications",
             Self::Hosts => "Machines",
             Self::PairPhone => "Pair a phone",
+            Self::DeveloperMode => "Developer mode",
             Self::Diagnostics => "Copy diagnostics",
+            Self::Lab(lab) => lab.title,
             Self::GetStarted => "Get started",
             Self::Updates => "Updates",
         }
@@ -133,7 +149,12 @@ impl Entry {
                 "Connect to a remote host, add a machine or manage your existing machines."
             }
             Self::PairPhone => super::super::pair::DETAIL,
+            Self::DeveloperMode => {
+                "Shows Labs: features still in the works. Saved to config.toml, so the \
+                 terminal UI and phux config labs see it too."
+            }
             Self::Diagnostics => "Copy local logs and app state. Nothing is sent anywhere.",
+            Self::Lab(lab) => lab.detail,
             Self::GetStarted => crate::onboarding::PROMISE.get_started,
             Self::Updates => {
                 "Phux Rune version, Check now, Check automatically, Update phux with Phux Rune, phux release channel: Follow installed, Stable or Next, local installation, package manager, server and protocol compatibility."
@@ -164,7 +185,12 @@ impl Entry {
                 Some(Ok(devices)) => format!("{} paired", devices.len()),
                 _ => String::new(),
             },
+            Self::DeveloperMode => on(desk.developer_mode),
             Self::Diagnostics => "Local only".to_owned(),
+            Self::Lab(lab) => match desk.labs.get(lab.id) {
+                Some(value) => on(value),
+                None => "Default".to_owned(),
+            },
             Self::GetStarted => String::new(),
             Self::Updates => format!(
                 "{} automatic {} manage phux {} channel {}",
@@ -208,7 +234,9 @@ impl Entry {
             Self::Notifications => "alerts bell",
             Self::Hosts => "remote ssh connection",
             Self::PairPhone => "mobile iphone android qr code scan link devices revoke tailnet",
+            Self::DeveloperMode => "debug labs feature flags experimental advanced",
             Self::Diagnostics => "logs debug troubleshooting",
+            Self::Lab(_) => "labs feature flag experimental preview",
             Self::GetStarted if crate::onboarding::PERMISSIONS => {
                 "onboarding welcome setup skill permissions migrate import"
             }
@@ -240,6 +268,7 @@ impl Entry {
             ),
             Self::PairPhone => super::super::pair::panel(desk, t, true),
             Self::Diagnostics => diagnostics(desk, t),
+            Self::Lab(lab) => lab_toggle(lab, desk, t),
             Self::GetStarted => self.link(
                 "settings-get-started",
                 desk,
@@ -302,6 +331,12 @@ impl Entry {
                 desk.quick_chord.on,
                 Desk::toggle_quick_terminal,
                 file.quick_terminal.is_some(),
+            ),
+            Self::DeveloperMode => (
+                "set-developer-mode",
+                desk.developer_mode,
+                Desk::toggle_developer_mode,
+                false,
             ),
             _ => (
                 "set-notifications",
@@ -412,54 +447,17 @@ fn chevron(t: &Tokens) -> El {
         .a11y_hidden()
 }
 
-fn diagnostics(desk: &Desk, t: &Tokens) -> El {
-    let s = &t.space;
-    pressable("copy-diagnostics", t)
-        .w_full()
-        .min_h(s.touch_min)
-        .padding(s.s4)
-        .focusable(true)
-        .label("Copy diagnostics")
-        .description(Entry::Diagnostics.detail())
-        .on_press_tx(|d: &mut Desk, tx| d.copy_diagnostics(tx))
-        .child(
-            row()
-                .w_full()
-                .gap(s.s3)
-                .items_center()
-                .child(
-                    col()
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .gap(s.s0_5)
-                        .child(
-                            text(if desk.updater.copied {
-                                "Copied"
-                            } else {
-                                "Copy diagnostics"
-                            })
-                            .font(super::primary(desk, t).medium())
-                            .color(t.roles.text.text.paint()),
-                        )
-                        .child(
-                            text(Entry::Diagnostics.detail())
-                                .font(super::secondary(desk, t))
-                                .color(t.roles.text.dim.paint())
-                                .wrap(),
-                        ),
-                )
-                .child(chevron(t))
-                .a11y_hidden(),
-        )
-}
-
 pub(super) fn category_value(category: Category, desk: &Desk) -> String {
     match category {
         Category::Appearance => desk.settings.theme.map_or("System", |t| t.name).to_owned(),
         Category::Terminal => format!("{:.0} pt", desk.font_size),
         Category::Notifications => Entry::Notifications.value(desk),
         Category::RemoteHosts => desk.machines.label().to_owned(),
-        Category::Developer => "Diagnostics".to_owned(),
+        Category::Developer => Entry::DeveloperMode.value(desk),
+        Category::Labs => {
+            let on = LABS.iter().filter(|lab| desk.lab_on(lab)).count();
+            format!("{on} on")
+        }
         Category::About => (desk.native.as_ref())
             .and_then(|native| native.app.clone())
             .unwrap_or_else(|| crate::updates::VERSION.to_owned()),
@@ -469,14 +467,12 @@ pub(super) fn category_value(category: Category, desk: &Desk) -> String {
 pub(super) fn matching(desk: &Desk) -> Vec<(Category, Vec<Entry>)> {
     let query = desk.settings_ui.query.text.trim().to_lowercase();
     let chosen = desk.settings_ui.category.unwrap_or(Category::Appearance);
-    Category::ALL
-        .into_iter()
+    Category::shown(desk.developer_mode)
         .filter_map(|category| {
             if query.is_empty() && category != chosen {
                 return None;
             }
-            let entries: Vec<_> = Entry::ALL
-                .into_iter()
+            let entries: Vec<_> = Entry::every()
                 .filter(|entry| !matches!(entry, Entry::OptionMeta) || cfg!(target_os = "macos"))
                 // Only a window with a quick terminal sets one up.
                 .filter(|entry| {

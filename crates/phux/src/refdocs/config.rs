@@ -154,8 +154,21 @@ const SECTIONS: &[Section] = &[
     Section {
         key: "experimental",
         header: "[experimental]",
-        summary: "Opt-in unstable knobs; anything here may change or \
-                  disappear without notice.",
+        summary: "Superseded by `[labs]`; `predictive-echo` here is still \
+                  read when `[labs]` leaves it unset.",
+    },
+    Section {
+        key: "developer",
+        header: "[developer]",
+        summary: "Developer mode: `mode = true` shows the Labs section in \
+                  every client's Settings. It hides nothing that runs.",
+    },
+    Section {
+        key: "labs",
+        header: "[labs]",
+        summary: "Feature flags by lab id (`phux config labs list`), read \
+                  by the server and every client; an absent id is the \
+                  lab's default, and a retired id still loads.",
     },
     Section {
         key: "policy",
@@ -232,6 +245,10 @@ fn scalar_rows(value: &toml::Value, path: &str, rows: &mut Vec<(String, String)>
 const TRISTATE_ROWS: &[(&str, &str)] = &[
     (
         "experimental.predictive-echo",
+        "unset — deprecated: read only when `labs.predictive-echo` is unset",
+    ),
+    (
+        "labs.predictive-echo",
         "unset — the dial decides: on when the attach leaves the machine, \
          off otherwise. `true` / `false` force it on every transport",
     ),

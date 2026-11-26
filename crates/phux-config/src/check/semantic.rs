@@ -17,6 +17,7 @@ pub(super) fn semantic_pass(
 ) {
     defaults_findings(&config.defaults, provenance, findings);
     limits_findings(&config.limits, provenance, findings);
+    labs_findings(&config.labs, provenance, findings);
     keybinding_findings(&config.keybindings, provenance, findings);
     hook_findings(&config.hooks, provenance, findings);
     status_widget_findings(&config.status, provenance, findings);
@@ -128,6 +129,32 @@ fn limits_findings(
                  it up to {floor} at startup rather than refuse to start, so this value is not \
                  actually in force",
                 limits.metadata_value_bytes,
+            ),
+        );
+    }
+}
+
+/// A `[labs]` id no registered lab answers to does nothing: a typo, or a
+/// lab that shipped or was retired. It still loads, so an old file keeps
+/// working; the check names it.
+fn labs_findings(
+    labs: &crate::LabsCfg,
+    provenance: &ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    let ids: Vec<&str> = phux_config_core::labs::LABS
+        .iter()
+        .map(|lab| lab.id)
+        .collect();
+    for id in labs.unknown() {
+        push_semantic(
+            findings,
+            provenance,
+            format!("labs.{id}"),
+            Fault::UnknownName,
+            format!(
+                "no lab is called `{id}`{}; it does nothing (phux config labs lists them)",
+                suggest(id, &ids)
             ),
         );
     }

@@ -2654,6 +2654,8 @@ Commands:
                      config layer
   init               Write a commented starter config to the canonical path
   keys               List every key binding in effect and where it came from
+  labs               List, turn on, or turn off labs: the feature flags all of
+                     phux reads
   path               Print the resolved config path
   plugins            List plugin manifests declared by `[[plugins]]`
   reload             Re-read the layered config and apply it to running clients
@@ -2882,6 +2884,97 @@ Arguments:
 
 Flags:
       --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config labs`
+
+```text
+List, turn on, or turn off labs: the feature flags all of phux reads
+
+A lab is a feature that is off (or decided for you) until it is ready. Choices
+live under `[labs]` in config.toml, which the server, the terminal UI and Rune
+all read, so one choice reaches every part that acts on the lab (its scope).
+`developer` turns developer mode on or off: clients show their Labs section only
+in developer mode.
+
+Examples:
+phux config labs list
+phux config labs set predictive-echo on
+phux config labs developer on
+
+Usage: phux config labs <SUBCOMMAND>
+
+Commands:
+  developer  Turn developer mode on or off: whether clients show their Labs
+             section
+  list       Every lab with its state and scope, and whether developer mode is
+             on
+  set        Turn a lab on or off, or back to its default
+  help       Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config labs developer`
+
+```text
+Turn developer mode on or off: whether clients show their Labs section
+
+Usage: phux config labs developer [--json] <STATE>
+
+Arguments:
+  <STATE>  on or off.
+           [possible values: on, off]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config labs list`
+
+```text
+Every lab with its state and scope, and whether developer mode is on
+
+Usage: phux config labs list [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config labs set`
+
+```text
+Turn a lab on or off, or back to its default
+
+Writes `[labs] ID` in config.toml (`default` removes the key). A client-scoped
+lab applies on each client's next attach; a server one on `phux config reload`
+or the next server start.
+
+Usage: phux config labs set [--json] <ID> <STATE>
+
+Arguments:
+  <ID>     The lab's id, as `phux config labs list` prints it.
+  <STATE>  on, off, or default.
+           [possible values: on, off, default]
+
+Flags:
+      --json           Emit a stable JSON document.
   -h, --help           Print help
 
 Global flags:
