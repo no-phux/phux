@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from test_ios_build import load
+from test_ios_build import build, load
 
 glass = load("liquid_glass")
 
@@ -46,6 +48,64 @@ class GlassReportTests(unittest.TestCase):
             change(report)
             with self.subTest(change.__name__), self.assertRaises(ValueError):
                 glass.validate(report)
+
+
+@unittest.skipUnless(sys.platform == "darwin", "Swift host execution needs Xcode")
+class GlassProbeTests(unittest.TestCase):
+    def test_actual_probe_waits_for_every_previous_control_not_only_back(self):
+        source = Path(__file__).resolve().parents[1] / "ios/Sources/QualificationProbe.swift"
+        # Execute the actual shipped method with inert evidence/write adapters.
+        # UIKit, a simulator, hosting and device services are not involved.
+        method = source.read_text().split("    private func recordGlass() throws {", 1)[1]
+        method = "    private func recordGlass() throws {" + method.split(
+            "    private static func readFixture", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            main = root / "main.swift"
+            main.write_text("""
+import Foundation
+final class Surface { var glassEvidence: [[String: Any]] = [] }
+final class Probe {
+    var glassBefore: [[String: Any]]?
+    var glassRecorded = false
+    var surface: Surface? = Surface()
+    var writes = 0
+    func write(_ report: [String: Any], name: String) throws {
+        precondition(name == "rune-glass.json")
+        precondition(report["tapped"] as? String == "phone-back")
+        writes += 1
+    }
+""" + method + """
+    func frame() throws { try recordGlass() }
+}
+func controls(_ ids: [String]) -> [[String: Any]] { ids.map { ["id": $0] } }
+let top = ["phone-back", "phone-place", "phone-news", "phone-more"]
+let probe = Probe()
+probe.glassBefore = controls(top)
+// A moving drawer can uncover each old control in turn. None is ready,
+// including the observed frame where Back is gone but News/More remain.
+for remaining in [top, ["phone-news", "phone-more"]] + top.map({ [$0] }) {
+    probe.surface!.glassEvidence = controls(["phone-session-new"] + remaining)
+    try probe.frame()
+    precondition(!probe.glassRecorded && probe.writes == 0,
+                 "a partly covered top bar is not Sessions readiness")
+}
+probe.surface!.glassEvidence = []
+try probe.frame()
+precondition(!probe.glassRecorded, "the dock must also be present")
+probe.surface!.glassEvidence = controls(["phone-session-new"])
+try probe.frame()
+precondition(probe.glassRecorded && probe.writes == 1)
+try probe.frame()
+precondition(probe.writes == 1, "readiness is published once")
+""")
+            compiled = subprocess.run(
+                ["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-swift-version", "6",
+                 "-warnings-as-errors", str(main), "-o", str(root / "probe")],
+                env=build.apple_environment(root), capture_output=True, text=True, timeout=120)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            ran = subprocess.run([str(root / "probe")], capture_output=True, text=True, timeout=10)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
 
 
 class GlassRunnerTests(unittest.TestCase):

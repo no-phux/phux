@@ -288,9 +288,9 @@ impl Desk {
     /// The gesture's clockwork, once a poll: a hold coming due, a scroll's
     /// speed, and a coast. True when the screen moved.
     pub(in crate::desk) fn phone_touch_tick(&mut self, tx: &mut Tx) -> bool {
-        self.land_swipe(tx);
+        let landed = self.land_swipe(tx);
         self.time_touch(tx);
-        self.coast(tx)
+        landed | self.coast(tx)
     }
 
     fn time_touch(&mut self, tx: &mut Tx) {

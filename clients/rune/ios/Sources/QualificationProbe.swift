@@ -142,7 +142,10 @@ final class QualificationProbe {
         guard let before = glassBefore, !glassRecorded, let surface else { return }
         let after = surface.glassEvidence
         let ids = Set(after.compactMap { $0["id"] as? String })
-        guard ids.contains("phone-session-new"), !ids.contains("phone-back") else { return }
+        // A moving drawer covers the bar from left to right. Losing Back
+        // alone does not mean its other controls have disappeared.
+        let previous = Set(before.compactMap { $0["id"] as? String })
+        guard ids.contains("phone-session-new"), ids.isDisjoint(with: previous) else { return }
         try write(["schema": 1, "tapped": "phone-back", "terminal": before, "sessions": after],
                   name: "rune-glass.json")
         glassRecorded = true

@@ -99,6 +99,7 @@ fn strip(
     let strip = strip
         .child(latch(Latch::Ctrl, "⌃", "Control"))
         .child(latch(Latch::Alt, "⌥", "Option"))
+        .child(latch(Latch::Shift, "⇧", "Shift"))
         .child(interrupt)
         .child(send("←", "Left", Key::Left))
         .child(send("↓", "Down", Key::Down))

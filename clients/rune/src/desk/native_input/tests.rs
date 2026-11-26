@@ -58,6 +58,19 @@ fn system_keyboard_consumes_the_drawn_accessory_latches_once() {
             PhysicalKey::B,
             ModSet::ALT,
         ),
+        (
+            super::super::phone::Latch::Shift,
+            "phone-latch-Shift",
+            Action::Key {
+                name: "Tab".into(),
+                ctrl: false,
+                alt: false,
+                shift: false,
+                command: false,
+            },
+            PhysicalKey::Tab,
+            ModSet::SHIFT,
+        ),
     ]
     .into_iter()
     .enumerate()
