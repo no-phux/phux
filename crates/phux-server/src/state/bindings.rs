@@ -18,7 +18,7 @@ use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
 
-use super::{CloseAttribution, ServerState};
+use super::{ActivationToken, CloseAttribution, ServerState};
 
 #[derive(Debug)]
 pub(super) struct PendingClose {
@@ -214,14 +214,17 @@ impl ServerState {
 
     /// Note that `resource` has an exit watcher, which runs until its
     /// process is gone ([`Self::end_exit_watch`]).
-    pub(crate) fn begin_exit_watch(&mut self, resource: ResourceId) {
-        self.exit_watches.insert(resource, None);
+    pub(crate) fn begin_exit_watch(&mut self, resource: ResourceId, activation: ActivationToken) {
+        self.exit_watches.insert((resource, activation), None);
     }
 
     /// Remember the wire id of a watched resource a kill closed before its
     /// process exited, so its watcher can still fire `pane-exit` for it.
     pub(crate) fn note_closed_before_exit(&mut self, resource: ResourceId, wire: WireResourceId) {
-        if let Some(slot) = self.exit_watches.get_mut(&resource) {
+        let Some(activation) = self.activation_token(resource) else {
+            return;
+        };
+        if let Some(slot) = self.exit_watches.get_mut(&(resource, activation)) {
             *slot = Some(wire);
         }
     }
@@ -229,14 +232,25 @@ impl ServerState {
     /// The wire id of a watched resource a kill closed before its process
     /// exited; `None` for one that is live or another closer reaped.
     #[must_use]
-    pub(crate) fn closed_before_exit(&self, resource: ResourceId) -> Option<WireResourceId> {
-        self.exit_watches.get(&resource).cloned().flatten()
+    pub(crate) fn closed_before_exit(
+        &self,
+        resource: ResourceId,
+        activation: ActivationToken,
+    ) -> Option<WireResourceId> {
+        self.exit_watches
+            .get(&(resource, activation))
+            .cloned()
+            .flatten()
     }
 
     /// End the watch once the process is gone and check whether the server
     /// may now exit.
-    pub(crate) fn end_exit_watch(&mut self, resource: ResourceId) -> bool {
-        self.exit_watches.remove(&resource);
+    pub(crate) fn end_exit_watch(
+        &mut self,
+        resource: ResourceId,
+        activation: ActivationToken,
+    ) -> bool {
+        self.exit_watches.remove(&(resource, activation));
         self.self_exit_due()
     }
 
@@ -248,6 +262,7 @@ impl ServerState {
     pub(crate) fn self_exit_due(&self) -> bool {
         self.lifecycle().has_served_client()
             && self.exit_watches.is_empty()
+            && !self.has_pending_activation_reports()
             && self.lifecycle().idle_since().is_some()
             && !self.has_live_activation()
     }

@@ -220,6 +220,12 @@ fn no_actions(client: &Client) {
     use phux_protocol::wire::frame::{Command, FrameKind};
     for bytes in client.take_outbound() {
         let frame = FrameKind::decode(&bytes).unwrap().0;
+        // The Inbox covers the panes, so they report leaving view.
+        if matches!(&frame, FrameKind::SetMetadata { key, .. }
+            if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY)
+        {
+            continue;
+        }
         assert!(
             !matches!(
                 frame,
@@ -456,4 +462,35 @@ fn suggested_answers_are_named_buttons() {
         assert!(chip.focusable, "a chip is a Tab stop");
         assert!(matches!(chip.label.as_deref(), Some("yes" | "no")));
     }
+}
+
+/// A card's detail says where the pane is without repeating its title: a
+/// shell's ask is headed by its label, so the label leaves the detail; an
+/// agent's card keeps it beside the session.
+#[test]
+fn a_waiting_card_places_its_pane_without_repeating_the_title() {
+    let shell = crate::inbox::Waiting {
+        terminal: phux_protocol::ids::ResourceId::local(1),
+        session: "phux".to_owned(),
+        label: "bash \u{b7} website".to_owned(),
+        agent: None,
+        kind: None,
+        mark: crate::activity::Mark::Blocked,
+        ask: None,
+        host: None,
+        background: false,
+    };
+    assert_eq!(super::place(&shell), "phux");
+    let remote = crate::inbox::Waiting {
+        host: Some("mini".to_owned()),
+        ..shell.clone()
+    };
+    assert_eq!(super::place(&remote), "mini \u{b7} phux");
+    let agent = crate::inbox::Waiting {
+        agent: Some("codex".to_owned()),
+        label: "review #2617".to_owned(),
+        kind: Some("acp".to_owned()),
+        ..shell
+    };
+    assert_eq!(super::place(&agent), "review #2617 \u{b7} phux \u{b7} acp");
 }

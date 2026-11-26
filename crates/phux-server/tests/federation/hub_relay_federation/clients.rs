@@ -16,3 +16,10 @@ pub(super) async fn hub_client(path: &std::path::Path) -> UnixStream {
     })
     .await
 }
+
+pub(super) fn spawn_hub(
+    socket_path: PathBuf,
+    satellites: Vec<SatelliteConfigEntry>,
+) -> (oneshot::Sender<()>, ServerTask) {
+    spawn_hub_with_session(socket_path, satellites, None)
+}

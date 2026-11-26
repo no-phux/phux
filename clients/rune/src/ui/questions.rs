@@ -32,8 +32,11 @@ struct At<'a> {
 
 pub(super) const INBOX_FOCUS: &str = "inbox-question-focus";
 
+/// What every pane's host is keyed with, before its terminal.
+pub(crate) const PANE_HOST: &str = "pane-host-";
+
 pub(super) fn pane_focus(terminal: &ResourceId) -> String {
-    format!("pane-host-{terminal}")
+    format!("{PANE_HOST}{terminal}")
 }
 
 /// A surviving region can receive retired editor focus, never text or an

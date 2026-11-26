@@ -172,13 +172,33 @@ fn report_asked_emits_asked_and_rejects_an_empty_question() {
             }]
         );
 
-        let (result, _) =
-            asked_before_reply(&mut stream, 8, report_asked(pane, "bad", "   ", &[])).await;
+        let (result, _) = asked_before_reply(
+            &mut stream,
+            8,
+            report_asked(pane.clone(), "bad", "   ", &[]),
+        )
+        .await;
         let CommandResult::Error { code, message } = result else {
             panic!("an empty question must be rejected: {result:?}");
         };
         assert_eq!(code, ErrorCode::InvalidCommand);
         assert!(message.contains("question"), "{message}");
+
+        // An empty question withdraws the one its id names, and only that one.
+        let target = QuestionTarget::Handle {
+            resource: pane.clone(),
+        };
+        for (request, id, left) in [(9, "other", 1), (10, "hook-q1", 0), (11, "hook-q1", 0)] {
+            let withdraw = report_asked(pane.clone(), id, "", &[]);
+            let (result, asked) = asked_before_reply(&mut stream, request, withdraw).await;
+            assert_eq!(
+                (result, asked.as_slice()),
+                (CommandResult::Ok, &[][..]),
+                "{id}"
+            );
+            let current = current_questions(&mut stream, target.clone()).await;
+            assert_eq!(current.questions.len(), left, "{id}");
+        }
 
         drop(stream);
         server.stop().await;

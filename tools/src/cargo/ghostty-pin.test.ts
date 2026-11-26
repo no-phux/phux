@@ -53,6 +53,7 @@ beforeEach(() => {
     `revision=${REV}\narchive_sha256=${DIGEST}\n# https://codeload.github.com/example/engine/tar.gz/$revision\n`,
   );
   put(".config/zig-toolchain.json", JSON.stringify({ version: ZIG }));
+  put("nix/package.nix", `  ghosttyRev = "${REV}";\n`);
   world = {
     buildRs: `const GHOSTTY_REPO: &str = "https://github.com/example/engine.git";\nconst GHOSTTY_COMMIT: &str = "${REV}";\n`,
     downloadRs: archives(""),
@@ -118,6 +119,11 @@ test("a browser engine on another revision fails", async () => {
     `revision=bad\narchive_sha256=${DIGEST}\n# https://codeload.github.com/example/engine/tar.gz/$revision\n`,
   );
   await fails("differs from browser engine");
+});
+
+test("a Nix package on another engine revision fails", async () => {
+  put("nix/package.nix", `  ghosttyRev = "${"f".repeat(40)}";\n`);
+  await fails("differs from the Nix package's ffff");
 });
 
 test("an unreachable network skips instead of claiming verification", async () => {

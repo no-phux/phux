@@ -47,10 +47,13 @@ render phone_acp_visual_review_frames
 render acp_form_visual_review_frames
 render acp_ask_owner_visual_review_frames
 render settings_native_render_frames
+render machine_colour_visual_review_frames
 render settings_size_visual_review_frames
 render settings_theme_visual_review_frames
 render mobile_appearance_and_real_theme_palette_render_accept_and_cancel
 render session_browser_renders_realistic_dark_light_and_search_states
+render phone_session_canvas_visual_review_frames
+render phone_session_search_visual_review_frames
 render retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports
 render phone_header_visual_review_frames
 render phone_states_visual_review_frames
@@ -60,7 +63,10 @@ render phone_connections_keyboard_visual_review_frames
 render phone_accessory_visual_review_frames
 render phone_accessory_resize_visual_review_frames
 render phone_pane_motion_visual_review_frames
+render phone_pane_picker_visual_review_frames
 render attention_contrast_visual_review_frames
+render sidebar_focus_visual_review_frames
+render sidebar_hierarchy_visual_review_frames
 render native_png_headless_renderer_smoke
 python3 -B "$scripts/visual_review.py" "$out" --repo "$repo" >"$out/logs/manifest.log" 2>&1 || {
     cat "$out/logs/manifest.log" >&2

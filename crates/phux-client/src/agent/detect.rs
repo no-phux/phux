@@ -372,6 +372,19 @@ fn infer_identity(
         ));
         return identity("unknown", "Unknown agent", AgentKind::Unknown);
     }
+    // A viewer shows other programs' text: `claude` in top's process list,
+    // or in a file open in less or vim, names what it shows, not what runs.
+    if let Some(occupant) =
+        (evidence.occupant.as_ref()).filter(|o| VIEWERS.contains(&o.foreground.as_str()))
+    {
+        sources.push(AgentSource::new(
+            "identity",
+            "foreground shows other programs' text",
+            0.9,
+            occupant.foreground.clone(),
+        ));
+        return identity("unknown", "Unknown agent", AgentKind::Unknown);
+    }
     let text = evidence_text(evidence);
     if contains_token(&text, "codex") {
         sources.push(AgentSource::new("identity", "codex marker", 0.8, "Codex"));
@@ -454,6 +467,16 @@ fn declared_state(evidence: &PaneEvidence, sources: &mut Vec<AgentSource>) -> St
         "no phux.agent/v1 record: the server has published no agent state for this pane",
     )
 }
+
+/// Foregrounds whose screen is other programs' text (process monitors,
+/// pagers, editors), so agent words on it are not identity. No agent ships
+/// under these names.
+// ponytail: a fixed list; a viewer it misses keeps the screen guess, as
+// before.
+const VIEWERS: &[&str] = &[
+    "top", "htop", "btop", "atop", "glances", "watch", "less", "more", "most", "man", "vi", "vim",
+    "nvim", "nano", "emacs", "micro", "hx", "helix",
+];
 
 fn evidence_text(evidence: &PaneEvidence) -> String {
     let mut parts = Vec::with_capacity(evidence.lines.len().saturating_add(1));

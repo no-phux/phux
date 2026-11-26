@@ -259,6 +259,9 @@ class FixtureProcesses:
         # need 0.25 virtual seconds; an insufficient budget cannot complete them.
         hung = os.environ["MODE"] == "hung-tree" and args == ["swaymsg", "-t", "get_tree"]
         work = timeout if hung else 0.25
+        if (os.environ["MODE"] in ("slow-activation", "activation-exceeds-deadline")
+                and args == ["fcitx5-remote", "-o"]):
+            work = 10 if os.environ["MODE"] == "activation-exceeds-deadline" else 1.25
         ime.time.now += min(work, timeout)
         if work > timeout:
             raise subprocess.TimeoutExpired(args, timeout)

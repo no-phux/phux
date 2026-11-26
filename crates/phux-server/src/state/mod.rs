@@ -66,6 +66,7 @@ mod roles;
 mod session_table;
 mod sessions;
 mod snapshot;
+pub(crate) mod unseen;
 pub(crate) mod upgrade_blob;
 mod viewport;
 
@@ -85,6 +86,8 @@ pub(crate) use federation::{Federation, SatelliteLease};
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use journal::now_unix_ms;
+pub(crate) use org::launch::execute_terminal as execute_admitted_terminal;
+pub(crate) use org::operation as org_operation;
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
@@ -97,7 +100,9 @@ pub use metadata::{
     KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
 };
 pub(crate) use org::ensure_arrangements;
-pub use org::{OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp};
+pub use org::{
+    ActivationToken, OrgCommit, OsKeys, Reconciled, TerminalTarget, fresh_org, now_stamp,
+};
 pub use registration::ResourceRegistrationError;
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
@@ -190,6 +195,8 @@ pub struct ServerState {
     uplinks: crate::uplink::Uplinks,
     /// The ssh-agent broker (`docs/ssh.md#ssh-agent`).
     forward_agent: crate::runtime::forward::agent::Broker,
+    /// Links panes asked to open, waiting on a client's answer.
+    open_urls: crate::runtime::open_url::OpenUrls,
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
@@ -212,7 +219,7 @@ pub struct ServerState {
     /// a kill reaped it ahead of its process (`docs/protocol.md#commands-events-resources`); see
     /// [`bindings`].
     exit_watches: std::collections::HashMap<
-        phux_core::ids::ResourceId,
+        (phux_core::ids::ResourceId, ActivationToken),
         Option<phux_protocol::ids::ResourceId>,
     >,
     /// Retain-on-exit bookkeeping (ADR-0124); see [`retained`].
@@ -294,6 +301,11 @@ impl ServerState {
         &mut self,
     ) -> &mut crate::runtime::forward::agent::Broker {
         &mut self.forward_agent
+    }
+
+    /// The links waiting on a client's answer.
+    pub(crate) const fn open_urls_mut(&mut self) -> &mut crate::runtime::open_url::OpenUrls {
+        &mut self.open_urls
     }
 
     /// The shared operation dedupe record. Cloning the handle shares it.

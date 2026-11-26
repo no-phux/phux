@@ -17,18 +17,52 @@ use super::link::Wake;
 use crate::activity::Activities;
 use crate::creature::{self, Stats};
 
+mod handoff;
 mod projection;
+pub(super) use handoff::Handoff;
 pub use projection::{Agent, Machine};
 
 /// One other machine's server, as a watch sees it.
 pub struct Watch {
     client: Arc<Client>,
     topology: Option<Topology>,
+    /// The original HELLO and epoch of the cached topology, not the latest
+    /// identity sampled by a later navigation callback.
+    scope: Option<WatchScope>,
     activities: Activities,
     status: Status,
     stats: Stats,
     /// Whether the stats key has been asked for on this connection.
     asked: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WatchScope {
+    server: Vec<u8>,
+    epoch: u64,
+}
+
+impl WatchScope {
+    fn capture(client: &Client, epoch: u64) -> Option<Self> {
+        client.with_control(|control| {
+            if control.connection_epoch() != epoch {
+                return None;
+            }
+            Some(Self {
+                server: control.server()?.id.clone(),
+                epoch,
+            })
+        })
+    }
+
+    fn is_current(&self, client: &Client) -> bool {
+        client.with_control(|control| {
+            !control.status().is_terminal()
+                && control.connection_epoch() == self.epoch
+                && control.server().map(|server| server.id.as_slice())
+                    == Some(self.server.as_slice())
+        })
+    }
 }
 
 impl Watch {
@@ -130,11 +164,15 @@ impl Desk {
                 &mut watch.stats,
                 self.clock,
             );
-            if let Some(topology) = observation.topology.take()
-                && watch.topology.as_ref() != Some(&topology)
+            if observation.status == Status::Attached
+                && let Some(topology) = observation.topology.take()
+                && let Some(scope) =
+                    WatchScope::capture(&watch.client, observation.connection_epoch)
             {
+                changed |= watch.topology.as_ref() != Some(&topology)
+                    || watch.scope.as_ref() != Some(&scope);
                 watch.topology = Some(topology);
-                changed = true;
+                watch.scope = Some(scope);
             }
             for event in &observation.events {
                 changed |= watch.activities.apply(event, &[]);
@@ -201,6 +239,7 @@ impl Desk {
         Some(Watch {
             client,
             topology: None,
+            scope: None,
             activities: Activities::default(),
             status: Status::Idle,
             stats: Stats::default(),

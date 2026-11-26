@@ -50,14 +50,23 @@ impl TerminalEngineFactory for TerminalEngine {
             ));
         }
         let bundle = match source {
-            EngineSource::Fresh(intent) => crate::TerminalActor::build_with_token_and_colors(
+            EngineSource::Fresh {
+                command: intent,
+                seed,
+            } => crate::TerminalActor::build_with_token_and_colors(
                 cols,
                 rows,
                 intent.as_ref().map(command),
                 scrollback,
                 token,
                 default_colors,
-            ),
+            )
+            .map(|mut bundle| {
+                if !seed.is_empty() {
+                    bundle.actor.seed_before_run(&seed);
+                }
+                bundle
+            }),
             EngineSource::Adopt {
                 master_fd,
                 child_pid,
@@ -99,8 +108,18 @@ impl TerminalEngineFactory for TerminalEngine {
             }
             source
         });
+        if let Some(keep) = reports.keep_scrollback {
+            actor.keep_scrollback(keep);
+        }
+        if let Some(token) = reports.program_resume_token.clone() {
+            actor.set_program_resume_token(token);
+        }
+        if let Some((pid, time)) = reports.program_resume_clock {
+            actor.seed_program_resume_clock(pid, time);
+        }
         let program_status = actor.subscribe_program_status();
         let resume = actor.subscribe_resume();
+        let program_resume = actor.subscribe_program_resume();
         let program_note = actor.subscribe_program_note();
         Ok(EngineBundle {
             handle,
@@ -112,6 +131,7 @@ impl TerminalEngineFactory for TerminalEngine {
             agent_state,
             program_status,
             resume,
+            program_resume,
             program_note,
         })
     }
@@ -275,7 +295,10 @@ mod tests {
             .build(EngineBuild {
                 cols: 80,
                 rows: 24,
-                source: EngineSource::Fresh(None),
+                source: EngineSource::Fresh {
+                    command: None,
+                    seed: Vec::new(),
+                },
                 scrollback: phux_config_core::limits::ScrollbackLimits::default(),
                 token: token.clone(),
                 default_colors: None,
@@ -283,6 +306,9 @@ mod tests {
                     event_capacity: 1,
                     agent_capacity: 1,
                     live_session: None,
+                    keep_scrollback: None,
+                    program_resume_token: None,
+                    program_resume_clock: None,
                 },
             })
             .expect("engine");

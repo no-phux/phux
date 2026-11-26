@@ -158,7 +158,7 @@ mod tests {
     fn mouse_encoding_table() {
         const SGR: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
         // Cell (10, 5) at 8x16px cells is surface (80, 80): 1-based (11, 6).
-        let cases: [Case; 5] = [
+        let cases: [Case; 6] = [
             (
                 SGR,
                 MouseButton::Left,
@@ -182,6 +182,14 @@ mod tests {
                 80.0,
                 (8, 16),
                 b"\x1b[<65;11;6M",
+            ),
+            (
+                b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
+                MouseButton::Left,
+                82.0,
+                83.0,
+                (8, 16),
+                b"\x1b[<0;82;83M",
             ),
             (
                 b"\x1b[?1000h\x1b[?1006h",

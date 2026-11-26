@@ -170,8 +170,7 @@ fn validate_owner_dir(meta: &fs::Metadata) -> Result<(), SecureFileError> {
     Ok(())
 }
 
-/// Take group and world write off `dir` when it is phux's own state
-/// directory. A login umask of 002 leaves it group-writable whenever
+/// Make `dir` owner-only when it is phux's own state directory. A login umask of 002 leaves it group-writable whenever
 /// something creates it with a plain `create_dir_all` before phux makes it
 /// owner-only, so phux repairs its own directory rather than refuse to
 /// start. Nobody else can create a file the effective user owns, and every

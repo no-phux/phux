@@ -8,16 +8,14 @@ use crate::org::{self, OrgError, OrgOutcome};
 use crate::selector;
 use crate::state::Degradation;
 
-use super::selection::{KillError, Selected};
+use super::selection::{KillError, KillIdentity, Selected};
 use super::{
     KillOutcome, kill_resource, kill_resource_keyed, kill_resources, kill_resources_keyed,
 };
 
 /// Kill the whole session `session` with one `SESSION_KILL`.
 ///
-/// The server ends every member, work that joined meanwhile included, and
-/// deletes the session. A disconnect right after is the server exiting with
-/// its last session: success.
+/// A receipt acknowledges close intent; a disconnect cannot prove an end.
 ///
 /// # Errors
 ///
@@ -29,20 +27,57 @@ pub async fn kill_session(
     session: SessionKey,
     label: &str,
 ) -> Result<Selected, KillError> {
+    kill_session_keyed(conn, session, label, org::mint_operation()).await
+}
+
+pub(super) async fn kill_session_keyed(
+    conn: &mut Connection,
+    session: SessionKey,
+    label: &str,
+    operation: IdempotencyKey,
+) -> Result<Selected, KillError> {
     let label = format!("session {label:?}");
-    let command = Command::SessionKill {
-        operation: org::mint_operation(),
-        session,
-    };
+    let command = Command::SessionKill { operation, session };
     match org::request(conn, 2, command).await {
         Ok((OrgOutcome::Committed(receipt), degradation)) => Ok(Selected {
+            recovery: Some(
+                KillIdentity::new(Some(operation))
+                    .recovery(crate::recovery::EffectCertainty::Applied),
+            ),
             interleaved: degradation.notices().to_vec(),
             killed: receipt.members,
         }),
         Ok((OrgOutcome::Refused(Refusal::NotFound), _)) => {
             Err(KillError::NoSuchTarget { target: label })
         }
+        Ok((OrgOutcome::NotSent { reason }, degradation)) => Err(KillError::NotSent {
+            target: label,
+            identity: KillIdentity::new(Some(operation)),
+            message: reason,
+            interleaved: degradation.notices().to_vec(),
+        }),
+        Ok((OrgOutcome::Accepted, degradation)) => Ok(Selected {
+            recovery: Some(
+                KillIdentity::new(Some(operation))
+                    .recovery(crate::recovery::EffectCertainty::Applied),
+            ),
+            interleaved: degradation.notices().to_vec(),
+            killed: None,
+        }),
+        Ok((OrgOutcome::Unknown { reason }, degradation)) => Err(unknown(
+            &label,
+            Some(operation),
+            reason,
+            degradation.notices().to_vec(),
+        )),
+        Ok((OrgOutcome::Value(value), degradation)) => Err(unknown(
+            &label,
+            Some(operation),
+            format!("unexpected reply: {value:?}"),
+            degradation.notices().to_vec(),
+        )),
         Ok((outcome, degradation)) => Err(KillError::Refused {
+            identity: KillIdentity::new(Some(operation)),
             label,
             message: match outcome {
                 OrgOutcome::Refused(refusal) => org::refusal_sentence(&refusal),
@@ -51,7 +86,13 @@ pub async fn kill_session(
             },
             interleaved: degradation.notices().to_vec(),
         }),
-        Err(OrgError::OutcomeUnknown { .. }) => Ok(Selected::default()),
+        Err(err @ OrgError::OutcomeUnknown { .. }) => Err(KillError::OutcomeUnknown {
+            results: None,
+            target: label,
+            identity: KillIdentity::new(Some(operation)),
+            message: err.to_string(),
+            interleaved: Vec::new(),
+        }),
         Err(err) => Err(KillError::Org(err)),
     }
 }
@@ -67,7 +108,7 @@ pub(super) async fn kill_whole_session(
         Some(key) => kill_resources_keyed(conn, 1, ids, key).await,
         None => kill_resources(conn, 1, ids).await,
     };
-    batch_outcome(reply, &format!("session {session:?}"))
+    batch_outcome(reply, &format!("session {session:?}"), key)
 }
 
 /// Kill `terminals` as one keyed command: `KILL_RESOURCE` for one,
@@ -84,24 +125,32 @@ pub(super) async fn kill_keyed(
     } else {
         kill_resources_keyed(conn, 1, terminals, key).await
     };
-    batch_outcome(reply, &format!("{target:?}"))
+    batch_outcome(reply, target, Some(key))
 }
 
-/// The result of one kill round trip that covered a whole target. A
-/// disconnect is the server self-exiting after its last session was reaped,
-/// which is success.
+/// Classify a whole-target close without inferring destruction from EOF.
 fn batch_outcome(
     reply: Result<(KillOutcome, Degradation), AttachError>,
     label: &str,
+    key: Option<IdempotencyKey>,
 ) -> Result<Selected, KillError> {
     match reply {
         Ok((KillOutcome::Killed, degradation)) => Ok(Selected {
+            recovery: key.map(|key| {
+                KillIdentity::new(Some(key)).recovery(crate::recovery::EffectCertainty::Applied)
+            }),
             interleaved: degradation.notices().to_vec(),
             killed: None,
         }),
-        Err(AttachError::Disconnected) => Ok(Selected::default()),
+        Ok((KillOutcome::Partial(results), degradation)) => Err(KillError::Partial {
+            target: label.to_owned(),
+            results: Box::new(results),
+            identity: KillIdentity::new(key),
+            interleaved: degradation.notices().to_vec(),
+        }),
         Ok((KillOutcome::Refused(message), degradation)) => Err(KillError::Refused {
             label: label.to_owned(),
+            identity: KillIdentity::new(key),
             message,
             interleaved: degradation.notices().to_vec(),
         }),
@@ -110,72 +159,86 @@ fn batch_outcome(
             message: crate::explain::explain_unexpected("kill", &other),
             interleaved: degradation.notices().to_vec(),
         }),
-        Err(err) => Err(err.into()),
+        Err(err) => Err(unknown(label, key, err.to_string(), Vec::new())),
     }
 }
 
-/// Kill each Terminal in turn: every refusal is collected rather than
-/// stopping the loop, and a disconnect means the remaining targets are
-/// already gone.
+/// Stop at uncertainty; retain earlier receipts and every unattempted target.
 pub(super) async fn kill_each_terminal(
     conn: &mut Connection,
     terminals: Vec<ResourceId>,
+    target: &str,
 ) -> Result<Selected, KillError> {
-    let mut refusals = Vec::new();
     let mut interleaved = Vec::new();
-    for (i, terminal) in terminals.into_iter().enumerate() {
+    let mut failures = Vec::new();
+    let mut accepted = Vec::new();
+    let mut remaining = terminals.into_iter().enumerate();
+    while let Some((i, terminal)) = remaining.next() {
+        let label = selector::format_terminal_id(&terminal);
         let request_id = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
-        match kill_one(conn, request_id, terminal).await {
-            KillStep::Killed(notices) => interleaved.extend(notices),
-            KillStep::Refused { message, notices } => {
-                interleaved.extend(notices);
-                refusals.push(message);
+        let reply = kill_resource(conn, request_id, terminal).await;
+        match batch_outcome(reply, &label, None) {
+            Ok(done) => {
+                interleaved.extend(done.interleaved);
+                accepted.push(label);
             }
-            KillStep::ServerGone => break,
+            Err(mut error) => {
+                interleaved.extend(error.take_interleaved());
+                let uncertain = matches!(
+                    error,
+                    KillError::OutcomeUnknown { .. } | KillError::Unexpected { .. }
+                );
+                failures.push(error.outcome_document().unwrap_or_else(|| serde_json::json!({
+                    "error": {"target": label, "code": "outcome_unknown", "message": error.to_string()},
+                })));
+                if uncertain {
+                    let not_sent = remaining
+                        .map(|(_, id)| selector::format_terminal_id(&id))
+                        .collect::<Vec<_>>();
+                    let mut error = unknown(
+                        target,
+                        None,
+                        "a close reply was not confirmed; earlier closes may have been accepted"
+                            .into(),
+                        interleaved,
+                    );
+                    if let KillError::OutcomeUnknown { results, .. } = &mut error {
+                        *results = Some(Box::new(serde_json::json!({
+                            "failed": failures, "not_sent": not_sent, "accepted": accepted,
+                        })));
+                    }
+                    return Err(error);
+                }
+            }
         }
     }
-    if refusals.is_empty() {
+    if failures.is_empty() {
         Ok(Selected {
+            recovery: None,
             interleaved,
             killed: None,
         })
     } else {
-        Err(KillError::PaneRefusals {
-            messages: refusals,
+        Err(KillError::Partial {
+            target: target.to_owned(),
+            results: Box::new(serde_json::json!({"failed": failures, "accepted": accepted})),
+            identity: KillIdentity::new(None),
             interleaved,
         })
     }
 }
 
-/// How one `KILL_RESOURCE` ended.
-enum KillStep {
-    Killed(Vec<String>),
-    Refused {
-        message: String,
-        notices: Vec<String>,
-    },
-    ServerGone,
-}
-
-async fn kill_one(conn: &mut Connection, request_id: u32, terminal: ResourceId) -> KillStep {
-    let label = selector::format_terminal_id(&terminal);
-    match kill_resource(conn, request_id, terminal).await {
-        Ok((KillOutcome::Killed, degradation)) => KillStep::Killed(degradation.notices().to_vec()),
-        Ok((KillOutcome::Refused(message), degradation)) => KillStep::Refused {
-            message: format!("kill refused for {label}: {message}"),
-            notices: degradation.notices().to_vec(),
-        },
-        Ok((KillOutcome::Unexpected(other), degradation)) => KillStep::Refused {
-            message: format!(
-                "{label}: {}",
-                crate::explain::explain_unexpected("kill", &other)
-            ),
-            notices: degradation.notices().to_vec(),
-        },
-        Err(AttachError::Disconnected) => KillStep::ServerGone,
-        Err(err) => KillStep::Refused {
-            message: format!("kill failed for {label}: {err}"),
-            notices: Vec::new(),
-        },
+fn unknown(
+    target: &str,
+    key: Option<IdempotencyKey>,
+    message: String,
+    interleaved: Vec<String>,
+) -> KillError {
+    KillError::OutcomeUnknown {
+        target: target.to_owned(),
+        identity: KillIdentity::new(key),
+        message,
+        results: None,
+        interleaved,
     }
 }

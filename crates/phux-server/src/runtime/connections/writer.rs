@@ -68,10 +68,10 @@ fn drain_ready_into_batch(
     ends: &mut Vec<usize>,
 ) -> Option<String> {
     for _ in 1..MAX_WRITE_COALESCE {
-        let Ok(next) = rx.try_recv() else {
+        let Ok(mut next) = rx.try_recv() else {
             return None;
         };
-        if !generation_fence.admits(&next) {
+        if !generation_fence.admits(&mut next) {
             continue;
         }
         if let Some(message) = encode_into_batch(next, compression, scratch, batch, ends) {
@@ -165,8 +165,8 @@ async fn next_admitted(
             goodbye = revocation.revoked() => return Err(WriterStop::Revoked(goodbye)),
             next = next_outbound(rx, close, close_control_open) => next,
         };
-        let message = next.ok_or(WriterStop::Closed)?;
-        if generation_fence.admits(&message) {
+        let mut message = next.ok_or(WriterStop::Closed)?;
+        if generation_fence.admits(&mut message) {
             return Ok(message);
         }
     }

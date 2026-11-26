@@ -83,7 +83,7 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux' || @.name.value=='phux-agent-host' || @.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client' || @.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-crash' || @.name.value=='phux-design' || @.name.value=='phux-dial' || @.name.value=='phux-frozen' || @.name.value=='phux-git' || @.name.value=='phux-layout-codec' || @.name.value=='phux-mcp' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-record' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-server-testkit' || @.name.value=='phux-terminal' || @.name.value=='phux-terminal-api' || @.name.value=='phux-tui' || @.name.value=='phux-usage' || @.name.value=='phux-vt' || @.name.value=='phux-wire-fixtures' || @.name.value=='phux-work' || @.name.value=='portable-pty-adopt' || @.name.value=='quictun'))].version"
+          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux' || @.name.value=='phux-agent-host' || @.name.value=='phux-agent-rules' || @.name.value=='phux-agent-session' || @.name.value=='phux-client' || @.name.value=='phux-client-core' || @.name.value=='phux-client-ffi' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-crash' || @.name.value=='phux-design' || @.name.value=='phux-dial' || @.name.value=='phux-frozen' || @.name.value=='phux-git' || @.name.value=='phux-layout-codec' || @.name.value=='phux-mcp' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-plugin-index' || @.name.value=='phux-protocol' || @.name.value=='phux-record' || @.name.value=='phux-resource' || @.name.value=='phux-server' || @.name.value=='phux-server-testkit' || @.name.value=='phux-terminal' || @.name.value=='phux-terminal-api' || @.name.value=='phux-tui' || @.name.value=='phux-usage' || @.name.value=='phux-vt' || @.name.value=='phux-wire-fixtures' || @.name.value=='phux-work' || @.name.value=='portable-pty-adopt' || @.name.value=='quictun'))].version"
         },
         {
           "type": "toml",
@@ -99,11 +99,6 @@
           "type": "toml",
           "path": "clients/rune/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-client-core' || @.name.value=='phux-client-runtime' || @.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-core' || @.name.value=='phux-design' || @.name.value=='phux-dial' || @.name.value=='phux-layout-codec' || @.name.value=='phux-perf' || @.name.value=='phux-plugin' || @.name.value=='phux-protocol' || @.name.value=='phux-vt' || @.name.value=='phux-wire-fixtures' || @.name.value=='quictun'))].version"
-        },
-        {
-          "type": "toml",
-          "path": "plugins/index/Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && (@.name.value=='phux-config' || @.name.value=='phux-config-core' || @.name.value=='phux-protocol'))].version"
         }
       ]
     },

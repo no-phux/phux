@@ -36,11 +36,9 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bun tools/main.ts design-gen --check
     bun tools/main.ts file-tokens-check --merge-base origin/main
-    bun tools/main.ts toolchain-sync-check
-    bun tools/main.ts frozen-fixtures-check
-    bun tools/main.ts e2e-lanes
     bash packaging/test-release-cpu-baselines.sh
     bash dev/lib/worktree-owner_test.sh
+    bash dev/worktree-prune_test.sh
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
     python3 -B examples/agents/tests/test-agent-examples.py
@@ -57,7 +55,6 @@ rust-lint: worktree-claim fmt-check lint doc deny
     cargo check --locked -p phux --no-default-features --bin phux
     cargo check --locked -p phux-tui --all-targets --no-default-features
     bun tools/main.ts ghostty-pin
-    cargo check --locked --manifest-path plugins/index/Cargo.toml
 
 
 # The binding crate with the mobile artifact's exact features (ADR-0135).
@@ -132,13 +129,6 @@ doc:
 [group('gates')]
 deny:
     cargo deny check
-    # The generator is its own workspace, so the root check never sees its lock.
-    # Probe it first: a shared-dep bump leaves this lock stale, and cargo-deny
-    # --locked then only says the lock cannot be updated.
-    bash plugins/index/check-toml-version.sh
-    # Call the binary: mbx wraps `cargo` and would forward `--config` into
-    # `cargo metadata`, which then rejects deny.toml.
-    cargo-deny --manifest-path plugins/index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level
@@ -149,7 +139,7 @@ shellcheck:
       clients/rune/upstream/*.sh clients/phux-vt-web/scripts/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
-      plugins/*/scripts/*.sh plugins/index/*.sh benchmarks/*/*.sh
+      plugins/*/scripts/*.sh benchmarks/*/*.sh
 
 
 # The tools package (build and CI logic, ADR-0184): format, types, lint, tests.
@@ -208,6 +198,14 @@ worktree-verify CALLER:
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
     @bash dev/worktree-lease.sh release worktree-release
+
+
+# Reclaim disk from idle linked worktrees (dev/worktree-prune.sh): remove
+# clean ones whose pushed branch is merged, prune build output from the rest.
+[group('setup')]
+[doc('Prune idle worktrees (dry run; --apply acts, --outputs-only keeps every worktree).')]
+worktree-prune *ARGS:
+    @bash dev/worktree-prune.sh {{ARGS}}
 
 # Verify committed branding without accessing the private source library.
 [group('gates')]

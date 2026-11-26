@@ -159,7 +159,7 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
             SessionInfo::new(SessionId::new(2), "new-peer"),
         ]);
     let result = CommandResult::OkWith(CommandValue::State(snapshot));
-    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    state.fold_host_inventory(&result, Vec::new(), &mut RepaintAccumulator::default());
     assert!(
         state.peers.sweep_pending,
         "new graph requires leaf discovery"
@@ -172,7 +172,7 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
             .any(|f| matches!(f, FrameKind::GetMetadata { key, .. }
         if key == &phux_client::layout_ops::layout_key(SessionId::new(2))))
     );
-    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    state.fold_host_inventory(&result, Vec::new(), &mut RepaintAccumulator::default());
     assert!(
         !state.peers.sweep_pending,
         "identical inventory must not loop"
@@ -198,7 +198,7 @@ async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
             ResourceInfo::new(sat.clone(), WindowId::new(1), 80, 24),
         ]);
     let result = CommandResult::OkWith(CommandValue::State(snapshot));
-    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    state.fold_host_inventory(&result, Vec::new(), &mut RepaintAccumulator::default());
     assert!(
         state.peers.sweep_pending,
         "a new satellite terminal requires discovery"
@@ -215,7 +215,7 @@ async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
         )),
         "satellite terminal is fetched: {sent:?}"
     );
-    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    state.fold_host_inventory(&result, Vec::new(), &mut RepaintAccumulator::default());
     assert!(
         !state.peers.sweep_pending,
         "identical inventory must not loop"
@@ -230,15 +230,16 @@ async fn answer_inventory(
 ) {
     use phux_protocol::wire::frame::{CommandResult, CommandValue};
 
-    state.peers.hosts_pending = Some(777);
-    state.peers.hosts_pending_since = Some(std::time::Instant::now());
+    assert!(!state.peers.inventory_in_flight());
+    let request_id = state.next_request_id;
+    state.request_host_inventory(client).await.unwrap();
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
         .with_hosts(rows);
     let passed = state
         .intercept_peer_reply(
             client,
             FrameKind::CommandResult {
-                request_id: 777,
+                request_id,
                 result: CommandResult::OkWith(CommandValue::State(snapshot)),
             },
             &mut RepaintAccumulator::default(),

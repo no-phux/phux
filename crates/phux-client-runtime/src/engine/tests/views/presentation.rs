@@ -4,8 +4,9 @@ fn warm_views_share_output_without_dirty_reader_starvation() {
     let (owner, publication) = owner();
     let terminal = id(101);
     attach(&owner, &terminal, b"first\r\nsecond");
-    let a = owner.create_view(&terminal).unwrap();
-    let b = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let a = owner.create_view(&source).unwrap();
+    let b = owner.create_view(&source).unwrap();
     for view in [a, b] {
         owner.republish_view(view).unwrap();
     }
@@ -35,9 +36,10 @@ fn cell_pixel_changes_republish_quiet_image_views() {
         &terminal,
         b"\x1b_Ga=T,f=24,s=1,v=1,i=42,C=1;/wAA\x1b\\",
     );
+    let source = owner.view_source(&terminal).unwrap();
     let views = [
-        owner.create_view(&terminal).unwrap(),
-        owner.create_view(&terminal).unwrap(),
+        owner.create_view(&source).unwrap(),
+        owner.create_view(&source).unwrap(),
     ];
     let before: Vec<_> = views
         .iter()
@@ -79,9 +81,11 @@ fn screen_swaps_retire_only_affected_presentations_and_publish_every_view() {
             (&other, b"sibling"),
         ],
     );
-    let left = owner.create_view(&terminal).unwrap();
-    let right = owner.create_view(&terminal).unwrap();
-    let sibling = owner.create_view(&other).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let sibling_source = owner.view_source(&other).unwrap();
+    let left = owner.create_view(&source).unwrap();
+    let right = owner.create_view(&source).unwrap();
+    let sibling = owner.create_view(&sibling_source).unwrap();
     let (old, _) = select(&owner, right, 2, 3);
     let found = owner.search_view(right, "zero".into(), true).unwrap();
     owner.pin_view(right, found[0].start).unwrap();
@@ -129,7 +133,8 @@ fn an_unread_default_is_deferred_while_a_read_view_publishes_every_batch() {
     let (owner, publication) = owner();
     let terminal = id(131);
     attach(&owner, &terminal, b"first\r\nsecond");
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let default = publication.generation(&terminal).unwrap();
     for seq in 1..=3 {
         let generation = publication.acquire_view(view).unwrap().generation;
@@ -159,7 +164,8 @@ fn a_presentation_behind_another_reader_republishes_in_full() {
     let (owner, publication) = owner();
     let terminal = id(141);
     attach(&owner, &terminal, b"first\r\nsecond\r\nthird");
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let _ = publication.acquire_view(view).unwrap();
     output(&owner, &terminal, 1, b"\x1b[1;1HX");
     owner.destroy_view(view).unwrap();

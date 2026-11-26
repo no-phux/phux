@@ -13,7 +13,7 @@ fn generation_byte_budget_fails_without_allocating_chunk_payloads() {
     let stream_id = StreamId::new(1).expect("stream");
     let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
     session
-        .begin_bootstrap_flow(7, stream_id, bootstrap_id, native_stream_profile())
+        .begin_bootstrap_flow(7, stream_id, bootstrap_id, native_stream_profile(), 0)
         .expect("begin");
     for chunk_seq in 0..64 {
         session

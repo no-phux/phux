@@ -86,6 +86,7 @@ pub(crate) struct OutputPumpStart {
     pub(crate) published_cut: u64,
     pub(crate) replay: Vec<(u64, bytes::Bytes)>,
     pub(crate) live: Option<tokio::sync::broadcast::Receiver<ResourceOutput>>,
+    pub(crate) interest: Option<phux_terminal_api::actor::NativeCaptureInterest>,
 }
 
 /// Actor-confirmed retirement is not an activated replay/live handoff.
@@ -101,6 +102,7 @@ impl OutputPumpStart {
             NativePublication::Activated(publication) => {
                 self.replay = publication.replay;
                 self.live = Some(publication.live);
+                self.interest = Some(publication.interest);
             }
             NativePublication::Superseded => self.superseded = true,
         }
@@ -109,12 +111,11 @@ impl OutputPumpStart {
 
 pub(super) struct SnapshotGate {
     pub(super) terminal_id: ResourceId,
-    pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Terminal facet, for the native publication fence.
     pub(super) terminal: phux_terminal_api::actor::TerminalHandle,
     pub(super) gate: oneshot::Sender<OutputPumpStart>,
     pub(super) cut: Option<u64>,
-    pub(super) native_cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
+    pub(super) native_capture: Option<phux_terminal_api::actor::NativeCapture>,
 }
 
 // Compatibility re-exports for Terminal bootstrap helpers and their tests.
@@ -127,7 +128,7 @@ pub(crate) use crate::runtime::session_attach::staging::{
 pub(crate) use crate::runtime::session_attach::staging::BootstrapStagingBudget;
 
 /// Is `profile` publishing native libghostty checkpoints?
-pub(super) const fn publishes_native_checkpoints(profile: BootstrapStreamProfile) -> bool {
+pub(crate) const fn publishes_native_checkpoints(profile: BootstrapStreamProfile) -> bool {
     matches!(
         profile,
         BootstrapStreamProfile::NativeState {
@@ -198,37 +199,34 @@ pub(in crate::runtime) async fn request_native_checkpoint(
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reply: phux_terminal_api::actor::NativeBootstrapReply,
-) -> Result<(u64, phux_terminal_api::native_state::OpaqueHistoryCursor), ()> {
+) -> Result<(u64, phux_terminal_api::actor::NativeCapture), ()> {
     publication_phase("bootstrap_queue", "started");
     let cut = reply.base_seq;
-    let cursor = reply.publication_cursor;
+    let capture = reply.capture;
     for frame in reply.frames {
         out_tx.send(Outbound::Frame(frame)).await.map_err(|_| {
             publication_phase("bootstrap_queue", "outbound_closed");
         })?;
     }
     publication_phase("bootstrap_queue", "queued");
-    Ok((cut, cursor))
+    Ok((cut, capture))
 }
 
 pub(crate) async fn activate_native_publication(
     handle: &phux_terminal_api::actor::TerminalHandle,
-    owner: u64,
-    terminal_id: phux_protocol::ids::ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    cursor: phux_terminal_api::native_state::OpaqueHistoryCursor,
+    capture: phux_terminal_api::actor::NativeCapture,
 ) -> Result<NativePublication, NativeRequestFailure> {
     publication_phase("native_activation", "started");
     let (reply, publication) = oneshot::channel();
     handle
         .native_publication
         .send(phux_terminal_api::actor::NativePublicationRequest {
-            owner,
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
+            owner: capture.owner,
+            terminal_id: capture.terminal_id.clone(),
+            stream_id: capture.stream_id,
+            bootstrap_id: capture.bootstrap_id,
+            cursor: capture.cursor,
+            cancellation: capture.cancellation(),
             reply,
         })
         .await

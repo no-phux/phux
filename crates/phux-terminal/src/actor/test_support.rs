@@ -19,13 +19,13 @@ impl TerminalActor {
     /// Force tick emission for every consumer.
     #[cfg(test)]
     pub const fn enable_tick_emit_for_test(&mut self) {
-        self.consumer_tick_emits = true;
+        self.publication.force_tick = true;
     }
 
     /// Turn tick emission for every consumer off.
     #[cfg(test)]
     pub const fn disable_tick_emit_for_test(&mut self) {
-        self.consumer_tick_emits = false;
+        self.publication.force_tick = false;
     }
 
     /// Switch a registered consumer to the loss-tolerant model.
@@ -42,7 +42,7 @@ impl TerminalActor {
         client_id: ClientId,
         by: std::time::Duration,
     ) {
-        if let Some(state) = self.consumer_states.get_mut(&client_id) {
+        if let Some(state) = self.publication.consumers.get_mut(&client_id) {
             let now = tokio::time::Instant::now();
             let past = now.checked_sub(by).unwrap_or(now);
             for instant in state.sync.emit_instants.values_mut() {
@@ -59,6 +59,9 @@ impl TerminalActor {
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        if let Some(keep) = &mut self.keep {
+            keep.touch(std::time::Instant::now());
+        }
     }
 
     /// Test-only: run one state-sync tick exactly as the `run` loop's tick

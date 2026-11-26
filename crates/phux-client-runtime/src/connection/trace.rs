@@ -58,7 +58,7 @@ impl AttemptTrace {
 /// Only static phase names enter this target: never errors, addresses or frames.
 #[allow(
     clippy::redundant_pub_crate,
-    reason = "control responses use this private target; no public diagnostic API"
+    reason = "native runtime consumers share this private diagnostic target"
 )]
 pub(crate) fn phase(phase: &'static str) {
     let _ = CURRENT.try_with(|current| current.record(phase));

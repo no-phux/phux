@@ -7,7 +7,7 @@ async fn winsize_pixels_default_when_no_client_reports_metrics() {
     on_local!(async {
         let cmd = CommandBuilder::new("/bin/cat");
         let bundle = TerminalActor::new_with_command(cmd, 80, 24).expect("spawn");
-        let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+        let master = std::sync::Arc::clone(&bundle.actor.process.pty.as_ref().expect("pty").master);
         let handle = bundle.handle.clone();
         let token = bundle.token.clone();
         let join = tokio::task::spawn_local(bundle.actor.run());
@@ -51,7 +51,7 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
         // if an early line raced the resize.
         cmd.args(["-c", r"while read _; do printf '\033[14t\033[18t'; done"]);
         let bundle = TerminalActor::new_with_command(cmd, 80, 24).expect("spawn");
-        let pty_in = bundle.actor.pty_tx.clone().expect("pty writer");
+        let pty_in = bundle.actor.process.pty_tx.clone().expect("pty writer");
         let handle = bundle.handle.clone();
         let token = bundle.token;
         let mut out = handle.output.subscribe();

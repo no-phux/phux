@@ -203,6 +203,12 @@ async function verify(ctx: PinContext): Promise<void> {
   if (browserCommit !== commit) {
     return fail(`native engine ${commit} differs from browser engine ${browserCommit}`);
   }
+  const nixCommit = /^ *ghosttyRev = "([0-9a-f]*)";$/m.exec(read("nix/package.nix"))?.[1] ?? "";
+  if (nixCommit !== commit) {
+    return fail(
+      `native engine ${commit} differs from the Nix package's ${nixCommit || "missing"} (nix/package.nix)`,
+    );
+  }
   if (!/^[0-9a-f]{64}$/.test(prefixed(browserBuild, "archive_sha256="))) {
     return fail("browser engine source checksum is missing or malformed");
   }

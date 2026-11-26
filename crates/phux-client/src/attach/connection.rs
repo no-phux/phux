@@ -387,6 +387,16 @@ impl Connection {
         )
     }
 
+    /// The third-word server features `HELLO_OK` negotiated; empty before the
+    /// handshake.
+    #[must_use]
+    pub fn server_features_ext2(&self) -> phux_protocol::caps::ServerFeatureExt2Set {
+        self.negotiated_bootstrap().map_or_else(
+            phux_protocol::caps::ServerFeatureExt2Set::new,
+            |negotiated| negotiated.server_features_ext2,
+        )
+    }
+
     /// Send one `GET_METADATA` and wait for its `METADATA_VALUE`. A refusal
     /// is an `Err` answer, distinct from an unset key (`Ok(None)`).
     ///

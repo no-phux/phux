@@ -238,7 +238,7 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
 
 /// Apply the reply to a parked satellite pane's `ATTACH_RESOURCE`: success
 /// opens the window or applies the split; a refusal opens nothing
-/// ([`adopt_refused`]).
+/// ([`adopt_refused`]), unless it only says the satellite is unreachable.
 fn handle_adopt_reply<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     parked: ParkedAdopt,
@@ -247,9 +247,29 @@ fn handle_adopt_reply<W: crate::attach::RenderSink>(
     let Some(pane) = parked.pane().cloned() else {
         return Ok(FrameOutcome::default());
     };
-    if let Some(refusal) = refusal {
-        return Ok(adopt_refused(ctx, &parked, &pane, &refusal));
+    let Some(refusal) = refusal else {
+        return open_adopted(ctx, parked, pane);
+    };
+    let refused = adopt_refused(ctx, &parked, &pane, &refusal);
+    if refusal.code != ErrorCode::SatelliteUnreachable || parked.spawned_pane().is_some() {
+        return Ok(refused);
     }
+    // The pane exists and its satellite is expected back: open it greyed, as
+    // a pane already open would be, and the probe attaches it. Left on the
+    // pane in view, the user would type into another machine's shell.
+    let mut outcome = open_adopted(ctx, parked, pane.clone())?;
+    if let Some(slot) = ctx.panes.get_mut(&pane) {
+        slot.satellite_down = true;
+    }
+    outcome.notices.extend(refused.notices);
+    Ok(outcome)
+}
+
+fn open_adopted<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    parked: ParkedAdopt,
+    pane: ResourceId,
+) -> Result<FrameOutcome, AttachError> {
     match parked {
         ParkedAdopt::Window(window) => open_adopted_window(ctx, &window, pane),
         ParkedAdopt::Split(split) => apply_split_spawned(ctx, pane, &split),

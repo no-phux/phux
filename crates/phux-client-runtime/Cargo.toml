@@ -75,6 +75,8 @@ uuid.workspace = true
 # Runtime-owned file upload hashes complete payloads before chunking so every
 # binding shares the same reconnect-safe transfer state machine.
 sha2 = "0.11"
+# ssh-agent forwarding prints a key's fingerprint as `ssh-add -l` does.
+base64.workspace = true
 # Device enrollment (ADR-0154): the CSR for a key a platform keystore holds
 # (rcgen signs through a callback, never holding the key) and the rustls
 # signer that presents it. Both crates are already in the lock through

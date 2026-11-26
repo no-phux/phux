@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
+import { recipeBody } from "../lib/just.ts";
 import { capture } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
-import { list, table } from "../lib/value.ts";
+import { table } from "../lib/value.ts";
 import { action, job, run, steps, workflow } from "../policy/workflows.ts";
 import { Classifier } from "./classify.ts";
 import { plan } from "./plan.ts";
@@ -65,15 +66,11 @@ test("CI passes the same narrow specs to the archive and e2e runner", () => {
 });
 
 test("the archive and runner use the shared e2e selection", () => {
-  const dump = capture(["just", "--dump", "--dump-format", "json"], { cwd: ROOT });
-  const recipes = table(table(JSON.parse(dump))["recipes"]);
   for (const [recipe, selection] of [
     ["test-archive", "${e2e_targets[@]}"],
     ["e2e", '-E "$e2e_filter"'],
   ] as const) {
-    const body = list(table(recipes[recipe])["body"])
-      .map((line) => list(line).map(String).join(""))
-      .join("\n");
+    const body = recipeBody(recipe);
     expect(body).toContain("source dev/lib/e2e-selection.sh");
     expect(body).toContain("e2e_select");
     expect(body).toContain(selection);

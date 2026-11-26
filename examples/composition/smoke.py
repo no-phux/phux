@@ -6,6 +6,8 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import pty
+import select
 import shlex
 import shutil
 import socket
@@ -80,6 +82,40 @@ def server(root, phux):
 
 def read(path):
     return json.loads(path.read_text())
+
+
+def approve_raw(cli, resource, env):
+    """Relaunch a saved raw command: only a typed yes after its exact review runs it."""
+    refused = json.loads(run([*cli, "relaunch", "--json", resource], env, ok=False))
+    assert "no current trusted host template" in refused["error"]["message"], refused
+    assert f"phux relaunch {resource} --approve-raw" in refused["remedy"], refused
+    primary, secondary = pty.openpty()
+    proc = subprocess.Popen([*cli, "relaunch", resource, "--approve-raw"], env=env,
+                            stdin=secondary, stdout=secondary, stderr=secondary)
+    os.close(secondary)
+    seen, answered, deadline = b"", False, time.monotonic() + 30
+    try:
+        while time.monotonic() < deadline:
+            if not select.select([primary], [], [], 0.1)[0]:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(primary, 4096)
+            except OSError:  # EIO once the review exits
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if not answered and b"[y/N]" in seen:
+                assert b"Exact archived execution proposal" in seen, seen
+                os.write(primary, b"y\n")
+                answered = True
+        assert answered and proc.wait(timeout=15) == 0, seen.decode(errors="replace")
+    finally:
+        os.close(primary)
+        if proc.poll() is None:
+            proc.kill()
 
 
 def no_handle(value):
@@ -175,7 +211,7 @@ class Proof:
     def stale_anchor(self, anchor):
         path = self.root / "anchor.json"
         resource = "^" + anchor["resource"]
-        run([*self.cli, "relaunch", "--json", resource], self.env)
+        approve_raw(self.cli, resource, self.env)
         replacement = until(
             lambda: self.invoke("recover", "anchor"),
             lambda value: (value["current_execution"] or {}).get("state") == "running",

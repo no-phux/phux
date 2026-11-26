@@ -55,6 +55,7 @@ impl ServerState {
             phux_core::Reply::Ok { created, .. } | phux_core::Reply::Accepted { created } => {
                 created
             }
+            phux_core::Reply::Ensured { .. } => unreachable!("exact creation cannot ensure"),
         };
         let resource = created
             .resource
@@ -98,8 +99,7 @@ impl ServerState {
     }
 
     /// Create `resource` as a child of `parent`, in the parent's session,
-    /// and record it running: its engine starts in the same lock. Its
-    /// `parent` field is set to `parent`'s key.
+    /// and record its in-process projection running in the same lock.
     ///
     /// # Errors
     ///
@@ -137,7 +137,9 @@ impl ServerState {
             .resource
             .and_then(|k| self.sessions.registry.resource_id(&k))
             .ok_or(Refusal::NotFound)?;
-        self.activation_started(id, None);
+        if let Some(activation) = self.activation_token(id) {
+            self.activation_started(activation, None);
+        }
         Ok(id)
     }
 

@@ -116,8 +116,10 @@ Settings. Otherwise pair through a
 terminal.
 
 **A program on a headless host can't open a browser.** Set
-`[defaults] browser-shim = true` there and restart its server; the link is
-printed in the pane and copied to your clipboard.
+`[defaults] browser-shim = true` there and restart its server. The terminal
+UI or Rune asks whether to open the link on your machine; declined, or with
+neither typing in that pane, the link is printed there and copied to your
+clipboard ([Opening links](./ssh.md#opening-links)).
 
 **An agent's state is wrong.** See [Debugging](#debugging). Override screen
 rules in `~/.config/phux/agent-rules/`.

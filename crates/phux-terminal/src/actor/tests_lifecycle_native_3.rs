@@ -30,9 +30,11 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
     );
     assert!(
         actor
+            .publication
             .native_cursor_owners
             .contains_key(&NativeCursorKey::new(owner, stream_a))
             && actor
+                .publication
                 .native_cursor_owners
                 .contains_key(&NativeCursorKey::new(owner, stream_b)),
         "both pumps keep a live binding"
@@ -42,7 +44,7 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
         owner,
         stream_a,
         bootstrap_a,
-        first.publication_cursor,
+        first.capture.cursor,
     )
     .expect("first pump still activates publication");
     activate_native_for_pump(
@@ -50,13 +52,13 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
         owner,
         stream_b,
         bootstrap_b,
-        second.publication_cursor,
+        second.capture.cursor,
     )
     .expect("second pump activates publication");
 
     actor.release_native_owner(owner);
     assert!(
-        actor.native_cursor_owners.is_empty(),
+        actor.publication.native_cursor_owners.is_empty(),
         "client detach still releases every pump for that owner"
     );
 }
@@ -106,6 +108,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
     );
     assert_eq!(
         actor
+            .publication
             .native_cursor_owners
             .get(&NativeCursorKey::new(owner, stream_a))
             .map(|binding| binding.bootstrap_id),
@@ -113,6 +116,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
     );
     assert_eq!(
         actor
+            .publication
             .native_cursor_owners
             .get(&NativeCursorKey::new(owner, stream_b))
             .map(|binding| binding.bootstrap_id),
@@ -124,7 +128,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
             owner,
             stream_a,
             bootstrap_a,
-            first.publication_cursor,
+            first.capture.cursor,
         )
         .is_err(),
         "the recaptured generation cannot activate publication"
@@ -134,7 +138,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
         owner,
         stream_b,
         bootstrap_b,
-        sibling.publication_cursor,
+        sibling.capture.cursor,
     )
     .expect("sibling pump still activates");
     activate_native_for_pump(
@@ -142,7 +146,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
         owner,
         stream_a,
         bootstrap_a2,
-        replacement.publication_cursor,
+        replacement.capture.cursor,
     )
     .expect("replacement pump activates");
 }
@@ -172,6 +176,7 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
     actor.handle_native_bootstrap(request(stream_b, bootstrap_b, reply_b));
     assert_eq!(
         actor
+            .publication
             .pending_native_bootstrap
             .as_ref()
             .map(|pending| pending.waiters.len()),
@@ -199,13 +204,13 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
     }
     let first = first.expect("first capture finished");
     let second = second.expect("second capture finished");
-    assert_eq!(first.publication_cursor, second.publication_cursor);
+    assert_eq!(first.capture.cursor, second.capture.cursor);
     activate_native_for_pump(
         &mut actor,
         owner,
         stream_a,
         bootstrap_a,
-        first.publication_cursor,
+        first.capture.cursor,
     )
     .expect("first shared waiter activates");
     activate_native_for_pump(
@@ -213,7 +218,7 @@ async fn two_same_client_pumps_can_share_one_pending_capture() {
         owner,
         stream_b,
         bootstrap_b,
-        second.publication_cursor,
+        second.capture.cursor,
     )
     .expect("second shared waiter activates");
 }

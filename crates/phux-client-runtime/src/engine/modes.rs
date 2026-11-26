@@ -18,6 +18,11 @@ impl EngineHandle {
         self.mode(terminal_id, Mode::ALT_SCROLL)
     }
 
+    /// Whether the replica requests device-pixel mouse coordinates (DEC 1016).
+    pub fn pixel_mouse(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
+        self.mode(terminal_id, Mode::SGR_PIXELS_MOUSE)
+    }
+
     fn mode(&self, terminal_id: &ResourceId, mode: Mode) -> Result<bool, EngineError> {
         self.request(|reply| Command::Query(Query::Mode(terminal_id.clone(), mode, reply)))?
     }

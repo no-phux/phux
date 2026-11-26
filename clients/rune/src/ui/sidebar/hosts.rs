@@ -6,7 +6,7 @@ use crate::ui::tokens::Voice;
 use rune::{El, col, el, text};
 use rune_kit::SidebarRow;
 
-use super::super::{Paint, Tokens, icons, pressable};
+use super::super::{Paint, Tokens, pressable};
 use super::dot_size;
 use crate::desk::Desk;
 use crate::host_color;
@@ -20,17 +20,12 @@ pub(super) fn host_header(
     t: &Tokens,
     press: impl Fn(&mut Desk) + 'static,
 ) -> El {
-    let chevron = if open {
-        &icons::CHEVRON
-    } else {
-        &icons::CHEVRON_RIGHT
-    };
     let s = &t.space;
     let dim = t.roles.text.dim.paint();
     pressable(format!("host-{label}"), t)
         .w_full()
         .h(s.row_h)
-        .px(s.icon_gap)
+        .px(s.s1)
         .gap(s.icon_gap)
         .radius(t.radius.sm)
         .items_center()
@@ -39,7 +34,11 @@ pub(super) fn host_header(
         .expanded(open)
         .label(label.to_owned())
         .on_press(press)
-        .child(rune::icon(chevron, t.icon.size.sm).color(dim).a11y_hidden())
+        .help(if open {
+            "Hide sessions"
+        } else {
+            "Show sessions"
+        })
         .child(host_color::dot(label, s.s2, t.roles.layer.sidebar.paint()))
         .child(
             text(label.to_owned())
@@ -68,8 +67,7 @@ fn glance_row(host: Option<String>, label: &str, glance: &Glance, dial: bool, t:
         .title_style(t.ty.label)
         .subtitle_color(t.roles.text.dim.paint())
         .detail(terminals)
-        .height(t.space.row_h)
-        .depth(1);
+        .height(t.space.row_h);
     if !dial {
         // Reached only by ssh: nothing to press, so no Tab stop either.
         return row

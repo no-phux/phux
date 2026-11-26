@@ -41,6 +41,20 @@ set up [remote access](./remote.md).
 `phux lock NAME:G` stops every client from closing a tab until
 `phux unlock`.
 
+`phux new NAME` is exact creation: an existing name is refused, including
+with `--ephemeral`. `phux attach NAME` only selects an existing session; it
+never creates one. With `defaults.attach-session`, a no-name attach asks the
+host to ensure that session atomically, then selects the receipt's exact
+identity. Ensuring an existing session does not start another pane. Older
+servers that cannot ensure refuse without creating; an uncertain receipt
+requires inspecting `phux ls`, not automatically creating again.
+
+`phux worktree open` uses the same atomic ensure: it preserves an existing
+session and its panes, or creates the worktree's persistent session with its
+project identity. `--attach` selects the receipt's exact session; a missing
+live pane in headless output is a committed intent to reconcile, not permission
+to create again.
+
 ## Resources
 
 Everything the server hosts is a **resource** with a **kind**: a terminal,
@@ -57,7 +71,9 @@ Closing a client changes nothing on the server.
 
 When several clients show one session, the smallest view sets each pane's
 size by default; `[defaults] window-size = "active"` sizes it for the client
-you used last.
+you used last. A client can lock its view size (`phux attach --lock-size`, or
+Lock view size in the palette): while it is attached, other clients see its
+panes letterboxed or cropped instead of resizing them.
 
 ## Hosts
 
@@ -100,7 +116,7 @@ key, new process.
 | detach, close the terminal, lose SSH         | keep running | kept                  | kept       |
 | a client crashes                             | keep running | kept                  | kept       |
 | `phux update` or `phux upgrade`              | keep running | kept                  | kept       |
-| server crash, `phux kill --server`, reboot   | end          | come back             | lost       |
+| server crash, `phux kill --server`, reboot   | end          | come back             | lost, unless [`restore.scrollback`](#kept-scrollback) |
 
 When the server stops, its programs stop. The next server brings back
 sessions, tabs, panes, and each pane's directory, with nothing running:
@@ -112,20 +128,49 @@ phux rm @4         # forget it instead
 ```
 
 `phux restore` never replays an agent's one-shot task, and never types into
-a program. To restore automatically, and to resume other programs that
-report a resume token ([Resume](./program-protocol.md#resume)):
+a program. It starts your default shell, enabled agent integrations, a
+trusted OSC 7577 resume, and legacy `[[restore.program]]` resumes. Any other
+saved command is refused, and nothing runs, until you review its exact recipe
+and type yes: `phux relaunch ^KEY --approve-raw`, with the key `phux restore`
+prints ([why](./organization.md#restore-and-executable-authority)). To restore
+automatically, and to resume programs that report
+[OSC 7577](./program-protocol.md#program-resume-osc-7577) (or, for older
+programs, a legacy resume token):
 
 ```toml
 [restore]
 on-start = true
+program-resume = true
+
+[[restore.trust]]
+command = "nvim"
 
 [[restore.program]]
 app = "nvim"
 command = ["nvim", "-S", "${PHUX_RESUME_TOKEN}"]
 ```
 
+`program-resume` is off unless you turn it on. `[[restore.trust]]` lists the
+programs a verified OSC 7577 report may start; nothing is listed for you.
+`phux restore --dry-run` prints each escaped command before anything runs.
+The legacy `[[restore.program]]` entry is only for OSC 7501 `resume=`.
+
 `phux service install` runs the server under launchd or systemd (with
 linger on Linux), so it starts at login and after a reboot.
+
+### Kept scrollback
+
+```toml
+[restore]
+scrollback = 2000                        # lines per pane, at most 10000; 0 is off
+scrollback-exclude = ["secrets", "psql"] # session, pane, or program names
+```
+
+A pane that starts again then has its last lines in its history, above a
+`-- before the restart, … --` divider. A crash loses the last few seconds of
+output, and only the main screen is kept, never a full-screen program's.
+Read [what is on disk](./security.md#kept-scrollback) before turning it on.
+Restart the server after changing it.
 
 ## Agents
 

@@ -7,6 +7,8 @@ fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
     let journal = crate::state::SharedState::new();
     let consumer = journal.with_mut(|s| s.clients_mut().new_client_id());
     let (registry_tx, mut registry_rx) = mpsc::channel(8);
+    let mut session = RelaySession::new(host(), BootstrapLimits::default());
+    session.set_journal(Some(journal.clone()));
     journal.with_mut(|s| {
         s.subscribe_satellite_events(
             consumer,
@@ -16,8 +18,6 @@ fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
             registry_tx,
         );
     });
-    let mut session = RelaySession::new(host(), BootstrapLimits::default());
-    session.set_journal(Some(journal.clone()));
     let (proxy_tx, mut proxy_rx) = mpsc::channel(8);
     subscribe(&mut session, 9, consumer, proxy_tx);
     let actor = phux_protocol::wire::frame::ActorRef::new(phux_protocol::ids::ClientId::new(4))
@@ -154,7 +154,7 @@ fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
     // B's acquire relay marks pending...
     journal.with_mut(|s| {
         s.federation_mut()
-            .mark_satellite_lease_acquire_pending(host(), 9);
+            .mark_satellite_lease_acquire_pending(host(), 9, b);
     });
     // ...and its reply lands first; only the event mirror clears the mark.
     journal.with_mut(|s| {
@@ -216,4 +216,79 @@ fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_t
             "forwarded cursor must be {cursor:?}"
         );
     }
+}
+
+#[test]
+fn a_restarted_link_reuses_ids_with_lower_sequences_without_inheriting_authority() {
+    let journal = crate::state::SharedState::new();
+    let mut old = negotiated(&[ServerFeature::AttachRoles]);
+    old.set_journal(Some(journal.clone()));
+    let mut independent = RelaySession::new_negotiated(
+        SatelliteHost::new("other"),
+        BootstrapLimits::default(),
+        BootstrapProfile::SynthesizedVtRaw,
+        ServerFeatureSet::with(&[ServerFeature::AttachRoles]),
+    );
+    independent.set_journal(Some(journal.clone()));
+    let (out_tx, _out_rx) = mpsc::channel(8);
+    journal.with_mut(|s| {
+        let federation = s.federation_mut();
+        federation.set_satellite_lease(host(), 9, ClientId(1), out_tx.clone());
+        federation.register_satellite_proxy_attach(ClientId(1), host(), 9);
+        federation.set_satellite_lease(SatelliteHost::new("other"), 9, ClientId(2), out_tx.clone());
+    });
+    let stamped = |action, seq| {
+        let mut frame = control(action, None);
+        if let FrameKind::Event { stamp, .. } = &mut frame {
+            *stamp = Some(Box::new(phux_protocol::wire::frame::EventStamp::new(
+                seq, 0,
+            )));
+        }
+        frame
+    };
+    old.feed(&stamped(ControlAction::Acquired, 400));
+    journal.with_mut(|s| {
+        s.federation_mut()
+            .mark_satellite_lease_acquire_pending(host(), 9, ClientId(1));
+    });
+    old.teardown("satellite restarted");
+    journal.with(|s| {
+        let federation = s.federation();
+        assert!(!federation.satellite_advertises(&host(), ServerFeature::AttachRoles));
+        assert_eq!(federation.satellite_lease_holder(&host(), 9), None);
+        assert!(!federation.has_satellite_proxy_attach(ClientId(1), &host(), 9));
+        assert_eq!(federation.satellite_lease_mirror_entries(), 0);
+        assert_eq!(
+            federation.satellite_lease_holder(&SatelliteHost::new("other"), 9),
+            Some(ClientId(2))
+        );
+        assert!(
+            federation
+                .satellite_advertises(&SatelliteHost::new("other"), ServerFeature::AttachRoles)
+        );
+    });
+    let mut replacement = negotiated(&[]);
+    replacement.set_journal(Some(journal.clone()));
+    journal.with_mut(|s| {
+        s.federation_mut()
+            .set_satellite_lease(host(), 9, ClientId(3), out_tx);
+    });
+    replacement.feed(&stamped(ControlAction::Acquired, 1));
+    assert!(
+        old.handle_inbound(&encode(&stamped(ControlAction::Expired, 999)))
+            .is_err()
+    );
+    assert_eq!(
+        lease_holder(&journal),
+        Some(ClientId(3)),
+        "an old link's expiry cannot release a new lease"
+    );
+    old.teardown("late teardown");
+    assert_eq!(lease_holder(&journal), Some(ClientId(3)));
+    replacement.feed(&stamped(ControlAction::Released, 2));
+    assert_eq!(
+        lease_holder(&journal),
+        None,
+        "old sequence 400 cannot suppress the restarted link's genuine release"
+    );
 }

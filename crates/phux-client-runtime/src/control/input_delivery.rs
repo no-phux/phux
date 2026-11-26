@@ -17,7 +17,7 @@ impl ControlPlane {
 
     /// Confirm that fresh authoritative presentation was handed to the user.
     /// This is the only evidence that may clear an unknown-delivery fence.
-    pub fn acknowledge_projection(&mut self, terminal_id: &ResourceId) {
+    fn acknowledge_projection(&mut self, terminal_id: &ResourceId) {
         self.input_replay.clear_delivery_fence(terminal_id);
         self.delivery_fences.remove(terminal_id);
     }
@@ -72,7 +72,7 @@ impl ControlPlane {
             #[cfg(feature = "engine")]
             self.engine
                 .as_ref()
-                .and_then(super::EngineHandle::sync_output_deadline),
+                .and_then(super::EngineHandle::presentation_deadline),
         ]
         .into_iter()
         .flatten()
@@ -86,18 +86,18 @@ impl ControlPlane {
         let uploads = self.expire_uploads();
         let organization = self.expire_org();
         #[cfg(feature = "engine")]
-        let synchronized = self.expire_sync_output();
+        let presented = self.expire_presentation();
         #[cfg(not(feature = "engine"))]
-        let synchronized = false;
-        input || uploads || organization || synchronized
+        let presented = false;
+        input || uploads || organization || presented
     }
 
     #[cfg(feature = "engine")]
-    fn expire_sync_output(&mut self) -> bool {
+    fn expire_presentation(&mut self) -> bool {
         let expired = self
             .engine
             .as_ref()
-            .map(|engine| engine.expire_sync_output(Instant::now()))
+            .map(|engine| engine.expire_presentation(self.observed_time()))
             .unwrap_or_default();
         let changed = !expired.is_empty();
         for id in expired {
@@ -140,6 +140,20 @@ impl ControlPlane {
         terminal_id: &ResourceId,
         events: Vec<InputEvent>,
     ) -> u64 {
+        use phux_client_core::input_replay::InputSubmission;
+        match self.submit_acknowledged_input(terminal_id, events) {
+            InputSubmission::Refused { delivery_id }
+            | InputSubmission::AwaitingReceipt { delivery_id } => delivery_id,
+            InputSubmission::NotQueued | InputSubmission::QueuedRaw => unreachable!(),
+        }
+    }
+
+    pub(super) fn submit_acknowledged_input(
+        &mut self,
+        terminal_id: &ResourceId,
+        events: Vec<InputEvent>,
+    ) -> phux_client_core::input_replay::InputSubmission {
+        use phux_client_core::input_replay::InputSubmission;
         let delivery_id = self.next_delivery_id();
         if matches!(terminal_id, ResourceId::Satellite { .. }) {
             self.push_event(Event::InputDelivery {
@@ -148,7 +162,7 @@ impl ControlPlane {
                 code: Some(ErrorCode::UnsupportedSatelliteRoute.as_wire()),
                 message: "acknowledged input is local-only".to_owned(),
             });
-            return delivery_id;
+            return InputSubmission::Refused { delivery_id };
         }
         let operation_id = mint_input_operation_id();
         let key = operation_id_hex(&operation_id);
@@ -161,13 +175,16 @@ impl ControlPlane {
         {
             Ok(()) => {
                 self.input_deadlines
-                    .insert(key, Instant::now() + INPUT_RETRY_HORIZON);
+                    .insert(key, self.observed_time() + INPUT_RETRY_HORIZON);
                 self.start_input_replay_if_needed(now_ms);
                 self.queue_durable_frames();
+                InputSubmission::AwaitingReceipt { delivery_id }
             }
-            Err(report) => self.publish_replay_reports(vec![report], None),
+            Err(report) => {
+                self.publish_replay_reports(vec![report], None);
+                InputSubmission::Refused { delivery_id }
+            }
         }
-        delivery_id
     }
 
     pub(super) fn start_input_replay_if_needed(&mut self, now_ms: u64) {

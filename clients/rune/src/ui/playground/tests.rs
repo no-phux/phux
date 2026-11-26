@@ -31,6 +31,8 @@ fn window(dark: bool, open: fn(&mut Desk)) -> Runtime<Desk> {
     let replica = crate::test_support::terminal::Replica::new(120, 40, 1);
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(std::sync::Arc::clone(&replica.client));
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     let (phux, site) = (session(1, "phux", 1), session(2, "website", 2));
     let panes = vec![
         pane(1, &phux, "restyle sidebar", None),

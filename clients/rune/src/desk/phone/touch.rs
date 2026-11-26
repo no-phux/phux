@@ -3,7 +3,8 @@
 //! that tracks the mouse), and a tap clicks, opens a link or brings the
 //! keyboard back. Scrolling goes through the wheel's policy, so history,
 //! alternate-screen pagers and programs with their own scrolling all follow
-//! the finger.
+//! the finger. A sideways drag pages between sessions; one that starts at
+//! the left edge pulls the Sessions drawer in instead (`phone/swipe.rs`).
 //!
 //! Rune's drag carries no time. Every clock here is the app clock: a frame
 //! polls before it delivers its input, so a handler reads that frame's.
@@ -44,6 +45,8 @@ pub enum Feedback {
     Hold,
     /// Something was copied.
     Copied,
+    /// A sideways drag crossed the point where lifting commits it.
+    Detent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,10 @@ enum Mode {
     Select,
     /// A program that tracks the mouse has the press.
     Report,
+    /// Sideways: pages to the neighbouring session.
+    Page,
+    /// Sideways from the left edge: pulls the Sessions drawer in.
+    Pull,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +82,11 @@ pub struct Touch {
     moved: f64,
     /// The finger lifted mid-scroll; the next poll decides its coast.
     lifted: bool,
+    /// It landed in the left edge's zone, where a sideways drag pulls the
+    /// drawer rather than paging sessions.
+    edge: bool,
+    /// Sideways travel and speed, for paging and the drawer.
+    pub(super) across: super::swipe::Across,
 }
 
 #[derive(Debug, Clone)]
@@ -112,17 +124,18 @@ impl Desk {
         step: &Press,
         travel: [f32; 2],
         cancelled: bool,
+        edge: bool,
         tx: &mut Tx,
     ) {
         let at = [step.x, step.y];
         match step.phase {
-            Phase::Down => self.touch_down(terminal, at, tx),
+            Phase::Down => self.touch_down(terminal, at, edge, tx),
             Phase::Move => self.touch_move(terminal, at, travel, tx),
             Phase::Up => self.touch_up(terminal, at, cancelled, tx),
         }
     }
 
-    fn touch_down(&mut self, terminal: &ResourceId, at: [f32; 2], tx: &mut Tx) {
+    fn touch_down(&mut self, terminal: &ResourceId, at: [f32; 2], edge: bool, tx: &mut Tx) {
         self.focus_pane(terminal);
         // Records a link under the finger; a phone opens it on a tap.
         self.press_link(terminal, Phase::Down, at[0], at[1], false, tx);
@@ -144,6 +157,8 @@ impl Desk {
             sampled: clock,
             moved: clock,
             lifted: false,
+            edge: edge && !caught,
+            across: super::swipe::Across::new(clock),
         });
         tx.wake_after(Duration::from_secs_f64(HOLD));
     }
@@ -156,11 +171,19 @@ impl Desk {
             return;
         }
         touch.at = at;
+        touch.across.sample(travel[0], self.clock);
         if touch.mode == Mode::Pending {
             if travel[0].hypot(travel[1]) <= SLOP {
                 return;
             }
-            touch.mode = Mode::Scroll;
+            // The first deliberate movement owns the gesture: sideways
+            // pages (or, from the edge, pulls the drawer), anything else
+            // scrolls.
+            touch.mode = match (travel[0].abs() > travel[1].abs(), touch.edge) {
+                (true, true) if travel[0] > 0.0 => Mode::Pull,
+                (true, _) => Mode::Page,
+                _ => Mode::Scroll,
+            };
         }
         match touch.mode {
             Mode::Scroll => {
@@ -175,6 +198,8 @@ impl Desk {
                 self.select(terminal, Phase::Move, at[0], at[1], WORDS);
             }
             Mode::Report => self.pointer(terminal, &press(Phase::Move, at, 1), tx),
+            Mode::Page => self.page_move(travel[0]),
+            Mode::Pull => self.pull_move(travel[0]),
             Mode::Pending => {}
         }
     }
@@ -202,13 +227,16 @@ impl Desk {
             (Mode::Select, false) => {
                 self.track_drag(terminal, &press(Phase::Up, at, WORDS), tx);
                 self.select(terminal, Phase::Up, at[0], at[1], WORDS);
-                self.copy_touched(tx);
+                self.copy_touched(terminal, touch.origin, at, tx);
             }
             (Mode::Report, false) => {
                 self.pointer(terminal, &press(Phase::Up, at, 1), tx);
             }
+            (Mode::Page, false) => self.page_release(&touch.across),
+            (Mode::Pull, false) => self.pull_release(&touch.across),
             (Mode::Select, true) => self.end_drag(),
             (Mode::Report, true) => self.release_capture(),
+            (Mode::Page | Mode::Pull, true) => self.settle_swipe(),
             (Mode::Pending | Mode::Scroll, true) => {}
         }
         if touch.mode != Mode::Pending || cancelled {
@@ -233,12 +261,20 @@ impl Desk {
     }
 
     /// A finished selection goes to the clipboard: a phone has no ⌘C, and a
-    /// menu would sit under the finger that just lifted.
-    fn copy_touched(&mut self, tx: &mut Tx) {
-        if !matches!(self.selected(), Selected::Text(_)) {
+    /// menu would sit under the finger that just lifted. A word ends at a
+    /// colon, so one inside a URL would lose its scheme: that copies the URL.
+    fn copy_touched(&mut self, terminal: &ResourceId, from: [f32; 2], to: [f32; 2], tx: &mut Tx) {
+        let Selected::Text(text) = self.selected() else {
             return;
+        };
+        let link = self
+            .link_at(terminal, from[0], from[1])
+            .filter(|link| link.url.contains(&text))
+            .filter(|link| self.link_at(terminal, to[0], to[1]).as_ref() == Some(link));
+        match link {
+            Some(link) => tx.copy(link.url),
+            None => self.copy(tx),
         }
-        self.copy(tx);
         self.say(NoticeKind::Info, "Copied");
         self.phone_feedback(Feedback::Copied);
     }
@@ -252,6 +288,7 @@ impl Desk {
     /// The gesture's clockwork, once a poll: a hold coming due, a scroll's
     /// speed, and a coast. True when the screen moved.
     pub(in crate::desk) fn phone_touch_tick(&mut self, tx: &mut Tx) -> bool {
+        self.land_swipe(tx);
         self.time_touch(tx);
         self.coast(tx)
     }
@@ -286,7 +323,7 @@ impl Desk {
                     self.release_scroll();
                 }
             }
-            Mode::Select | Mode::Report => {}
+            Mode::Select | Mode::Report | Mode::Page | Mode::Pull => {}
         }
     }
 
@@ -312,6 +349,7 @@ impl Desk {
         match touch.mode {
             Mode::Select => self.end_drag(),
             Mode::Report => self.release_capture(),
+            Mode::Page | Mode::Pull => self.settle_swipe(),
             Mode::Pending | Mode::Scroll => {}
         }
         self.forget_link_tap();

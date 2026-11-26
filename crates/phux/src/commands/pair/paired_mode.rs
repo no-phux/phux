@@ -158,8 +158,8 @@ pub(super) fn other_unbound_refusal(socket: &Path, disabled: &[String]) -> Strin
         format!(" ({})", disabled.join("; "))
     };
     format!(
-        "the server at {} {NO_BOUND_LISTENER}{why}, so none was minted; pass `--listen \
-         HOST:PORT` or `--quic HOST:PORT`",
+        "the server at {} {NO_BOUND_LISTENER}{why}, so none was minted; open one, panes kept: \
+         `phux service install --adopt --quic 0.0.0.0:8788`",
         socket.display()
     )
 }
@@ -408,9 +408,9 @@ mod tests {
     }
 
     /// A mode that is already set, with nothing bound, is a different cause:
-    /// no prompt, no write, and the refusal names `--listen` / `--quic`.
+    /// no prompt, no write, and the refusal names the command that binds one.
     #[test]
-    fn a_set_mode_with_nothing_bound_names_listen_and_does_not_ask() {
+    fn a_set_mode_with_nothing_bound_names_its_remedy_and_does_not_ask() {
         let socket = Path::new("/run/phux.sock");
         for mode in [
             phux_config::PolicyMode::Paired,
@@ -425,10 +425,7 @@ mod tests {
             let err = ensure_remote_listener(socket, true, false, &mut prompt, &mut setup)
                 .expect_err("mode is set");
             assert!(!err.contains('\n'), "{err}");
-            assert!(
-                err.contains("--listen HOST:PORT") && err.contains("--quic HOST:PORT"),
-                "{err}"
-            );
+            assert!(err.contains("service install --adopt --quic"), "{err}");
             assert!(err.contains("no_overlay_address"), "{err}");
             assert!(!err.contains("phux pair --enable"), "{err}");
             assert_eq!(prompt.prompted, 0);

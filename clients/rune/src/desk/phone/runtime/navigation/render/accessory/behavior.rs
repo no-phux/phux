@@ -146,7 +146,6 @@ fn native_accessory_targets_and_content_fit_at_all_supported_text_sizes() {
                         keys.extend([
                             "phone-latch-Control",
                             "phone-latch-Option",
-                            "phone-latch-Shift",
                             "phone-key-Interrupt",
                             "phone-key-Left",
                             "phone-key-Down",
@@ -157,8 +156,10 @@ fn native_accessory_targets_and_content_fit_at_all_supported_text_sizes() {
                             "phone-key-Slash",
                             "phone-key-Hyphen",
                             "phone-key-Paste",
+                            "phone-attach",
                         ]);
                     } else {
+                        assert!(rt.find("phone-attach").is_none());
                         assert!(rt.find("phone-latch-Control").is_none());
                         assert!(
                             element(&rt, "phone-pad")
@@ -468,7 +469,6 @@ fn large_drawn_settings_reveal_every_relocated_accessory_key() {
             "phone-key-Tab",
             "phone-latch-Control",
             "phone-latch-Option",
-            "phone-latch-Shift",
             "phone-key-Interrupt",
             "phone-key-Left",
             "phone-key-Down",

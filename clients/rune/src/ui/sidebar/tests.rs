@@ -83,6 +83,11 @@ fn the_histogram_counts_only_what_asks_for_you() {
 
 /// A window with one session of four terminals in different states.
 fn listed(dark: bool) -> rune::Runtime<Desk> {
+    listed_with(dark, &[])
+}
+
+/// [`listed`], each `(child, parent)` pane started from its parent.
+fn listed_with(dark: bool, parents: &[(u32, u32)]) -> rune::Runtime<Desk> {
     let mut desk = crate::test_support::settings_window();
     desk.settings_open = false;
     let mut rt = crate::test_support::runtime(
@@ -125,6 +130,10 @@ fn listed(dark: bool) -> rune::Runtime<Desk> {
             exec: None,
             foreground: None,
             icon: None,
+            unseen: None,
+            parent: (parents.iter())
+                .find(|(child, _)| *child == id)
+                .map(|(_, parent)| ResourceId::local(*parent)),
         })
         .collect();
     let mut topology = crate::desk::topology(vec![session], panes);
@@ -194,10 +203,16 @@ fn twins_with_an_agent_still_name_their_pane() {
             place: place.map(str::to_owned),
             key: None,
             agent: Some("claude"),
-            kind: Some("claude"),
+            identity: crate::addressable::Identity {
+                kind: phux_protocol::ids::ResourceKind::Terminal,
+                tool: Some("claude".to_owned()),
+                agent: true,
+                glyph: None,
+            },
             mark: crate::activity::Mark::Done,
             panes: 1,
             selected: false,
+            members: Vec::new(),
             host: ("mini", 0),
             color: None,
             state: Forced::Rest,
@@ -299,4 +314,126 @@ fn a_tab_is_one_row_however_many_panes_it_splits_into() {
         order.windows(2).all(|w| w[0] < w[1]),
         "tabs in order, then the rest: {order:?}"
     );
+}
+
+#[test]
+fn ancestry_and_cycles_never_invent_tab_membership() {
+    let pane = |id: u32, parent: Option<u32>| crate::addressable::Addressable {
+        id: ResourceId::local(id),
+        label: String::new(),
+        session_id: 1,
+        session: "work".to_owned(),
+        kind: phux_protocol::ids::ResourceKind::Terminal,
+        mirror: "",
+        parent: parent.map(ResourceId::local),
+        program: None,
+    };
+    // 3 is 2's child, so it sits with 2 under 1; 4's parent closed; 5 and
+    // 6 name each other.
+    let panes = [
+        pane(1, None),
+        pane(2, Some(1)),
+        pane(3, Some(2)),
+        pane(4, Some(9)),
+        pane(5, Some(6)),
+        pane(6, Some(5)),
+    ];
+    let rows: Vec<_> = panes.iter().collect();
+    let items = items::items(&[], &rows);
+    assert_eq!(items.len(), 6);
+    assert!(items.iter().all(|item| item.members.len() == 1));
+}
+
+#[test]
+fn child_rows_are_naturally_visible_without_a_gutter_or_fake_stack() {
+    for dark in [true, false] {
+        let rt = listed_with(dark, &[(3, 2), (4, 2)]);
+        for id in 1..=4 {
+            assert!(focusable(&rt, &format!("pane-{}", ResourceId::local(id))));
+        }
+        assert!(rt.find("fold-@2").is_none());
+        assert!(
+            rt.find("identity-layer-1").is_none(),
+            "ancestry is not a split"
+        );
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.path.contains("pane-@2/") && e.label.as_deref() == Some("needs you"))
+        );
+    }
+}
+
+#[test]
+fn satellite_singles_share_useful_detail_without_stacking_or_inventing_unknown_targets() {
+    let mut rt = listed(true);
+    let remote = ResourceId::satellite("box", 7);
+    let unknown = ResourceId::satellite("box", 9);
+    let (resource, unsupported) = (remote.clone(), unknown.clone());
+    rt.update(move |d, _| {
+        let topology = d.connection.topology.as_mut().unwrap();
+        let mut pane = topology.panes[0].clone();
+        pane.terminal_id = resource.clone();
+        pane.session_id = 0;
+        pane.session_name = "box".to_owned();
+        pane.name = Some("Remote build".to_owned());
+        pane.cwd = Some("/repo/component".to_owned());
+        topology.panes.push(pane);
+        let mut record = topology.resources[0].clone();
+        record.id = resource.clone();
+        record.session_id = 0;
+        topology.resources.push(record.clone());
+        record.id = unsupported.clone();
+        record.kind = phux_protocol::ids::ResourceKind::Unknown { tag: 90 };
+        topology.resources.push(record);
+        topology
+            .satellite_sessions
+            .push(phux_client_runtime::control::SatelliteSession {
+                host: "box".to_owned(),
+                name: "work".to_owned(),
+                members: vec![resource, unsupported],
+            });
+    });
+    rt.frame(3.0);
+    let key = format!("pane-{remote}");
+    assert!(focusable(&rt, &key));
+    assert!(
+        crate::ui::element(&rt, &key)
+            .help
+            .as_deref()
+            .unwrap()
+            .contains("component")
+    );
+    assert!(!focusable(&rt, &format!("pane-{unknown}")));
+    assert!(
+        rt.find("identity-layer-1").is_none(),
+        "satellite membership is not a split"
+    );
+}
+
+#[test]
+fn a_split_count_cannot_be_truncated_by_long_resource_detail() {
+    let mut rt = listed(true);
+    rt.update(|d, _| {
+        d.connection.topology.as_mut().unwrap().panes[0].cwd =
+            Some("/repo/a-long-declared-folder-that-needs-to-be-elided".to_owned());
+        d.connection.tabs.by_session.insert(
+            1,
+            vec![crate::desk::Tab {
+                id: [1; 16],
+                name: "Build".to_owned(),
+                resources: [1, 4].map(ResourceId::local).to_vec(),
+                active: true,
+                locked: false,
+            }],
+        );
+    });
+    rt.frame(3.0);
+    let count = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.path.contains("pane-@1/") && e.text.as_deref() == Some("2"))
+        .expect("the exact split count is separate from elided detail");
+    assert!(count.visible[2] > 0.0);
+    assert!((count.visible[2] - count.rect[2]).abs() < 0.01);
 }

@@ -76,8 +76,6 @@ jobs:
       - name: mbx save decision
         run: echo "hit=${{ steps.lane.outputs.cache-hit }} reason=${{ steps.lane.outputs.cache-save-reason }} key=${{ steps.lane.outputs.cache-key }}"
       - run: nix develop -c just rust-lint
-      - name: Check the plugin index compiles
-        run: nix develop -c cargo check --locked --manifest-path plugins/index/Cargo.toml
       - name: leave disk headroom for the objects save
         if: steps.lane.outputs.cache-save-eligible == 'true' && steps.lane.outputs.cache-hit != 'true'
         run: bun tools/main.ts mbx-export-headroom

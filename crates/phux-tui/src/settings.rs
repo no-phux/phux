@@ -54,13 +54,11 @@ pub struct SidebarSettings {
 /// Everything the TUI derives from the on-disk config, loaded before any
 /// input can reach the loop (discovery surfaces never do config I/O).
 pub struct TuiSettings {
-    /// The plugin-merged keybindings snapshot. Every load path fills it (a
-    /// config that does not load falls back to the shipped defaults); `None`
-    /// is left for tests that build settings by hand.
-    pub keybindings: Option<KeybindingsCfg>,
-    /// The keybind resolver built from that snapshot. `None`
-    /// exactly when [`Self::keybindings`] is.
-    pub resolver: Option<Resolver>,
+    /// Plugin-merged snapshot and the resolver built from it. Both are
+    /// required, including when a failed load falls back to shipped defaults.
+    pub keybindings: KeybindingsCfg,
+    /// The resolver built from `keybindings`; never paired with another snapshot.
+    pub resolver: Resolver,
     /// Single source of truth for chrome + overlay colors.
     pub theme: Theme,
     /// The responsive-chrome thresholds.
@@ -97,13 +95,15 @@ pub struct TuiSettings {
     pub notifications: phux_config::NotificationsCfg,
     /// `[chrome] title`: the outer window title format. Live on reload.
     pub outer_title: String,
+    /// Whether any host names a theme: only then does a focus that crosses
+    /// machines rebuild the chrome. Live on reload.
+    pub host_themes: bool,
 }
 
 impl std::fmt::Debug for TuiSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TuiSettings")
-            .field("keybindings", &self.keybindings.is_some())
-            .field("resolver", &self.resolver.is_some())
+            .field("keybindings", &self.keybindings)
             .field("theme", &self.theme)
             .field("chrome", &self.chrome)
             .field("status_bar", &self.status_bar.is_some())
@@ -119,7 +119,8 @@ impl std::fmt::Debug for TuiSettings {
             .field("clipboard_read", &self.clipboard_read)
             .field("notifications", &self.notifications)
             .field("outer_title", &self.outer_title)
-            .finish()
+            .field("host_themes", &self.host_themes)
+            .finish_non_exhaustive()
     }
 }
 
@@ -183,6 +184,7 @@ impl TuiSettings {
         self.clipboard_read = new.clipboard_read;
         self.notifications = new.notifications;
         self.outer_title = new.outer_title;
+        self.host_themes = new.host_themes;
     }
 
     /// The seed when the config does not load: the shipped defaults, keys
@@ -229,7 +231,7 @@ impl TuiSettings {
                 &diagnostics,
             )));
         }
-        let theme = Theme::from_cfg(&cfg.theme, &manifests);
+        let theme = Theme::from_cfg(&viewed_theme(cfg), &manifests);
         Self::assemble(
             cfg,
             keybindings,
@@ -263,7 +265,8 @@ impl TuiSettings {
             return Err(diagnostic.to_string());
         }
         // A `[theme] name` that resolves to nothing is a config error too.
-        let theme = Theme::resolve(&cfg.theme, &manifests).map_err(|err| err.to_string())?;
+        let theme =
+            Theme::resolve(&viewed_theme(cfg), &manifests).map_err(|err| err.to_string())?;
         Ok(Self::assemble(
             cfg,
             keybindings,
@@ -307,8 +310,8 @@ impl TuiSettings {
                 enabled: keybindings.which_key,
                 delay: Duration::from_millis(keybindings.which_key_delay_ms),
             },
-            keybindings: Some(keybindings),
-            resolver: Some(resolver),
+            keybindings,
+            resolver,
             theme: Theme::default(),
             chrome: ChromeBreakpoints::from_cfg(&cfg.chrome),
             status_bar,
@@ -329,7 +332,19 @@ impl TuiSettings {
             clipboard_read: cfg.defaults.clipboard_read,
             notifications: cfg.notifications,
             outer_title: cfg.chrome.title.clone(),
+            host_themes: cfg.any_host_theme(),
         }
+    }
+}
+
+/// `[theme]` as worn for the machine in view: its `[[remote]]` or `[host]`
+/// theme when it names one, else `[theme]` unchanged.
+fn viewed_theme(cfg: &Config) -> std::borrow::Cow<'_, phux_config::ThemeCfg> {
+    use crate::attach::hosts::{AttachOrigin, viewed_host};
+    match viewed_host() {
+        None => std::borrow::Cow::Borrowed(&cfg.theme),
+        Some(AttachOrigin::Local) => cfg.theme_for_host(None),
+        Some(AttachOrigin::Remote(name)) => cfg.theme_for_host(Some(&name)),
     }
 }
 

@@ -140,9 +140,8 @@ impl super::SessionLoop {
     /// Seed this entry's peer caches from a switch's carry. Subscriptions
     /// are not carried: `DETACH` dropped them, and the sweeps re-open them.
     pub(in super::super) fn seed_carried_peers(&mut self, carried: CarriedPeers) {
-        if carried.serving_host.is_some() {
-            self.peers.serving_host = carried.serving_host;
-            self.peers.serving_host_attempted = true;
+        if let Some(host) = carried.serving_host {
+            self.peers.adopt_serving_host(host);
         }
         self.peers.foreign_layouts = carried.layouts;
         self.peers.foreign_agents = carried.agents;
@@ -183,7 +182,7 @@ impl super::SessionLoop {
         for id in own {
             self.peers.foreign_attention.remove(&id);
             if let Some(slot) = self.mirror.panes.get_mut(&id) {
-                slot.attention = true;
+                slot.raise_attention();
             }
         }
     }

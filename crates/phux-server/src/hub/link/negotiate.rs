@@ -65,6 +65,7 @@ pub(super) async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
                 limits: bootstrap_limits,
                 server_features: server_caps.features,
                 server_features_ext: server_caps.features_ext,
+                server_features_ext2: server_caps.features_ext2,
                 server_id: <[u8; 16]>::try_from(server_id.as_slice()).ok(),
             })
         }

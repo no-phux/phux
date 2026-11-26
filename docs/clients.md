@@ -23,6 +23,42 @@ pane only closes the view; `reopen-views` shows a hidden document again.
 `phux rec` records a pane to a cast, GIF, or APNG; `phux play` plays one in a
 new pane.
 
+### terminal-browser
+
+[terminal-browser](https://terminal-browser.com/) runs Chromium inside a
+terminal pane. Install it separately, then run it from a new phux pane:
+
+```sh
+terminal-browser open localhost:3000
+terminal-browser open ./plan.html --split right --size 0.4
+terminal-browser ls
+terminal-browser action -- snapshot
+```
+
+Tested with terminal-browser 0.16.2. Older releases that predate its terminal
+socket API need a terminal-browser upgrade before pane integration works.
+
+The coordinator supplies `TERMINAL_BROWSER_TERMINAL_SOCKET` automatically.
+Its local, same-user socket implements terminal-browser protocol 1: pane
+discovery, listing, cardinal neighbors, splits in all four directions, text
+delivery and the Ctrl-V clipboard key. A tab is a phux arrangement group;
+terminal-browser stays scoped to the panes shown together, even inside a
+wrapper's nested PTY. Split commands execute as argv in the caller's cwd,
+not as text typed into a shell.
+
+Focus stays client-local: phux does not advertise `focusPane`, so the browser
+cannot switch a person's focused pane. Left/up splits create beside the
+anchor, then swap positions; if the second edit fails, the error names the
+created pane rather than relaunching or killing it.
+
+Rune displays the browser directly. The terminal UI needs an outer terminal
+with Kitty graphics support; its mouse positions have cell resolution,
+while Rune preserves device-pixel positions. File and shared-memory image transfers remain
+disabled; terminal-browser falls back to portable inline frames. To force
+that path, set `TERMINAL_BROWSER_FRAMES=inline`. The socket is local to the
+machine running the coordinator; it is not forwarded over SSH or exposed
+on a network listener.
+
 ## Native terminal windows
 
 `phux native create` shows one server-owned terminal in your emulator's own
@@ -93,6 +129,25 @@ phux host color mini violet
 phux host color --local sky
 phux host color mini auto        # back to the hash
 ```
+
+## Host themes
+
+A whole theme says which machine you are on louder than a colour. Name one
+on a host's entry and Rune and the terminal UI wear it while you view that
+machine (attached to it, or a hub's satellite pane of that name), and go
+back to your own theme when you leave:
+
+```toml
+[[remote]]
+name = "prod"
+theme = "red-alert"   # as `phux theme list` (terminal UI) or Rune's picker names it
+
+[host]
+theme = "nord"        # this machine's own panes
+```
+
+Each client looks the name up in its own themes; one it does not have
+keeps your theme. Unset, nothing switches.
 
 ## Pane icons
 

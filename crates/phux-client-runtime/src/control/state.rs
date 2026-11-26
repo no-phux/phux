@@ -10,6 +10,9 @@ impl ControlPlane {
     /// This does not replace the current socket or change its selected session.
     pub const fn set_session_recovery(&mut self, recovery: SessionRecovery) {
         self.options.session_recovery = recovery;
+        if matches!(recovery, SessionRecovery::CallerValidated) {
+            self.org.pending_attach = None;
+        }
     }
 
     /// Begin following native conversations after an inventory-only connection
@@ -32,11 +35,32 @@ impl ControlPlane {
             .collect();
         for request_id in spawns {
             self.pending.remove(&request_id);
-            self.push_event(Event::TerminalSpawned {
-                request_id,
-                terminal_id: None,
-                error: Some("server restarted before the spawn was confirmed; check its panes before retrying".to_owned()),
+            self.publish_spawn_outcome(request_id, super::TerminalCreationOutcome::Unknown {
+                message: "server restarted before the spawn was confirmed; check its panes before retrying".into(),
             });
+        }
+    }
+
+    /// A once-only spawn's receipt was correlated to the socket that just
+    /// dropped, so it can never arrive. Report it unknown now rather than at
+    /// the next dial; it is never resent. Replayable spawns keep waiting for
+    /// the reconnect that resends them under their idempotency key.
+    pub(super) fn strand_once_only_spawns(&mut self, message: &str) {
+        let once_only: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, pending)| {
+                matches!(pending, Pending::Spawn { replay: None, .. }).then_some(*id)
+            })
+            .collect();
+        for request_id in once_only {
+            self.pending.remove(&request_id);
+            self.publish_spawn_outcome(
+                request_id,
+                super::TerminalCreationOutcome::Unknown {
+                    message: message.to_owned(),
+                },
+            );
         }
     }
 
@@ -60,11 +84,12 @@ impl ControlPlane {
                     );
                 }
                 Pending::Spawn { .. } => {
-                    self.push_event(Event::TerminalSpawned {
+                    self.publish_spawn_outcome(
                         request_id,
-                        terminal_id: None,
-                        error: Some(message.to_owned()),
-                    });
+                        super::TerminalCreationOutcome::Unknown {
+                            message: message.to_owned(),
+                        },
+                    );
                 }
                 Pending::AttachTerminal(terminal_id) => {
                     self.push_event(Event::TerminalAttached {
@@ -160,6 +185,14 @@ impl ControlPlane {
         }
     }
 
+    /// Whether a correlated reply belongs to the live inventory request.
+    pub(crate) fn expects_topology_reply(&self, request_id: u32) -> bool {
+        matches!(
+            self.pending.get(&request_id),
+            Some(Pending::RefreshTopology)
+        )
+    }
+
     // ----- small helpers -----------------------------------------------
 
     pub(super) fn set_status(&mut self, status: Status) {
@@ -187,8 +220,25 @@ impl ControlPlane {
         self.set_status(status);
     }
 
+    /// Supply the driver's exact monotonic observation before semantic work.
+    /// Regressing observations cannot reopen an expired retry horizon.
+    pub fn observe_time(&mut self, now: std::time::Instant) {
+        self.observed_time = self.observed_time.max(now);
+    }
+
+    /// The last supplied observation; this never reads a platform clock.
+    #[must_use]
+    pub const fn observed_time(&self) -> std::time::Instant {
+        self.observed_time
+    }
+
     pub(super) fn now_ms(&self) -> u64 {
-        u64::try_from(self.clock_origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(
+            self.observed_time
+                .saturating_duration_since(self.clock_origin)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     pub(super) fn next_delivery_id(&mut self) -> u64 {
@@ -252,7 +302,7 @@ mod tests {
 
     #[test]
     fn undrained_clipboard_payloads_are_byte_bounded_and_drain_resets_the_budget() {
-        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
         for _ in 0..6 {
             plane.push_event(Event::ClipboardWrite {
                 terminal_id: ResourceId::local(7),
@@ -284,7 +334,7 @@ mod tests {
 
     #[test]
     fn clipboard_budget_counts_allocation_capacity_not_just_text_length() {
-        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
         let mut text = String::with_capacity(CLIPBOARD_QUEUE_BYTES + 1);
         text.push('x');
         plane.push_event(Event::ClipboardWrite {
@@ -299,7 +349,7 @@ mod tests {
     #[cfg(feature = "engine")]
     #[test]
     fn a_document_wake_survives_the_queue_cap_and_a_dead_one_does_not_drain() {
-        let mut plane = ControlPlane::new(ControlOptions::default());
+        let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
         let live = ResourceId::local(8);
         let retired = ResourceId::local(9);
         for id in [&live, &retired] {

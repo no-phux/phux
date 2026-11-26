@@ -86,7 +86,7 @@ async fn saturated_geometry_applies_final_size_before_snapshot() {
     on_local!(async {
         let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
             .expect("spawn");
-        let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+        let master = std::sync::Arc::clone(&bundle.actor.process.pty.as_ref().expect("pty").master);
         let terminal = bundle.handle.terminal().expect("terminal").clone();
         let mut out = bundle.handle.output.subscribe();
         let request = ResizeRequest {

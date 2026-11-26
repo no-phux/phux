@@ -89,8 +89,10 @@ impl ServerState {
             .map(|(group, key, value)| MetadataBlob {
                 group: group.map(phux_protocol::ids::GroupId::get),
                 key: key.to_owned(),
+                pane: None,
                 value: value.to_vec(),
             })
+            .chain(self.unseen_blobs())
             .collect();
         blob
     }
@@ -194,7 +196,9 @@ fn pane_blob(
         scrollback_bytes: Vec::new(),
         retained_exit,
         retain_secs,
+        asked: None,
         key: None,
+        program_resume_token: None,
     }
 }
 
@@ -231,6 +235,7 @@ pub(crate) fn live_pane_wires(blob: &StateBlob) -> HashSet<u32> {
 /// runtime restores its lifecycle watcher from.
 pub(crate) type ExitWatchers = Vec<(
     ResourceId,
+    super::ActivationToken,
     oneshot::Receiver<phux_core::process::ExitOutcome>,
 )>;
 

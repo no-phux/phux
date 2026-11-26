@@ -44,6 +44,10 @@ impl KeyboardProtocolSet {
 /// [`Self::new`] and the `with_*` setters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent HELLO offers, each its own wire field"
+)]
 pub struct ClientCapabilities {
     /// The client's color tier.
     pub color_support: ColorSupport,
@@ -83,6 +87,10 @@ pub struct ClientCapabilities {
     /// The client can review exact credential references and bound provider identity.
     /// Explicit HELLO offer: legacy clients cannot approve opaque credential requests.
     pub credential_approvals: bool,
+    /// The client asks its user before opening a link a pane asks for and
+    /// answers `open_url` events (HELLO field 14). Only such a client is sent
+    /// one.
+    pub open_url: bool,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -124,12 +132,14 @@ impl ClientCapabilities {
             resource_kinds: ResourceKindSet::LEGACY,
             platform: None,
             credential_approvals: false,
+            open_url: false,
         }
     }
 
     builder_setters! {
         const fn with_platform(platform: Option<ClientPlatform>) => platform;
         const fn with_credential_approvals(enabled: bool) => credential_approvals;
+        const fn with_open_url(enabled: bool) => open_url;
         const fn with_resource_kinds(kinds: ResourceKindSet) => resource_kinds;
         const fn with_compression(compression: CompressionSet) => compression;
     }
@@ -168,9 +178,8 @@ impl Default for ClientCapabilities {
     }
 }
 
-/// What the server implements, advertised in `HELLO_OK`. New
-/// server-owned capabilities append as trailing fields; the next is a second
-/// feature word (ADR-0137).
+/// What the server implements, advertised in `HELLO_OK`. Server-owned
+/// capability words append at the end; absent words never imply support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerCapabilities {
     /// The conformance tiers the server mounts.
@@ -179,6 +188,8 @@ pub struct ServerCapabilities {
     pub features: ServerFeatureSet,
     /// Additive features in the second trailing `u32` of the caps record.
     pub features_ext: ServerFeatureExtSet,
+    /// Additive features in the third trailing capability word.
+    pub features_ext2: ServerFeatureExt2Set,
     /// The frame compression this server selected for the connection
     /// (`docs/protocol.md#framing`). Always one the client offered.
     pub compression: Compression,
@@ -192,6 +203,7 @@ impl ServerCapabilities {
             layers: LayerSet::new(),
             features: ServerFeatureSet::new(),
             features_ext: ServerFeatureExtSet::new(),
+            features_ext2: ServerFeatureExt2Set::new(),
             compression: Compression::None,
         }
     }
@@ -201,6 +213,7 @@ impl ServerCapabilities {
         const fn with_layers(layers: LayerSet) => layers;
         const fn with_features(features: ServerFeatureSet) => features;
         const fn with_features_ext(features: ServerFeatureExtSet) => features_ext;
+        const fn with_features_ext2(features_ext2: ServerFeatureExt2Set) => features_ext2;
     }
 }
 

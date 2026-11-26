@@ -77,6 +77,7 @@ fn catalog_theme(id: &str) -> &'static Theme {
             cursor: hex(t.cursor),
             accent: hex(t.accent.unwrap_or(t.ansi[6])),
             selection: t.selection_bg.map(hex),
+            bold: None,
         }
     })
 }
@@ -114,6 +115,7 @@ fn edge(id: &'static str) -> &'static Theme {
             selection: input["selection_bg"]
                 .as_str()
                 .map(|_| c(&input["selection_bg"])),
+            bold: None,
         }
     })
 }

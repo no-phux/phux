@@ -12,7 +12,7 @@ use rune_kit::toast_stack::{ToastEntry, VISIBLE};
 use rune_kit::{Button, ButtonVariant, ControlSize, SegmentedControl, ToastRegion};
 
 use super::tokens::{Paint, Tier, Tokens};
-use super::{PAD, badge, icon_press, icons, keep_from_pane};
+use super::{badge, icon_press, icons, keep_from_pane, terminal_padding};
 use crate::desk::notice::ToastInput;
 use crate::desk::{Desk, Notice, NoticeKind};
 use crate::grid::Metrics;
@@ -256,7 +256,8 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
         .as_ref()
         .filter(|f| &f.terminal == id)?;
     let width = EXTENTS.find_w.min(area[0] - s.s2).max(EXTENTS.find_min_w);
-    let left = (PAD + area[0] - width - s.s1).max(0.0);
+    let pad = terminal_padding(desk);
+    let left = (pad + area[0] - width - s.s1).max(0.0);
     let query = &desk.connection.find_query;
     let miss = find.index.is_none() && !query.text.is_empty();
     let field = text_input(query, t.ty.body)
@@ -285,7 +286,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
     };
     let bar = row()
         .key("find-bar")
-        .absolute(left, PAD + s.s1)
+        .absolute(left, pad + s.s1)
         .w(width)
         .on_drag(keep_from_pane)
         // Keyboard help makes the toolbar's buttons a natural stop. Escape
@@ -380,11 +381,18 @@ pub fn history(
     let travel = bar.total.saturating_sub(bar.len).max(1) as f32;
     let top = bar.offset as f32 / travel * (track - thumb);
     let rail_w = s.s1;
+    let pad = terminal_padding(desk);
+    // On the phone the rail sits just inside the grid's trailing edge.
+    let rail_offset = if pad == 0.0 {
+        -rail_w
+    } else {
+        (pad - rail_w) / 2.0
+    };
     let rail = el()
         .key(format!("rail-{id}"))
         .absolute(
-            PAD + area[0] + (PAD - rail_w) / 2.0,
-            PAD + top.clamp(0.0, track - thumb),
+            pad + area[0] + rail_offset,
+            pad + top.clamp(0.0, track - thumb),
         )
         .w(rail_w)
         .h(thumb)
@@ -404,7 +412,7 @@ pub fn history(
         .on_press(move |d: &mut Desk| d.follow_live(&target))
         .build(&t.kit)
         .key(format!("live-{id}"))
-        .pin(None, None, Some(PAD + s.s2), Some(PAD + s.s2))
+        .pin(None, None, Some(pad + s.s2), Some(pad + s.s2))
         .transition(pop(t));
     vec![rail, t.elevate(pill, Tier::Floating)]
 }

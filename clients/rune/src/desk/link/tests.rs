@@ -6,7 +6,7 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::Status;
 
 use super::standing::plainly;
-use super::{Banner, Desk, RETRY_CEILING, Standing, backoff, forgets, incompatible, sessions};
+use super::{Banner, Desk, Standing, forgets, incompatible, sessions};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -53,6 +53,8 @@ fn pane(id: u32, session: u32, cwd: Option<&str>) -> PaneDescriptor {
         exec: None,
         foreground: None,
         icon: None,
+        parent: None,
+        unseen: None,
     }
 }
 
@@ -314,7 +316,7 @@ fn holding(client: Option<Arc<Client>>) -> Desk {
     desk.link.heard = true;
     desk.link.home = Some(("work".to_owned(), None));
     desk.link.org_unavailable = Some(1);
-    desk.link.keep = Some("old machine session".into());
+    desk.link.created = phux_protocol::ids::SessionKey::new([7; 16]);
     desk.link.incompatible = Some("server speaks 12".to_owned());
     desk.pending = Some(Pending::Close(ResourceId::local(1)));
     desk.connection.wanted = Some((ResourceId::local(3), Instant::now()));
@@ -326,7 +328,7 @@ fn assert_nothing_held(desk: &Desk) {
     assert_eq!(desk.connection.wanted, None);
     assert_eq!(desk.link.home, None);
     assert_eq!(desk.link.org_unavailable, None);
-    assert_eq!(desk.link.keep, None);
+    assert_eq!(desk.link.created, None);
     assert_eq!(desk.link.incompatible, None);
     assert!(!desk.link.heard);
     assert_eq!(desk.link.down_since, None);
@@ -424,15 +426,6 @@ fn a_failed_search_keeps_what_the_updater_manages() {
     failed.aimed = true;
     desk.adopt(failed);
     assert_eq!(desk.updater.target, None);
-}
-
-#[test]
-fn retries_widen_to_a_ceiling() {
-    assert_eq!(backoff(0), Duration::from_secs(2));
-    assert_eq!(backoff(1), Duration::from_secs(4));
-    assert_eq!(backoff(3), Duration::from_secs(16));
-    assert_eq!(backoff(9), RETRY_CEILING);
-    assert_eq!(backoff(u32::MAX), RETRY_CEILING);
 }
 
 #[test]

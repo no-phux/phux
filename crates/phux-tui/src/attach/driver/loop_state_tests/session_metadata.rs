@@ -96,7 +96,7 @@ async fn project_tag_broadcast_groups_the_session_picker() {
     let rows = session_picker_rows(
         &state
             .peers
-            .inputs(&crate::attach::review::ReviewIndex::default()),
+            .inputs(&crate::attach::review::ReviewIndex::default(), &state.peer_presentation),
         &ArrangementDoc::default(),
     );
     assert!(
@@ -141,6 +141,7 @@ fn parked_rename(state: &mut SessionLoop, new_name: &str) {
         current: "test".to_owned(),
         new_name: new_name.to_owned(),
         organization: false,
+        operation: None,
     });
 }
 
@@ -149,6 +150,7 @@ fn parked_org_rename(state: &mut SessionLoop, new_name: &str) {
     parked_rename(state, new_name);
     if let Some(pending) = state.rename_pending.as_mut() {
         pending.organization = true;
+        pending.operation = Some(phux_protocol::ids::OperationId::new([3; 16]).unwrap());
     }
 }
 
@@ -217,6 +219,27 @@ async fn refused_session_rename_keeps_the_current_status_name() {
             .iter()
             .all(|session| session.name != "notes")
     );
+}
+
+/// Request correlation alone is not evidence that this rename committed.
+#[tokio::test(flavor = "current_thread")]
+async fn foreign_or_bare_rename_ack_does_not_update_reusable_name() {
+    use phux_protocol::ids::{OperationId, Revision};
+    use phux_protocol::wire::frame::{CommandResult, CommandValue, Committed};
+    let foreign = Committed::new(OperationId::new([9; 16]).unwrap(), Revision::new(2));
+    let replies = [
+        CommandResult::OkWith(CommandValue::Committed(Box::new(foreign))),
+        CommandResult::Accepted { operation: OperationId::new([3; 16]).unwrap() },
+        CommandResult::Ok,
+    ];
+    for reply in replies {
+        let (mut state, mut client, _server, _) =
+            bootstrapped_loop_with(ServerFeatureSet::new()).await;
+        parked_org_rename(&mut state, "notes");
+        answer_org_rename(&mut state, &mut client, reply).await;
+        assert_eq!(state.mirror.session_name, "test");
+        assert!(state.peers.sessions.iter().all(|session| session.name != "notes"));
+    }
 }
 
 /// ADR-0161: an `ORGANIZATION` attach follows renames and lifetime changes
@@ -326,4 +349,29 @@ async fn session_project_set_event_relabels_the_peer_row_by_key() {
         assert_eq!(phux_client::project_identity::link_of_session(row), project);
         assert!(row.attrs.contains(&("host".to_owned(), "mini".to_owned())));
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_rebootstrap_selects_attached_identity_not_reusable_name() {
+    let mut rig = LoopRig::plain();
+    let id = SessionId::new(41);
+    rig.state.peers.focused_session = Some(id);
+    rig.state.mirror.session_name = "old-name-now-reused".into();
+    let mut peer = Connection::from_stream(rig.server);
+    let result = rig.state.request_rebootstrap(&mut rig.client).await.unwrap();
+    assert!(matches!(result, FrameStep::Rebootstrap));
+    assert!(matches!(peer.recv().await.unwrap(), FrameKind::Attach {
+        target: AttachTarget::ById(selected), ..
+    } if selected == id));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_rebootstrap_without_identity_does_not_fall_back_to_name() {
+    let mut rig = LoopRig::plain();
+    rig.state.mirror.session_name = "work".into();
+    let mut peer = Connection::from_stream(rig.server);
+    let result = rig.state.request_rebootstrap(&mut rig.client).await;
+    assert!(matches!(result, Err(AttachError::Protocol(_))));
+    drop(rig.client);
+    assert!(peer.recv().await.is_err(), "no name selection or creation");
 }

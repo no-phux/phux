@@ -6,7 +6,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::DetachReason;
 use rune::Tx;
 
-use super::{Desk, NoticeKind, layout};
+use super::{Desk, NoticeKind};
 
 mod receipts;
 pub(super) use receipts::Receipts;
@@ -21,6 +21,9 @@ impl Desk {
     ) -> bool {
         let mut changed = observation.status != self.connection.status;
         if observation.connection_epoch != self.connection.epoch {
+            if let Some(panel) = self.quick.as_mut() {
+                panel.forget_move();
+            }
             self.retire_documents(client);
             self.first_contact();
             self.connection.epoch = observation.connection_epoch;
@@ -37,8 +40,10 @@ impl Desk {
         if let Some(topology) = observation.topology.take()
             && self.connection.topology.as_ref() != Some(&topology)
         {
+            for pane in &topology.panes {
+                self.activities.marked(&pane.terminal_id, pane.unseen);
+            }
             self.connection.topology = Some(topology);
-            self.follow_reveal();
             changed = true;
         }
         if self.connection.server.is_none() {
@@ -58,6 +63,24 @@ impl Desk {
         mut observation: Observation,
         tx: &mut Tx,
     ) -> (bool, bool) {
+        if !self.connection.owns_client(client) {
+            return (false, false);
+        }
+        // Qualify this observation's handles without sampling a newer HELLO
+        // for an old batch. The epoch and identity are read under one lock.
+        let scope = client.with_control(|control| {
+            (control.connection_epoch() == observation.connection_epoch)
+                .then(|| control.server().map(|server| server.id.clone()))
+        });
+        let Some(scope) = scope else {
+            return (false, false);
+        };
+        if observation.topology.is_some()
+            && observation.status == phux_client_runtime::control::Status::Attached
+        {
+            self.connection.view_server = scope;
+            self.connection.view_epoch = observation.connection_epoch;
+        }
         self.fence_epoch_events(&mut observation.events, observation.connection_epoch);
         let mut changed = self.follow_connection(client, &mut observation);
         changed |= self.reconcile_receipts(client, tx);
@@ -118,7 +141,7 @@ impl Desk {
                 exit_status,
                 ..
             } => {
-                self.popup_ended(client, &terminal_id, false)
+                self.popup_ended(client, &terminal_id)
                     | self.resource_closed(client, &terminal_id, exit_status)
             }
             Event::TerminalsClosed {
@@ -131,10 +154,13 @@ impl Desk {
                 true
             }
             Event::OrganizationOperation { operation, outcome } => {
-                self.quick_move_outcome(client, operation, &outcome)
+                self.session_creation_outcome(client, operation, &outcome)
+                    | self.quick_move_outcome(client, operation, &outcome)
                     | self.sidebar_move_outcome(client, operation, &outcome)
                     | self.layout_outcome(client, operation, outcome)
             }
+            event @ Event::Frame(_) => phux_client_runtime::control::forward::agent_request(event)
+                .is_some_and(|request| self.agent_request(request)),
             Event::ClipboardWrite { terminal_id, text } => {
                 self.clipboard_write(terminal_id, text.0, tx)
             }
@@ -142,6 +168,11 @@ impl Desk {
                 terminal_id,
                 selection,
             } => self.clipboard_read(terminal_id, selection, tx),
+            Event::OpenUrl {
+                terminal_id,
+                id,
+                url,
+            } => self.open_url_asked(terminal_id, id, &url),
             Event::Note {
                 terminal_id,
                 note: Some(note),
@@ -176,7 +207,7 @@ impl Desk {
                 exit_status,
                 ..
             } => {
-                self.popup_ended(client, &terminal_id, true)
+                self.popup_ended(client, &terminal_id)
                     | self.producer_ended(&terminal_id, exit_status)
             }
             Event::ConnectionLost { .. } => {
@@ -211,8 +242,14 @@ impl Desk {
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
-            | Event::BackgroundWork { .. }
-            | Event::Attached { .. } => true,
+            | Event::BackgroundWork { .. } => true,
+            Event::Attached { .. } => {
+                self.connection.in_view.clear();
+                if self.connection.size_locked {
+                    self.claim_size_lock(true);
+                }
+                true
+            }
             other => self.apply_document_subscription(client, other),
         }
     }
@@ -246,6 +283,48 @@ impl Desk {
         if self.popup_spawned(client, request, id.as_ref(), error.as_deref()) {
             return true;
         }
+        let origin = self.connection.spawn_servers.remove(&request);
+        let follow = origin
+            .as_ref()
+            .is_some_and(|origin| origin.choice == self.connection.view_choice);
+        let ours = self.connection.pending_spawns.contains(&request)
+            || self.connection.pending_splits.contains_key(&request);
+        if ours
+            && id.is_some()
+            && origin
+                .as_ref()
+                .is_none_or(|origin| !origin.owns_client(client))
+        {
+            self.connection
+                .pending_spawns
+                .retain(|pending| *pending != request);
+            self.connection.pending_splits.remove(&request);
+            self.connection.resources.starting.remove(&request);
+            return true;
+        }
+        if let Some(id) = id.as_ref()
+            && let Some(origin) = origin
+        {
+            let intent =
+                super::view_intent::ViewIntent::new(client, id, origin.server, origin.epoch);
+            if intent.refused() {
+                self.connection
+                    .pending_spawns
+                    .retain(|pending| *pending != request);
+                self.connection.pending_splits.remove(&request);
+                self.connection.resources.starting.remove(&request);
+                self.say(NoticeKind::Error, "Pending pane view cancelled: its original source is no longer available. Check the server’s panes in the palette before retrying; a producer may already be running.");
+                return true;
+            }
+            if follow {
+                self.connection.view_intents.insert(id.clone(), intent);
+            } else {
+                self.connection
+                    .view_intents
+                    .entry(id.clone())
+                    .or_insert(intent);
+            }
+        }
         let source = self.connection.resources.starting.remove(&request);
         if let Some((new, source)) = id.as_ref().zip(source) {
             self.connection
@@ -256,7 +335,7 @@ impl Desk {
         if let Some(new) = &id
             && let Some((session, placement)) = self.connection.pending_splits.remove(&request)
         {
-            self.place_split(client, new, placement, session);
+            self.place_split(client, new, placement, session, follow);
             return true;
         }
         let ours = self.connection.pending_spawns.contains(&request)
@@ -267,7 +346,8 @@ impl Desk {
         self.connection.pending_spawns.retain(|id| *id != request);
         self.connection.pending_splits.remove(&request);
         match id {
-            Some(id) => self.want(id),
+            Some(id) if follow => self.want_automatic(id),
+            Some(_) => {}
             None => {
                 let error = error.unwrap_or_else(|| "spawn failed".to_owned());
                 let text = source.map_or_else(
@@ -283,8 +363,9 @@ impl Desk {
     fn resource_closed(&mut self, client: &Client, id: &ResourceId, exit: Option<i32>) -> bool {
         let producer = self.producer_ended(id, exit);
         let document = self.forget_document(client, id);
-        let pending_phone = self.phone.is_some()
-            && self.connection.shown.is_none()
+        self.connection.tabs.recent.retain(|left| left != id);
+        // The next of a closing tab, asked for a moment ago.
+        let pending = self.connection.shown.is_none()
             && self
                 .connection
                 .wanted
@@ -295,20 +376,18 @@ impl Desk {
             .shown
             .as_ref()
             .is_some_and(|s| &s.resource == id)
-            || pending_phone
+            || pending
         {
-            let next = self
-                .connection
-                .layout
-                .as_ref()
-                .filter(|_| self.phone.is_none())
-                .and_then(|tree| layout::neighbour(tree, id));
-            self.close_shown(client, std::slice::from_ref(id));
+            let closed = std::slice::from_ref(id);
+            let next = self.after_closing(closed);
+            self.close_shown(client, closed);
+            self.drop_leaf(id);
             if let Some(next) = next {
                 self.want_automatic(next);
             }
             return true;
         }
+        self.drop_leaf(id);
         let other = self.connection.others.remove(id);
         if let Some(view) = other.flatten() {
             let _ = client.destroy_view(view);

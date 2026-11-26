@@ -22,6 +22,7 @@ fn a_server_that_never_answers_times_out_with_exit_four() {
         &["ls", "--socket", sock][..],
         &["ls", "--json", "--socket", sock],
         &["snapshot", "--json", "work", "--socket", sock],
+        &["forward", "-L", "0:localhost:80", "--socket", sock],
     ] {
         let started = std::time::Instant::now();
         let (code, stdout, stderr) =
@@ -44,4 +45,16 @@ fn a_server_that_never_answers_times_out_with_exit_four() {
             assert_eq!(doc["exit_code"], 4, "{doc}");
         }
     }
+}
+
+/// A deadline that is not a number is refused, not silently replaced.
+#[test]
+fn an_invalid_timeout_is_a_usage_error() {
+    let (code, stdout, stderr) =
+        Out::of(phux().env("PHUX_TIMEOUT", "abc").args(["ls", "--json"])).into_parts();
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    let doc: serde_json::Value = serde_json::from_str(stderr.trim()).expect("one JSON line");
+    assert_eq!(doc["error"]["code"], "usage_error", "{doc}");
+    assert!(stderr.contains("PHUX_TIMEOUT"), "{stderr}");
 }

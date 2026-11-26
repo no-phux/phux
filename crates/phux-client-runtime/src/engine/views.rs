@@ -5,10 +5,52 @@ use super::{
     ResourceId, Scroll, SearchMatch, SearchResults, SelectionGestureEvent, SelectionGestureResult,
     Sender,
 };
-use crate::ViewId;
+use crate::{
+    ViewId,
+    publication::{Publication, TerminalPublication},
+};
+
+/// Original renderable source of an independent view, not a reusable numeric id.
+///
+/// Capture once at the intent's qualified source. Retain this value across
+/// deferred admission; a stale source is never permission to capture its
+/// replacement. Slot identity binds the owner/incarnation, and the token binds
+/// the exact logical stream and bootstrap generation.
+#[derive(Clone, Debug)]
+pub struct ViewSource {
+    pub(super) terminal: ResourceId,
+    pub(super) token: u128,
+    pub(super) publication: TerminalPublication,
+}
+
+impl ViewSource {
+    /// The terminal in the source's original id space.
+    #[must_use]
+    pub const fn terminal_id(&self) -> &ResourceId {
+        &self.terminal
+    }
+
+    pub(crate) fn capture(
+        publication: &Publication,
+        terminal: &ResourceId,
+    ) -> Result<Self, EngineError> {
+        let slot = publication
+            .slot(terminal)
+            .ok_or(EngineError::ProjectionUnavailable)?;
+        let token = slot
+            .source_generation()
+            .ok_or(EngineError::ProjectionUnavailable)?;
+        Ok(Self {
+            terminal: terminal.clone(),
+            token,
+            publication: slot,
+        })
+    }
+}
 
 pub(super) enum ViewCommand {
-    Create(ResourceId, Sender<Result<ViewId, EngineError>>),
+    Source(ResourceId, Sender<Result<ViewSource, EngineError>>),
+    Create(ViewSource, Sender<Result<ViewId, EngineError>>),
     Destroy(ViewId, Sender<Result<(), EngineError>>),
     Query(
         ViewId,
@@ -18,9 +60,16 @@ pub(super) enum ViewCommand {
 }
 
 impl EngineHandle {
-    /// Create a tail-following view without attaching or resizing the terminal.
-    pub fn create_view(&self, terminal: &ResourceId) -> Result<ViewId, EngineError> {
-        self.request(|reply| Command::View(ViewCommand::Create(terminal.clone(), reply)))?
+    /// Capture the currently observed engine-only source for a fresh intent.
+    /// Network consumers use `Client::view_source` with their original server
+    /// identity instead. Do not call this again to revive a stale continuation.
+    pub fn view_source(&self, terminal: &ResourceId) -> Result<ViewSource, EngineError> {
+        self.request(|reply| Command::View(ViewCommand::Source(terminal.clone(), reply)))?
+    }
+
+    /// Create a tail-following view only if its original source still exists.
+    pub fn create_view(&self, source: &ViewSource) -> Result<ViewId, EngineError> {
+        self.request(|reply| Command::View(ViewCommand::Create(source.clone(), reply)))?
     }
 
     /// Destroy just this view. The terminal and other views remain attached.
@@ -109,6 +158,12 @@ impl EngineHandle {
         self.request_view(view, move |id, reply| {
             Query::SetSelection(id, start, end, rectangle, reply)
         })?
+    }
+
+    /// Draw `text` in this view ahead of the server's echo. Other views of
+    /// the terminal keep showing only what the server sent.
+    pub fn predict_view_text(&self, view: ViewId, text: String) -> Result<bool, EngineError> {
+        self.request_view(view, move |id, reply| Query::PredictText(id, text, reply))?
     }
 
     /// Clear only this view's selection.

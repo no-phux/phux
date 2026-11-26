@@ -88,7 +88,7 @@ impl TerminalActor {
                     scrollback: Vec::new(),
                 }
             });
-        let pty = self.pty.as_ref();
+        let pty = self.process.pty.as_ref();
         let master_fd = pty.and_then(|p| {
             let master = p.master.lock().ok()?;
             let fd = master.as_raw_fd()?;
@@ -130,6 +130,10 @@ impl TerminalActor {
             cwd,
             vt_replay_bytes: snap.bytes,
             scrollback_bytes: snap.scrollback,
+            program_resume_token: self
+                .program_resume
+                .token()
+                .map(phux_terminal_api::handoff::RedactedToken::new),
         });
     }
 
@@ -137,6 +141,7 @@ impl TerminalActor {
     /// the query failed).
     pub(super) fn reply_pane_cwd(&self, req: PwdRequest) {
         let cwd = self
+            .process
             .pty
             .as_ref()
             .and_then(|p| p.child.process_id())

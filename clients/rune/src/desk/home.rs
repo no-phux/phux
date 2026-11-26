@@ -4,9 +4,8 @@
 //! is gone.
 
 use phux_client_runtime::Client;
-use phux_client_runtime::control::{SessionDescriptor, SessionRecovery, Status, Topology};
+use phux_client_runtime::control::{SessionDescriptor, Status, Topology};
 use phux_protocol::ids::SessionKey;
-use phux_protocol::wire::frame::{AttachTarget, SessionLifetime};
 
 use super::{Desk, link};
 
@@ -73,6 +72,12 @@ impl Desk {
     /// Select a session when none is selected. True when that changed
     /// anything on screen.
     pub(super) fn settle_home(&mut self, client: &Client) -> bool {
+        if self.connection.fleet_handoff.is_some() {
+            return self.settle_fleet_handoff(client);
+        }
+        if !self.connection.owns_client(client) {
+            return false;
+        }
         if self.connection.status != Status::Attached {
             return false;
         }
@@ -82,6 +87,26 @@ impl Desk {
         let Some(topology) = &self.connection.topology else {
             return false;
         };
+        if self.link.creating.is_some() || self.link.uncertain_session.is_some() {
+            return false;
+        }
+        if let Some(key) = self.link.created {
+            let Some(session) = topology
+                .sessions
+                .iter()
+                .find(|session| session.key == Some(key))
+            else {
+                return false;
+            };
+            if client.selected_session() != Some(session.id) {
+                return super::view_intent::select_keyed_session(
+                    client,
+                    self.connection.view_server.as_deref(),
+                    self.connection.view_epoch,
+                    &key,
+                );
+            }
+        }
         let selected = client.selected_session();
         if let Some(session) = topology.sessions.iter().find(|s| Some(s.id) == selected) {
             let moved = self.link.home.as_ref().map(|(name, _)| name) != Some(&session.name);
@@ -89,15 +114,6 @@ impl Desk {
                 let _ = self.prefs.set(LAST_SESSION, &session.name);
             }
             self.link.home = Some((session.name.clone(), session.key));
-            if std::mem::take(&mut self.link.creating) {
-                client.with_control(|c| c.set_session_recovery(SessionRecovery::CallerValidated));
-            }
-            if self.link.keep.as_ref() == Some(&session.name)
-                && let Some(key) = session.key
-            {
-                self.link.keep = None;
-                keep(client, session, key);
-            }
             return false;
         }
         if self.connection.pending_session.is_some()
@@ -127,25 +143,13 @@ impl Desk {
             Home::Existing,
         );
         match home {
-            Home::Existing(name) => client.attach_session(AttachTarget::ByName(name)),
-            Home::Missing(name) => self.create_session(name),
+            Home::Existing(name) => {
+                self.connection.select_named_session(client, &name);
+            }
+            Home::Missing(name) => self.ensure_session(name),
             Home::Nothing => return false,
         }
         true
-    }
-}
-
-/// Make a session this window created persistent, unless it already is (a
-/// worktree's session, which the CLI made).
-fn keep(client: &Client, session: &SessionDescriptor, key: SessionKey) {
-    if session.lifetime == Some(SessionLifetime::Persistent) {
-        return;
-    }
-    if let Err(error) = client.set_session_lifetime(key, SessionLifetime::Persistent) {
-        eprintln!(
-            "phux-rune: could not keep session {}: {error:?}",
-            session.name
-        );
     }
 }
 
@@ -163,6 +167,7 @@ fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 mod tests {
     use super::*;
 
+    use phux_protocol::wire::frame::SessionLifetime;
     fn session(id: u32, name: &str, created: i64) -> SessionDescriptor {
         SessionDescriptor {
             id,

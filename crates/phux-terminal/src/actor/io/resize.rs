@@ -45,7 +45,7 @@ impl TerminalActor {
             self.install_cell_px(cell_w, cell_h);
             return false;
         }
-        self.reflow_tombstoned =
+        self.publication.reflow_tombstoned =
             self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
         self.cols = applied.0;
         self.rows = applied.1;
@@ -68,18 +68,18 @@ impl TerminalActor {
             cell_height: u32::from(cell_h),
         });
         self.publish_input_snapshot();
-        self.pty_resize_pending = true;
+        self.process.resize_pending = true;
         self.apply_pty_resize();
     }
 
     /// A failed kernel resize is not a settled no-op. A later identical
     /// request retries only the ioctl, without invalidating history again.
     fn apply_pty_resize(&mut self) {
-        if !self.pty_resize_pending {
+        if !self.process.resize_pending {
             return;
         }
-        let Some(pty) = &self.pty else {
-            self.pty_resize_pending = false;
+        let Some(pty) = &self.process.pty else {
+            self.process.resize_pending = false;
             return;
         };
         let (cell_w, cell_h) = self.cell_px;
@@ -94,7 +94,7 @@ impl TerminalActor {
             return;
         };
         match master.resize(size) {
-            Ok(()) => self.pty_resize_pending = false,
+            Ok(()) => self.process.resize_pending = false,
             Err(err) => warn!(
                 ?err,
                 cols = self.cols,

@@ -75,6 +75,10 @@ for name in LICENSE NOTICE THIRD-PARTY-NOTICES.txt Inter-OFL.txt JetBrainsMono-O
     tmd-LICENSE.txt tmd-THIRD-PARTY-NOTICES.md tmd-VERSION.txt; do
     [[ -s "$notices/$name" ]] || fail "the archive has no $name"
 done
+grep -Fq '@lobehub/icons — Claude, Codex and OpenCode identity marks' \
+    "$notices/THIRD-PARTY-NOTICES.txt" || fail "the archive has no identity asset attribution"
+grep -Fq 'Copyright (c) 2023 LobeHub' \
+    "$notices/THIRD-PARTY-NOTICES.txt" || fail "the archive has no identity asset copyright"
 helper="$(dirname "$binary")/tmd"
 [[ -x "$helper" ]] || fail "the archive has no tmd viewer"
 if [[ "$archive" == *.zip ]]; then

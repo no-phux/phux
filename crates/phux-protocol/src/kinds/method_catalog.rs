@@ -22,6 +22,8 @@ pub enum FeatureWord {
     Features,
     /// `server_caps.features_ext`, the first trailing word.
     FeaturesExt,
+    /// `server_caps.features_ext2`, the second trailing word.
+    FeaturesExt2,
 }
 
 impl FeatureWord {
@@ -31,6 +33,7 @@ impl FeatureWord {
         match self {
             Self::Features => "features",
             Self::FeaturesExt => "features_ext",
+            Self::FeaturesExt2 => "features_ext2",
         }
     }
 }
@@ -48,6 +51,8 @@ pub enum FeatureGate {
         /// The spec constant, e.g. `"PATH_QUERY"`.
         wire_name: &'static str,
     },
+    /// A bit in the current executing peer's third capability word.
+    FeaturesExt2(crate::caps::ServerFeatureExt2),
 }
 
 impl FeatureGate {
@@ -60,6 +65,12 @@ impl FeatureGate {
         }
     }
 
+    /// Gate a method on the third capability word.
+    #[must_use]
+    pub const fn ext2(feature: crate::caps::ServerFeatureExt2) -> Self {
+        Self::FeaturesExt2(feature)
+    }
+
     /// Whether this bit is advertised in its own negotiated caps word.
     /// Zero masks are never advertised; unknown bits have already been
     /// removed by the typed feature sets. This is not authorization.
@@ -68,9 +79,11 @@ impl FeatureGate {
         self,
         features: crate::caps::ServerFeatureSet,
         features_ext: crate::caps::ServerFeatureExtSet,
+        features_ext2: crate::caps::ServerFeatureExt2Set,
     ) -> bool {
         match self {
             Self::Features(feature) => features.contains(feature),
+            Self::FeaturesExt2(feature) => features_ext2.contains(feature),
             Self::FeaturesExt { mask, .. } => {
                 mask != 0 && features_ext.as_wire() & mask == mask
             }
@@ -83,6 +96,7 @@ impl FeatureGate {
         match self {
             Self::Features(_) => FeatureWord::Features,
             Self::FeaturesExt { .. } => FeatureWord::FeaturesExt,
+            Self::FeaturesExt2(_) => FeatureWord::FeaturesExt2,
         }
     }
 
@@ -92,6 +106,7 @@ impl FeatureGate {
         match self {
             Self::Features(feature) => feature as u32,
             Self::FeaturesExt { mask, .. } => mask,
+            Self::FeaturesExt2(feature) => feature.mask(),
         }
     }
 
@@ -101,6 +116,7 @@ impl FeatureGate {
         match self {
             Self::Features(feature) => feature.wire_name(),
             Self::FeaturesExt { wire_name, .. } => wire_name,
+            Self::FeaturesExt2(feature) => feature.wire_name(),
         }
     }
 
@@ -148,8 +164,9 @@ impl MethodSpec {
         &self,
         features: crate::caps::ServerFeatureSet,
         features_ext: crate::caps::ServerFeatureExtSet,
+        features_ext2: crate::caps::ServerFeatureExt2Set,
     ) -> bool {
-        self.gate.is_none_or(|gate| gate.advertised(features, features_ext))
+        self.gate.is_none_or(|gate| gate.advertised(features, features_ext, features_ext2))
     }
 
     /// Every verb any of the method's rows can require.
@@ -227,6 +244,12 @@ macro_rules! methods {
             ..$spec
         }; $($rest)*)
     };
+    (@apply $spec:expr; ext2($bit:ident) $($rest:tt)*) => {
+        methods!(@apply MethodSpec {
+            gate: Some(FeatureGate::ext2(crate::caps::ServerFeatureExt2::$bit)),
+            ..$spec
+        }; $($rest)*)
+    };
     (@apply $spec:expr; served_by($kind:ident) $($rest:tt)*) => {
         methods!(@apply MethodSpec { served_by: Some(ResourceKind::$kind), ..$spec }; $($rest)*)
     };
@@ -300,6 +323,9 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     // Session rename is server-intercepted, but the scope table gives it no row of its
     // own: a write lands on the ordinary metadata-write row (BIND on Global).
     SESSION_NAME_KEY => Metadata(SESSION_NAME_KEY) [F_METADATA_WRITE];
+    // The writer's view size lock, applied to its attachment and stored nowhere; the
+    // ordinary metadata-write row (BIND on Global) covers it.
+    VIEW_SIZE_LOCK_KEY => Metadata(VIEW_SIZE_LOCK_KEY) [F_METADATA_WRITE];
     SESSION_KEEP_EMPTY_KEY => Metadata(SESSION_KEEP_EMPTY_KEY)
         [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER] feature(KeepEmptySessions);
     // A TUI doorbell: the server stores the nonce like any value, and the scope table
@@ -332,7 +358,7 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     "RESOURCE_REMOVE" => Command(COMMAND_TAG_RESOURCE_REMOVE) [C_RESOURCE_REMOVE]
         ext(Organization) dangerous;
     "RESOURCE_RELAUNCH" => Command(COMMAND_TAG_RESOURCE_RELAUNCH) [C_RESOURCE_RELAUNCH]
-        ext(Organization);
+        ext2(ArchivedLaunchAdmission);
     "INBOX_RESOLVE" => Command(COMMAND_TAG_INBOX_RESOLVE) [C_SESSION_ORGANIZE] ext(Organization);
     "ORGANIZATION_UNDO" => Command(COMMAND_TAG_ORGANIZATION_UNDO) [C_ORGANIZATION_UNDO]
         ext(Organization);
@@ -346,6 +372,8 @@ pub static SERVER_METHODS: &[MethodSpec] = methods! {
     "REVOKE_DELEGATION" => Command(COMMAND_TAG_REVOKE_DELEGATION) [C_DELEGATION];
     "SESSION_KILL" => Command(COMMAND_TAG_SESSION_KILL) [C_SESSION_DELETE]
         ext(SessionKill) dangerous;
+    "SESSION_ENSURE" => Command(COMMAND_TAG_SESSION_ENSURE) [C_SESSION_CREATE]
+        ext2(SessionEnsure);
     "SESSION_SET_PROJECT" => Command(COMMAND_TAG_SESSION_SET_PROJECT) [C_SESSION_ORGANIZE]
         ext(SessionProject);
     "ARRANGEMENT_LOCK" => Command(COMMAND_TAG_ARRANGEMENT_LOCK) [C_ARRANGEMENT_REPLACE]

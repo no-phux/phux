@@ -10,6 +10,14 @@ use std::path::{Path, PathBuf};
 use phux_config_core::RemoteConfigEntry;
 use phux_dial::TlsClientIdentity;
 
+// Beside this file, not under `target/`: the repository ignores that name.
+#[path = "target_authority.rs"]
+mod authority;
+#[path = "target_lookup.rs"]
+mod lookup;
+pub use authority::AuthorityPin;
+pub use lookup::{endpoint_host, endpoint_port, find_entry, find_entry_by, registration_name_by};
+
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
 /// therefore the port a target with no `:PORT` means.
 pub const DEFAULT_QUIC_PORT: u16 = 8788;
@@ -124,8 +132,8 @@ impl RemoteTarget {
         Ok(Self { user, host, port })
     }
 
-    /// The registry key: the typed spelling minus any port, so `mini` and
-    /// `mini:8788` are one host.
+    /// The registry key: the typed spelling minus any port. A second server
+    /// at another port is saved as `NAME-PORT` ([`registration_name_by`]).
     #[must_use]
     pub fn registry_name(&self) -> String {
         self.user
@@ -179,56 +187,6 @@ fn parse_port(raw: &str) -> Result<u16, TargetError> {
         .ok()
         .filter(|port| *port != 0)
         .ok_or_else(|| TargetError::InvalidPort(raw.to_owned()))
-}
-
-/// The registry entry that describes `target`.
-///
-/// Matched as exact `user@host`, then the bare host (what `phux host add`
-/// registers), then any entry whose endpoint addresses that host.
-#[must_use]
-pub fn find_entry<'a>(
-    entries: &'a [RemoteConfigEntry],
-    target: &RemoteTarget,
-) -> Option<&'a RemoteConfigEntry> {
-    find_entry_by(entries, target, |entry| (&entry.name, &entry.endpoint))
-}
-
-/// [`find_entry`] over any registry row type, given its `(name, endpoint)`.
-#[must_use]
-pub fn find_entry_by<'a, E>(
-    entries: &'a [E],
-    target: &RemoteTarget,
-    name_and_endpoint: impl Fn(&E) -> (&str, &str),
-) -> Option<&'a E> {
-    let name = target.registry_name();
-    let named = |wanted: &str| {
-        entries
-            .iter()
-            .find(|entry| name_and_endpoint(entry).0 == wanted)
-    };
-    named(&name).or_else(|| named(&target.host)).or_else(|| {
-        entries.iter().find(|entry| {
-            endpoint_host(name_and_endpoint(entry).1).as_deref() == Some(&target.host)
-        })
-    })
-}
-
-/// The host an endpoint URI addresses, unbracketed; `None` when it has none.
-#[must_use]
-pub fn endpoint_host(endpoint: &str) -> Option<String> {
-    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    let host = if let Some(inner) = authority.strip_prefix('[') {
-        inner.split_once(']').map(|(host, _)| host)?
-    } else if authority.matches(':').count() > 1 {
-        authority
-    } else {
-        authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host)
-    };
-    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// The transport a registry endpoint names, restricted to what an embedder
@@ -393,66 +351,6 @@ pub struct Resolved {
     /// [`TlsClientIdentity::None`]. A PEM key is read by the TLS stack at
     /// dial time, a hardware key is held; the environment is not consulted.
     pub client_identity: TlsClientIdentity,
-}
-
-/// The server's certificate-authority pin (ADR-0153): the CA a dial requires
-/// the server's leaf to chain to. It is made at pairing and never learned
-/// from a connection (ADR-0179).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AuthorityPin {
-    /// The pinned CA, `sha256:` form. `None` pins the leaf alone.
-    pub ca: Option<String>,
-    /// The relay route the server is reached through (ADR-0154 item 5): the
-    /// leaf pin is then the relay's, and [`Self::ca`] is the server's, which
-    /// an end-to-end session inside the relayed stream verifies.
-    pub route: Option<String>,
-}
-
-impl AuthorityPin {
-    /// The pin `known-authorities` beside `config_path` holds for `leaf`
-    /// (through `route` when a relay serves the server).
-    #[must_use]
-    pub fn from_store(config_path: &Path, leaf: Option<&str>, route: Option<&str>) -> Self {
-        let route = route
-            .map(str::trim)
-            .filter(|route| !route.is_empty())
-            .map(str::to_owned);
-        let Some(leaf) = leaf.filter(|leaf| !leaf.trim().is_empty()) else {
-            return Self {
-                route,
-                ..Self::default()
-            };
-        };
-        let store = phux_config_core::known_authorities::path_beside(config_path);
-        let ca = phux_config_core::known_authorities::lookup(&store, leaf, route.as_deref());
-        Self { ca, route }
-    }
-
-    /// The dial trust for `leaf`: [`phux_dial::CertTrust::from_pins`]. For a
-    /// relayed server it is the relay's leaf alone; the server's CA belongs
-    /// to [`Self::inner`].
-    #[must_use]
-    pub fn trust(&self, leaf: Option<&str>) -> Option<phux_dial::CertTrust> {
-        if self.route.is_some() {
-            return phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), None);
-        }
-        phux_dial::CertTrust::from_pins(leaf.map(str::to_owned), self.ca.clone())
-    }
-
-    /// The end-to-end session a relayed dial runs to the server, presenting
-    /// `identity`: when the server's CA is pinned for the route. `None` for a
-    /// relayed server means it cannot be dialed: a connector admits only the
-    /// session, so the relay never reads a consumer (ADR-0180).
-    #[must_use]
-    pub fn inner(&self, identity: &TlsClientIdentity) -> Option<phux_dial::quic::InnerTls> {
-        let route = self.route.clone()?;
-        let ca = self.ca.clone()?;
-        Some(phux_dial::quic::InnerTls {
-            trust: phux_dial::CertTrust::Authority { ca },
-            identity: identity.clone(),
-            server_name: route,
-        })
-    }
 }
 
 /// The TLS identity a registry entry names: its enrolled certificate and

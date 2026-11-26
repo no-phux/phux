@@ -5,6 +5,9 @@ use super::{
     mint_input_operation_id, predict_now_ms, published_replica, published_terminal, render_overlay,
     send_replay_frames, snap_scrolled_viewport, terminal_in_alt_screen,
 };
+use phux_client_core::input_replay::{
+    ReplayDisposition, ReplayReport, UserPasteDelivery, operation_id_hex, user_paste_delivery,
+};
 
 #[allow(
     clippy::future_not_send,
@@ -30,6 +33,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             })
             .cloned()
     }
+
     /// Feed a key to predictive echo, peeking the focused grid so arrows can
     /// size the grapheme they cross (ADR-0090).
     pub(super) fn feed_predict(&mut self, ev: &InputEvent) -> bool {
@@ -38,6 +42,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return false;
         };
         if !self.predict.is_enabled()
+            || self.ctx.typing_held()
             || crate::attach::floating::floating_pane(self.panes).is_some()
         {
             return false;
@@ -109,6 +114,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };
+        if self.ctx.typing_held() {
+            tracing::debug!(terminal = ?pane, "dropping input: another pane is opening");
+            let _ = crate::attach::actions::write_bell(self.out);
+            return Ok(false);
+        }
         // ADR-0124: a retained pane's process exited; there is nothing to
         // type into, and the server would refuse it anyway. A held popup
         // failure closes on any key.
@@ -170,16 +180,30 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             let _ = crate::attach::actions::write_bell(self.out);
             return Ok(());
         }
-        let Some(journal) = self.ctx.input_replay else {
+        let journal = self.ctx.input_replay;
+        let must_order = journal.is_some_and(|journal| journal.borrow().must_order_after(&pane));
+        let should_queue = if let InputEvent::Paste(paste) = &event {
+            // Borrow the bytes before moving the event. A large clipboard,
+            // satellite, or old peer keeps its single atomic raw frame, but
+            // never overtakes unresolved acknowledged input.
+            let can_acknowledge = pane.is_local()
+                && journal.is_some_and(|journal| journal.borrow().active())
+                && acknowledged;
+            let fenced = journal.is_some_and(|journal| journal.borrow().delivery_fenced(&pane));
+            match user_paste_delivery(&paste.data, can_acknowledge, must_order, fenced) {
+                UserPasteDelivery::Acknowledged => true,
+                UserPasteDelivery::Raw => false,
+                UserPasteDelivery::Refused(message) => {
+                    self.refuse_terminal_input(message);
+                    return Ok(());
+                }
+            }
+        } else {
+            must_order
+        };
+        let Some(journal) = journal.filter(|_| should_queue) else {
             return self.conn.send(&event.into_frame(pane)).await;
         };
-        let should_queue = pane.host().is_none()
-            && ((journal.borrow().active() && acknowledged)
-                || journal.borrow().must_order_after(&pane));
-        if !should_queue {
-            return self.conn.send(&event.into_frame(pane)).await;
-        }
-
         let (reports, frames) = {
             let mut journal = journal.borrow_mut();
             if let Err(report) = journal.submit(mint_input_operation_id(), pane, vec![event]) {
@@ -190,6 +214,25 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         };
         journal.borrow_mut().defer_reports(reports);
         send_replay_frames(self.conn, journal, &frames).await
+    }
+
+    /// Surface a policy refusal without pretending a raw send was delivered.
+    fn refuse_terminal_input(&mut self, message: &str) {
+        if let Some(journal) = self.ctx.input_replay {
+            journal.borrow_mut().defer_reports(vec![ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: operation_id_hex(&mint_input_operation_id()),
+                message: message.to_owned(),
+            }]);
+        } else {
+            self.ctx
+                .overlays
+                .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
+                    "Paste not delivered",
+                    vec![message.to_owned()],
+                    self.ctx.theme,
+                )));
+        }
     }
 
     /// Paint queued predictions at the focused pane's origin when the

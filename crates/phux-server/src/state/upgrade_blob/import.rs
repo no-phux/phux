@@ -194,6 +194,8 @@ pub(in crate::state) fn import_tree(
                 notify: None,
                 last_cwd: None,
                 pane_id: None,
+                parent: None,
+                program_resume: None,
             })),
             on_exit: if p.retain_secs.is_some() || p.retained_exit.is_some() {
                 ExitPolicy::Retain

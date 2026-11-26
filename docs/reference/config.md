@@ -67,6 +67,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.history-bytes` | `10485760` |
 | `defaults.history-limit` | `50000` |
 | `defaults.keep-awake` | `"off"` |
+| `defaults.lock-size` | `false` |
 | `defaults.mouse` | `true` |
 | `defaults.retain-on-exit` | `false` |
 | `defaults.retain-on-exit-max` | `256` |
@@ -96,6 +97,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `policy.mode` | unset — `local`, and a configured remote listener, relay connector, or workload authority location refuses to start the server. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `policy.tailnet-owner` | `false` |
 | `restore.on-start` | `false` |
+| `restore.program-resume` | `false` |
+| `restore.scrollback` | `0` |
 | `sidebar.agents-share` | `50` |
 | `sidebar.enabled` | `true` |
 | `sidebar.hosts` | `true` |
@@ -180,8 +183,10 @@ shell-integration = false
 
 # On a machine with no screen, a program that opens a browser (a sign-in,
 # `gh auth login`) goes nowhere. With this on, panes get a stand-in `BROWSER`
-# that prints the link in the pane and copies it to your clipboard. Nothing
-# opens by itself. Read when the server starts.
+# (and an `xdg-open`, last on PATH) that asks you whether to open the link on
+# your own machine; declined, or with nobody to ask, it prints the link in the
+# pane and copies it to your clipboard. Nothing opens by itself. Read when the
+# server starts.
 browser-shim = false
 
 # Keep a pane inspectable after its program exits: its exit status, last
@@ -243,6 +248,12 @@ session-name-template = "${cwd-basename}"
 #              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
+
+# Lock the terminal UI's view size when it attaches, as `phux attach
+# --lock-size` does: while it is attached, other clients (a phone, a second
+# laptop) see its panes letterboxed or cropped instead of resizing them.
+# The palette's "Lock view size" / "Unlock view size" switch it live.
+lock-size = false
 
 # Keep the machine from going to sleep by itself while agents are busy:
 #   "off"               never (the default)
@@ -459,8 +470,8 @@ exclusive = true
 # recent action and hook runs with their exit status and output tail.
 # The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
 # their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
-# sections; link handlers are still declarative only. The manifest path
-# may be absolute or relative to this config file.
+# sections; Rune runs their `[[links]]` handlers on ⌘-click. The manifest
+# path may be absolute or relative to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
@@ -506,8 +517,9 @@ exclusive = true
 #   [[links]]
 #   id = "ticket"
 #   title = "Open ticket"
-#   patterns = ["https://linear.app/*"]
-#   command = ["agent-ticket", "{url}"]
+#   patterns = ["https://linear.app/*"]   # whole-link globs; or schemes = ["https"]
+#   run_on = "client"      # client | pane-host (a split beside the pane)
+#   command = ["agent-ticket", "{url}"]   # url path line pane host cwd
 
 # Federation satellites are remote phux servers a hub can route to. The registry
 # lands before routing so operators can declare stable names and endpoints.
@@ -598,6 +610,10 @@ exclusive = true
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
 # ssh = "me@mini"
+# forward-agent = true        # serve your ssh-agent there while attached
+# forward-agent-keys = ["SHA256:..."]   # and only these keys (docs/ssh.md)
+#
+# An older phux refuses a config with the two forward-agent keys.
 #
 # A server reached through a relay registers the relay as its
 # endpoint, the relay's pin as cert-fingerprint, and the relay route as

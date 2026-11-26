@@ -21,14 +21,14 @@ use phux_vt::{
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
     color::Rgb as RgbColor,
-    fmt::{Format, Formatter},
+    fmt::{Extras, Format, Formatter},
     grid_ref::GridRef,
     mode::Mode,
     point::{Coordinate as PointCoordinate, Point},
     render::{
         CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
     },
-    screen::{CellSemanticContent, CellWide},
+    screen::{CellSemanticContent, CellWide, Screen},
     selection::Selection,
     style::Style,
 };

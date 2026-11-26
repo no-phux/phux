@@ -124,24 +124,12 @@ session (or `--session NAME`). It never creates a session on its own.
   goes back, double-click renames, and a drag reorders them on the server. The strip appears from two tabs up; a
   dot marks a tab that needs you, and a jump from anywhere lands on the
   right tab.
-- **Sidebar.** Every session and terminal on the server, each terminal with
-  what it is doing: a declared agent's name and state (working pulses,
-  blocked or asking needs you, done waits until you look), a running
-  command, a long command that finished or failed while you were elsewhere,
-  and a bell. Every session has a separate header with its resource count,
-  disclosure arrow and visible **×** close button, including empty sessions.
-  Closing asks before ending the named session and its running work; it does
-  not first switch away from the session you are using. Click a header to
-  open it, double-click its name to rename it, or drag its name to reorder.
-  Drag a terminal or document row onto another session's header or resource
-  rows to move it there; an empty or collapsed session accepts drops too.
-  Dragging a tab onto a session moves its members together. Moves stay on the
-  same machine and take effect after the server accepts them; dropping outside
-  the session list or cancelling leaves them alone. Disclosure is independent
-  of selection, so navigating does not unfold sessions you have tucked away.
-  The machine picker and Inbox share the traffic-light row; machine identity
-  stays in its labelled dot rather than a window-wide colour strip.
-  Session badges count what needs you; ⌘J jumps to the next. ⌘B folds the sidebar.
+- **Sidebar.** Compact sessions and resources, always visible locally, with
+  inline split members, shared tool/kind identities, independent session and
+  resource drag targets, and unboxed attention summaries.
+  ⌘J jumps to what needs you; ⌘B folds the sidebar.
+  [Sidebar navigation](./SIDEBAR.md) covers states, child panes, session actions
+  and moving work between sessions.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
   action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
   worth learning first, each row runnable, with every chord one row further;
@@ -198,7 +186,7 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Paths to files that exist count too, absolute, `~/` or
   relative to the pane's directory, with or without a `:line:col` suffix;
   ⌘-click opens the file with its default app. A pane on another machine
-  never links paths, so a click can't open a local file that shares one.
+  links paths only for a [handler](../../docs/plugins.md#link-handlers).
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
 - **Settings.** The sliders button at the right of the desktop title bar

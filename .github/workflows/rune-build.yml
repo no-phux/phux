@@ -154,8 +154,8 @@ jobs:
             --target aarch64-apple-ios-sim -- -D warnings
       - name: Build native simulator app and device bundle
         run: |
-          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-simulator" --target simulator
-          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-device" --target device
+          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-simulator" --target simulator --app-group group.sh.phux.rune.ios
+          python3 clients/rune/ios/build.py --out "$RUNNER_TEMP/ios-device" --target device --app-group group.sh.phux.rune.ios
       - name: Test native tailnet trust, SSH and cancellation
         run: |
           helper="$RUNNER_TEMP/ios-simulator/tailnet"

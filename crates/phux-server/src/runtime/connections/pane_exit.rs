@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use tracing::{debug, info};
 
-use crate::state::{ClientId, Outbound, ServerState, SharedState};
+use crate::state::{ActivationToken, ClientId, Outbound, ServerState, SharedState};
 
 use super::pane_events::{
     PaneEvents, journal_drained_event, journal_pending_events, journal_source_gap,
@@ -28,6 +28,7 @@ use super::pane_events::{
 pub(crate) fn spawn_resource_exit_watcher(
     state: SharedState,
     pane: CoreResourceId,
+    activation: ActivationToken,
     exit_notify: Option<oneshot::Receiver<ExitOutcome>>,
     root_token: CancellationToken,
     events: Option<PaneEvents>,
@@ -38,13 +39,24 @@ pub(crate) fn spawn_resource_exit_watcher(
         }
         return;
     };
-    state.with_mut(|s| s.begin_exit_watch(pane));
+    state.with_mut(|s| s.begin_exit_watch(pane, activation));
     tokio::task::spawn_local(async move {
         let (exit, mut events) = journal_until_exit(&state, rx, events).await;
-        crate::runtime::apps::close_native_agent_sources(&state, pane).await;
+        if state.with(|s| {
+            s.activation_token(pane)
+                .is_some_and(|current| current != activation)
+        }) {
+            end_exit_watch(&state, pane, activation, &root_token, &[]).await;
+            return;
+        }
+        crate::runtime::commands::native_agent::source_exited(&state, pane).await;
         // ADR-0124: a retained pane stays `Exited` until purged or expired,
         // then takes the ordinary close path below.
-        let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
+        let retained = state.with_mut(|s| {
+            s.activation_matches(activation)
+                .then(|| retain_exited_pane(s, pane, activation, exit, events.as_mut()))
+                .flatten()
+        });
         let exit_hook_owed = retained.is_none();
         if let Some(RetainedExit {
             retention,
@@ -60,14 +72,18 @@ pub(crate) fn spawn_resource_exit_watcher(
             fire_retained_exit_hooks(&state, &wire_terminal_id, app_hook, exit);
             events = hold_until_purge(&state, &retention, events).await;
         }
-        let reap = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()));
+        let reap = state.with_mut(|s| {
+            s.activation_matches(activation)
+                .then(|| reap_exited_pane(s, pane, exit, events.as_mut()))
+                .flatten()
+        });
         let targets = if let Some(reap) = reap {
             announce_close(&state, reap, exit_hook_owed).await
         } else {
-            fire_exit_hook_after_kill(&state, pane, exit, exit_hook_owed);
+            fire_exit_hook_after_kill(&state, pane, activation, exit, exit_hook_owed);
             Vec::new()
         };
-        end_exit_watch(&state, pane, &root_token, &targets).await;
+        end_exit_watch(&state, pane, activation, &root_token, &targets).await;
     });
 }
 
@@ -78,10 +94,11 @@ pub(crate) fn spawn_resource_exit_watcher(
 fn fire_exit_hook_after_kill(
     state: &SharedState,
     pane: CoreResourceId,
+    activation: ActivationToken,
     exit: ExitOutcome,
     exit_hook_owed: bool,
 ) {
-    let killed = state.with(|s| s.closed_before_exit(pane));
+    let killed = state.with(|s| s.closed_before_exit(pane, activation));
     if let Some(wire_terminal_id) = killed.filter(|_| exit_hook_owed) {
         crate::hooks::fire_hook(state, HookEvent::pane_exit(&wire_terminal_id, exit.status));
     }
@@ -94,10 +111,11 @@ fn fire_exit_hook_after_kill(
 async fn end_exit_watch(
     state: &SharedState,
     pane: CoreResourceId,
+    activation: ActivationToken,
     root_token: &CancellationToken,
     targets: &[mpsc::Sender<Outbound>],
 ) {
-    let due = state.with_mut(|s| s.end_exit_watch(pane));
+    let due = state.with_mut(|s| s.end_exit_watch(pane, activation));
     if !due || root_token.is_cancelled() {
         return;
     }
@@ -132,12 +150,13 @@ struct RetainedExit {
 fn retain_exited_pane(
     s: &mut ServerState,
     pane: CoreResourceId,
+    activation: ActivationToken,
     exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<RetainedExit> {
     let retention = s.retain_exited(pane, exit, crate::state::now_unix_ms())?;
     // The record keeps its outcome (`ExitPolicy::Retain`).
-    s.activation_ended(pane, exit, false);
+    s.activation_ended(activation, exit, false);
     let wire_terminal_id = s.idspace.intern_resource(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);

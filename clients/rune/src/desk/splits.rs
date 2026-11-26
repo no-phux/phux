@@ -21,6 +21,8 @@ pub(super) struct Unplaced {
     session: SessionKey,
     place: Placement,
     since: Instant,
+    follow: bool,
+    choice: u64,
 }
 
 /// An arrangement write for a spawned terminal.
@@ -47,22 +49,38 @@ impl Desk {
     /// Split the focused pane: spawn a terminal beside it, placed when the
     /// server answers.
     pub fn split(&mut self, dir: SplitDir) {
-        let (Some(client), Some(shown)) = (&self.connection.client, &self.connection.shown) else {
+        let Some(shown) = &self.connection.shown else {
             return;
         };
-        let request = client.spawn_terminal(SpawnRequest {
+        let target = shown.resource.clone();
+        let spawn = SpawnRequest {
             command: None,
             cwd: self.focused_cwd(),
             env: None,
-            session_id: client.selected_session(),
-            initial_size: self.split_spawn_size(&shown.resource, dir),
-        });
+            session_id: None,
+            initial_size: None,
+        };
+        self.split_with(target, dir, spawn);
+    }
+
+    /// Split `target` along `dir` with `spawn`'s command, cwd and env.
+    pub(super) fn split_with(&mut self, target: ResourceId, dir: SplitDir, spawn: SpawnRequest) {
+        let Some(client) = self.connection.client.clone() else {
+            return;
+        };
+        let Some(request) = self.spawn_request(
+            &client,
+            SpawnRequest {
+                session_id: client.selected_session(),
+                initial_size: self.split_spawn_size(&target, dir),
+                ..spawn
+            },
+        ) else {
+            return;
+        };
         self.connection.pending_splits.insert(
             request,
-            (
-                self.placement_session(client),
-                Some((shown.resource.clone(), dir)),
-            ),
+            (self.placement_session(&client), Some((target, dir))),
         );
         self.connection.zoomed = None;
     }
@@ -111,16 +129,26 @@ impl Desk {
         new: &ResourceId,
         place: Placement,
         session: Option<SessionKey>,
+        follow: bool,
     ) {
         let Some(session) = session else {
             self.say(NoticeKind::Error, "The tab or split could not be queued: its destination session was not known. Open the terminal from the palette.");
             return;
         };
+        let server = self.connection.view_server.clone();
+        self.connection
+            .view_intents
+            .entry(new.clone())
+            .or_insert_with(|| {
+                super::view_intent::ViewIntent::new(client, new, server, self.connection.view_epoch)
+            });
         self.connection.unplaced_splits.push(Unplaced {
             terminal: new.clone(),
             session,
             place,
             since: Instant::now(),
+            follow,
+            choice: self.connection.view_choice,
         });
         self.place_pending_splits(client);
     }
@@ -191,8 +219,11 @@ impl Desk {
                 Some((operation, preview)) => {
                     // A previewed split is on screen: the keyboard follows it
                     // now, as the terminal UI's does.
-                    if preview.is_some() {
-                        self.want(item.terminal.clone());
+                    if preview.is_some()
+                        && item.follow
+                        && item.choice == self.connection.view_choice
+                    {
+                        self.want_automatic(item.terminal.clone());
                     }
                     self.connection.split_write = Some(SplitWrite {
                         sent: Some(operation),
@@ -208,7 +239,7 @@ impl Desk {
                     self.connection.unplaced_splits.insert(0, item);
                     return;
                 }
-                None => self.give_up_split(item.terminal),
+                None => self.give_up_split(item),
             }
         }
     }
@@ -247,8 +278,11 @@ impl Desk {
             // A previewed split took the keyboard when it was written; it
             // stays wherever the person has moved it since.
             false if preview.is_some() => {}
-            false => self.want(item.terminal),
-            true if late => self.give_up_split(item.terminal),
+            false if item.follow && item.choice == self.connection.view_choice => {
+                self.want_automatic(item.terminal)
+            }
+            false => {}
+            true if late => self.give_up_split(item),
             true => self.connection.unplaced_splits.insert(0, item),
         }
     }
@@ -260,17 +294,19 @@ impl Desk {
             if item.since.elapsed() < PATIENCE {
                 self.connection.unplaced_splits.push(item);
             } else {
-                self.give_up_split(item.terminal);
+                self.give_up_split(item);
             }
         }
     }
 
-    fn give_up_split(&mut self, new: ResourceId) {
+    fn give_up_split(&mut self, item: Unplaced) {
         self.say(
             NoticeKind::Error,
             "The layout could not be saved; it shows on its own.",
         );
-        self.want(new);
+        if item.follow && item.choice == self.connection.view_choice {
+            self.want_automatic(item.terminal);
+        }
     }
 
     /// Resolve one layout correlation. An uncertain receipt must not become a

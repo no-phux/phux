@@ -90,6 +90,11 @@ pub(crate) fn run_ls(json: bool, depth: &Depth, server: ServerSpec) -> ExitCode 
         } else {
             phux_client::session_list::glance_view(&mut conn).await?
         };
+        let resumes = if !json && depth.detail {
+            crate::commands::program_resume::fetch(&mut conn).await
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let agents = if json || !depth.reads_agents() {
             HashMap::new()
         } else {
@@ -105,10 +110,10 @@ pub(crate) fn run_ls(json: bool, depth: &Depth, server: ServerSpec) -> ExitCode 
             .await
         };
         drop(conn);
-        Ok::<_, phux_client::attach::AttachError>((view, agents))
+        Ok::<_, phux_client::attach::AttachError>((view, agents, resumes))
     });
     match listing {
-        Ok((view, agents)) => render_listing(json, depth, view, &agents),
+        Ok((view, agents, resumes)) => render_listing(json, depth, view, &agents, &resumes),
         Err(err) => target.report_unreachable(json, &err, "ls"),
     }
 }
@@ -144,8 +149,12 @@ const EMPTY_STATE: [&str; 2] = [
 /// Render the session list, one line per session (tmux-`ls`-ish), followed
 /// by satellite Terminals that cannot be joined to hub-local sessions. An
 /// empty server prints [`EMPTY_STATE`] instead of nothing.
-pub(crate) fn print_sessions(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) {
-    print_lines(session_lines(snapshot, organization));
+pub(crate) fn print_sessions(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
+) {
+    print_lines(session_lines(snapshot, organization, resumes));
 }
 
 /// Print `lines`, or [`EMPTY_STATE`] when there are none.
@@ -167,6 +176,13 @@ fn print_lines(lines: Vec<String>) {
 /// A hub reporting a host inventory renders grouped by host
 /// ([`host_grouped_lines`]). `organization` supplies each session's
 /// lifetime and execution counts when the server reports them.
-fn session_lines(snapshot: &SessionSnapshot, organization: Option<&OrgInventory>) -> Vec<String> {
-    with_hosts(snapshot, local_session_lines(snapshot, organization))
+fn session_lines(
+    snapshot: &SessionSnapshot,
+    organization: Option<&OrgInventory>,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
+) -> Vec<String> {
+    with_hosts(
+        snapshot,
+        local_session_lines(snapshot, organization, resumes),
+    )
 }

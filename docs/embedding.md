@@ -19,6 +19,8 @@ session. Keep the client and view alive between callbacks.
 
 ```rust
 use phux_client_runtime::draw::{DrawList, Theme, Visibility};
+use phux_client_runtime::engine::{EngineError, ViewSource};
+use phux_protocol::ids::ResourceId;
 use phux_client_runtime::publication::Rgb;
 use phux_client_runtime::runtime::RuntimeError;
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target, ViewId};
@@ -27,7 +29,18 @@ fn connect(socket: std::path::PathBuf, options: ClientOptions) -> Result<Client,
     Runtime::connect(Target::uds(socket), options)
 }
 
-// Once attached: client.create_view(&terminal_id)?. On invalidation:
+// Capture using the server identity from the original qualified observation,
+// not a newer identity read by a delayed callback.
+fn source_for_intent(
+    client: &Client,
+    terminal: &ResourceId,
+    observed_server: Option<&[u8]>,
+    observed_connection_epoch: u64,
+) -> Result<ViewSource, EngineError> {
+    client.view_source(terminal, observed_server, observed_connection_epoch)
+}
+// Keep that source through a deferred admission: client.create_view(&source)?.
+// On invalidation:
 fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rgb>> {
     let frame = client.acquire_view(view)?;
     Some(DrawList::build(&frame, theme, Visibility::default()))
@@ -38,6 +51,54 @@ fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rg
 `Theme<C>` maps `Rgb` to your colour type. Send input through
 `Client::with_control` as Rune's `desk/input.rs` does; resize from the view
 that owns the terminal's size.
+
+### Creation and view lifetime
+
+`Client::create_session(name, lifetime, launch)` is exact creation: a colliding
+name is a host refusal, never an implicit attach. `submit_spawn` creates a terminal
+in the selected or explicitly addressed session without changing local selection.
+Their `WorkflowSubmission` distinguishes `NotQueued` (no accepted work), `Queued`
+(exact request id), and `Journaled` (retained operation id and optional spawn
+request id). Neither queue nor journal acceptance means host commit or execution.
+Reconcile `OrganizationOperation` under the original operation after a lost
+receipt; an `Unknown` outcome never authorizes a new create.
+
+UniFFI's terminal-spawn methods return `WireWorkflowSubmission`, not a zero/void
+sentinel. `spawn_terminal_in_directory` requires the named existing session and
+does not create it as an unreported fallback or select it. Session creation returns
+the journaled operation text; `WireEvent::OrganizationOperation` carries settlement
+and the exact committed session key.
+Queued spawns settle as `TerminalCreation` / `WireTerminalCreationOutcome`:
+`LiveTarget`, `Refused`, or `Unknown`. The older `TerminalSpawned` event remains
+only a compatibility projection; never infer refusal from its error text.
+
+`ensure_session(name, lifetime, launch)` instead resolves existing versus created
+inside one host operation. Its exact session key and `ensured_created` flag arrive
+on the retained committed receipt. A peer without `SESSION_ENSURE` is explicitly
+unsupported, with no local lookup/create race and no uncorrelated attach fallback.
+Ensuring an existing session does not launch another terminal or change selection.
+
+Runtime `ControlOptions.attach` and `attach_session` are lookup-only. The frozen
+wire `CreateIfMissing` form remains a transport compatibility edge, not an implicit
+runtime ensure. Submit ensure explicitly, then select the receipt's durable key.
+Across a server restart, automatic recovery waits for a new organization seed and
+the same authority/key; a reused session name or numeric id is not a substitute.
+
+Selecting a view is local presentation, not create/attach/terminate.
+`destroy_view` releases only that view; sibling views and durable execution remain.
+Release subscription interest separately when its last consumer leaves.
+`view_source` binds the original observed server id and connection epoch to a
+renderable publication slot and its exact stream/bootstrap generation. Retain the resulting `ViewSource`
+through delayed callbacks; `create_view(&source)` validates it on the engine owner
+when admission actually runs. A stale source is `StaleViewSource`, not permission
+to look up a newer execution using the same numeric id. An unavailable replica
+is `ProjectionUnavailable`, with no installed view. A genuinely retained offline
+source remains usable without a live socket; `None` as the expected server is
+valid only for an owner that really has no negotiated HELLO.
+
+`close_terminals` is an explicit execution-termination intent, not a view-close
+callback. Failed creation never gains an implicit cleanup kill: any compensation
+must explicitly fence the exact created activation.
 
 Build needs `LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"` under `[env]` in
 `.cargo/config.toml` (the only mode with a prebuilt archive), or Zig on

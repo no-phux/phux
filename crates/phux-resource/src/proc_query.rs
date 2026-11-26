@@ -77,6 +77,16 @@ pub fn process_start_ms(pid: i32) -> Option<u64> {
     start::start_ms(pid)
 }
 
+/// `pid`'s parent, or `None` (gone, or no answer on this platform).
+/// Linux reads `/proc/<pid>/stat` field 4; macOS reads `pbi_ppid`.
+#[must_use]
+pub fn process_parent(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    start::parent(pid)
+}
+
 /// Start-time queries: macOS `PROC_PIDTBSDINFO` via `libc`, Linux `/proc`
 /// plus `sysconf(_SC_CLK_TCK)`.
 mod start {
@@ -173,10 +183,9 @@ mod start {
         Some(*BOOT_SECS.get_or_init(|| secs))
     }
 
-    /// `proc_pidinfo(PROC_PIDTBSDINFO)` start time as microseconds (seconds
-    /// alone would miss a same-second pgid reuse).
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` for `pid`.
     #[cfg(target_os = "macos")]
-    pub(super) fn start_time(pid: i32) -> Option<u64> {
+    fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
         // SAFETY: `proc_bsdinfo` is a plain C struct of integers and char
         // arrays; all-zero is a valid value for every field.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -193,14 +202,37 @@ mod start {
                 size,
             )
         };
-        if written < size {
-            return None;
-        }
+        (written >= size).then_some(info)
+    }
+
+    /// The start time as microseconds (seconds alone would miss a
+    /// same-second pgid reuse).
+    #[cfg(target_os = "macos")]
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        let info = bsd_info(pid)?;
         Some(
             info.pbi_start_tvsec
                 .saturating_mul(1_000_000)
                 .saturating_add(info.pbi_start_tvusec),
         )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        i32::try_from(bsd_info(pid)?.pbi_ppid).ok()
+    }
+
+    /// Field 4 (`ppid`) of `/proc/<pid>/stat`, parsed after the last `)`.
+    #[cfg(target_os = "linux")]
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = stat.rsplit_once(')')?.1;
+        after_comm.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) const fn parent(_pid: i32) -> Option<i32> {
+        None
     }
 
     /// macOS already reports wall-clock microseconds.
@@ -364,7 +396,7 @@ mod platform {
 #[allow(clippy::expect_used, reason = "tests")]
 mod start_tests {
     use super::start::{parse_btime, parse_stat_starttime, ticks_since_boot_to_unix_ms};
-    use super::{process_start_ms, process_start_time};
+    use super::{process_parent, process_start_ms, process_start_time};
 
     /// A real `/proc/<pid>/stat` prefix, truncated after `starttime`.
     fn stat_line(comm: &str, starttime: u64) -> String {
@@ -434,6 +466,7 @@ mod start_tests {
         for pid in [0, -1, i32::MAX] {
             assert_eq!(process_start_time(pid), None);
             assert_eq!(process_start_ms(pid), None);
+            assert_eq!(process_parent(pid), None);
         }
     }
 
@@ -447,6 +480,7 @@ mod start_tests {
         assert_eq!(process_start_time(pid), Some(raw), "stable across calls");
 
         let first = process_start_ms(pid).expect("our own start ms is queryable");
+        assert!(process_parent(pid).is_some(), "a live process has a parent");
         assert_eq!(process_start_ms(pid), Some(first), "stable across calls");
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
@@ -536,4 +570,4 @@ pub use exe::runs_replaced_executable;
 
 mod tree;
 
-pub use tree::background_descendant;
+pub use tree::{background_descendant, lineage};

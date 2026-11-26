@@ -5,9 +5,9 @@ use phux_client_runtime::reconnect::Ladder;
 use phux_protocol::api::{
     ErrorCode, ErrorDocument, ExecutionObservation, ExecutionResult, ExecutionResultRequest,
     ExecutionResultStatus, ExecutionState, MAX_EXECUTION_WAIT_SECS, OperationError,
-    OperationOutcome, parse_hex16,
+    OperationOutcome,
 };
-use phux_protocol::ids::{AuthorityId, ResourceKey};
+use phux_protocol::ids::{AuthorityId, ResourceKey, parse_hex16};
 
 use crate::{
     attach::connection::{Connection, Dial},
@@ -237,8 +237,9 @@ fn classify(
 mod tests {
     use super::*;
     use phux_protocol::{
-        api::{ExecutionOutcome, ExecutionRef, hex16},
+        api::{ExecutionOutcome, ExecutionRef},
         caps::ServerFeatureExt,
+        ids::hex16,
         wire::frame::{Command, FrameKind, SessionLifetime},
     };
 

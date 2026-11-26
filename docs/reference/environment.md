@@ -13,7 +13,8 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | Variable | Meaning |
 |---|---|
 | `PHUX_SOCKET` | Server socket for the CLI verbs and the server. `--socket` overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock; when XDG_RUNTIME_DIR is unset, /run/user/<uid>/phux/phux.sock if that directory exists, else /tmp/phux-$USER/phux.sock. |
-| `PHUX_TIMEOUT` | Seconds to wait for the server to answer the handshake and each request (default 10; `0` waits forever). On expiry the verb exits 4. Streams (attach, watch, forward) are bounded only until their handshake. |
+| `PHUX_TIMEOUT` | Seconds to wait for the server to answer the handshake and each request (default 10; `0` waits forever). On expiry the verb exits 4; a value that is not a number exits 2. Streams (attach, watch, forward) are bounded only until their handshake. |
+| `PHUX_CHAT_RECORD` | Private record selected by `phux chat run` (absolute path). Scopes mail only, never path claims or terminal authority. A bad record fails closed; no fallback to another store. |
 | `PHUX_WS_ADDR` | Also accept WebSocket clients on HOST:PORT. Equivalent to `phux server --listen`, which overrides it. |
 | `PHUX_WS_SECURE` | Force TLS and token auth on a loopback --listen address, to exercise the remote path locally. |
 | `PHUX_WS_ALLOWED_ORIGINS` | Browser origins a plaintext loopback --listen address admits beyond loopback pages: comma-separated exact origins, or `*` behind a proxy that checks origins itself. |
@@ -22,6 +23,15 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_WS_TOKENS` | Pairing-token store the server reads and `phux pair` writes. |
 | `PHUX_QUIC_ADDR` | Also accept QUIC clients on HOST:PORT. Equivalent to `phux server --quic`, which overrides it. |
 | `PHUX_WT_ADDR` | Also accept WebTransport (HTTP/3 over QUIC) clients on HOST:PORT. Equivalent to `phux server --webtransport`. |
+| `PHUX_NO_AUTO_LISTEN` | Set (to anything) to keep the server from auto-binding a remote listener on the private network address. |
+| `PHUX_WORKLOAD_CA` | The server's workload CA certificate. Default: workload-ca.pem in the state directory. With this, PHUX_WORKLOAD_CA_KEY, or PHUX_WORKLOAD_KEYS set, `[policy] mode` must be set too. |
+| `PHUX_WORKLOAD_CA_KEY` | Its private key. Default: workload-ca.key in the state directory. |
+| `PHUX_WORKLOAD_KEYS` | Registry of the client keys the server admits. Default: workload-keys in the state directory. enrollment-tickets and workload-org-roots/ move with it. |
+| `PHUX_WORKLOAD_CERT` | Client certificate (PEM) a remote dial presents when the host entry names none. Set with PHUX_WORKLOAD_KEY; one alone is an error. |
+| `PHUX_WORKLOAD_KEY` | Private key of PHUX_WORKLOAD_CERT. |
+| `PHUX_WORKLOAD_REQUIRE_PAIRED` | Set (to anything) to refuse a server that does not request the PHUX_WORKLOAD_CERT identity. |
+| `PHUX_AGENT_DETECT` | Set to `0` to turn agent detection off. |
+| `PHUX_AGENT_RULES_DIR` | Directory of *.toml agent manifests that override or extend the built-in ones; empty means none. Default: $XDG_CONFIG_HOME/phux/agent-rules, else ~/.config/phux/agent-rules. |
 | `PHUX_UPLOAD_DIR` | Where the server lands file uploads (PUT_FILE). Default: $XDG_DATA_HOME/phux/uploads, else ~/.local/share/phux/uploads. |
 | `PHUX_UPLOAD_MAX_BYTES` | Total bytes of finished and partial uploads the server keeps before refusing more (default 8 GiB; 0 = no limit). |
 | `PHUX_UPLOAD_MAX_FILES` | Uploads, finished or partial, the server keeps before refusing a new one (default 10000; 0 = no limit). |

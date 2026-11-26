@@ -1,10 +1,9 @@
 //! Touch-first session browsing and contextual actions, separate from search
 //! commands. Ordinary chrome stays fixed; large text scrolls the whole body.
 //!
-//! One inset and rhythm for the page, cards and their touch rows, all from
-//! the phone's tokens: the page margin, `xl` cards with rows nested inside
-//! them, touch-height rows and the session dock, the phone's one pane of
-//! glass.
+//! Sessions share one canvas: session names anchor indented pane lists.
+//! Actions retain grouped cards. Both use touch-height rows and the
+//! session dock is the phone's one pane of glass.
 
 use crate::ui::tokens::Voice;
 use rune::{El, Key, Tx, col, el, row, text, text_input};
@@ -12,24 +11,28 @@ use rune::{El, Key, Tx, col, el, row, text, text_input};
 use super::{Desk, Look};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Page;
-use crate::ui::tokens::Paint;
+use crate::ui::tokens::{GlassSurface, Paint};
 use crate::ui::{icons, pressable};
 
 mod actions;
-mod card;
 mod connections;
 mod dock;
 mod resource;
+mod section;
 mod states;
 use crate::ui::Cover;
 use actions::actions;
-use card::session_card;
 use connections::view as connections;
 use resource::resource_row;
+use section::session_section;
 use states::empty_state;
 
 pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
-    let page = desk.phone_page()?;
+    let phone = desk.phone.as_ref()?;
+    // A finger pulling the drawer in from the left edge shows Sessions
+    // before it is open: inert, following the finger, not yet a modal.
+    let pull = phone.swipe.pull.filter(|_| desk.phone_page().is_none());
+    let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
     let p = &super::page_look(desk);
     let s = &p.space;
     let title = match page {
@@ -89,20 +92,61 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         Page::Sessions => sessions(desk, p),
         Page::Actions => actions(desk, p),
     };
-    Some(
-        col()
-            .key("phone-navigation-page")
-            .cover()
-            .items_center()
-            .pt(top)
-            .fill(p.roles.layer.ground.paint())
+    let sheet = col()
+        .key("phone-navigation-page")
+        .cover()
+        .items_center()
+        .pt(top)
+        .label(title)
+        .child(header)
+        .child(body.max_w(column_max()));
+    let sheet = drawer(sheet, page, pull, phone.stage[0], p);
+    Some(match pull {
+        Some(_) => sheet.inert(),
+        None => sheet
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
-            .on_paste(|_: &mut Desk, _, _| {})
-            .label(title)
-            .child(header)
-            .child(body.max_w(column_max())),
-    )
+            .on_paste(|_: &mut Desk, _, _| {}),
+    })
+}
+
+/// Sessions is a drawer from the left edge, where the thumb pulls it from:
+/// frosted glass over the blurred terminal, the phone's one blur. It slides
+/// in and out on the drawer spring, or follows a pulling finger exactly.
+/// Opaque where glass may not draw.
+fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El {
+    let sheet = p.glass_panel(
+        sheet,
+        GlassSurface::PhoneBar,
+        p.glass_tint_layer(),
+        p.roles.layer.ground,
+    );
+    if page != Page::Sessions {
+        return sheet;
+    }
+    let width = width.max(1.0);
+    let travel = pull.map_or(0.0, |pulled| pulled - width.max(pulled));
+    // The terminal the drawer is pulled over dims as it comes, and clears
+    // as an opened drawer covers it or a let-go one leaves.
+    let shade = el()
+        .key("phone-drawer-shade")
+        .absolute(width, 0.0)
+        .w(width)
+        .h_full()
+        .fill(p.roles.layer.scrim.paint())
+        .opacity(pull.map_or(0.0, |pulled| (pulled / width).min(1.0)))
+        .opacity_motion(p.motion.drawer.enter)
+        .inert()
+        .a11y_hidden();
+    sheet
+        .child(shade)
+        .offset(travel, 0.0)
+        .offset_motion(if pull.is_some() {
+            rune::Spring::NONE
+        } else {
+            p.motion.drawer.enter
+        })
+        .transition(rune::Transition::move_edge(rune::Edge::Leading).springs(p.motion.drawer))
 }
 
 /// The widest a phone column grows (an iPad's is centred).
@@ -200,7 +244,8 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .on_submit(|d: &mut Desk, tx| d.blur_phone_search(tx));
     let search = row()
         .w_full()
-        .px(s.s3)
+        .pl(s.s3)
+        .pr(s.s1)
         .gap(s.s2)
         .items_center()
         .radius(p.radius.lg)
@@ -223,7 +268,18 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                 .color(dim)
                 .a11y_hidden(),
         )
-        .child(search);
+        .child(search)
+        .children((!phone.query.text.is_empty()).then(|| {
+            control("phone-session-clear", "Clear search", p, Desk::clear_phone_search)
+                .px(0.0)
+                .center()
+                .preserve_focus_on_press(true)
+                .child(
+                    rune::icon(&icons::CLOSE, p.icon.grid * p.type_scale)
+                        .color(dim)
+                        .a11y_hidden(),
+                )
+        }));
     let list = session_list(desk, p);
     let large_text = p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
     let footer = dock::footer(desk, phone.query.text.trim(), ink, large_text, p);
@@ -247,11 +303,21 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                     .scroll(rune::ScrollSpec {
                         stick_bottom: false,
                     })
-                    .gap(s.s3)
-                    .child(search)
-                    .children(connections)
-                    .child(list)
-                    .child(footer),
+                    .scroll_margin(s.s1)
+                    .child(
+                        col()
+                            .w_full()
+                            .px(s.s1)
+                            .pt(s.s1)
+                            .gap(s.s3)
+                            .child(search)
+                            .children(connections)
+                            .child(list)
+                            .child(footer)
+                            // A real tail protects the last outside focus ring
+                            // where reveal margins cannot scroll farther.
+                            .child(el().w_full().h(s.s1).inert().a11y_hidden()),
+                    ),
             );
     }
     col()
@@ -276,7 +342,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .h_full()
                         .min_h(0.0)
                         .scroll(rune::ScrollSpec { stick_bottom: false })
-                        // Cards slide under the search field and the dock
+                        // Rows slide under the search field and the dock
                         // instead of being cut by a hard edge.
                         .scroll_edge_fade(s.s4)
                         .scroll_margin(s.s4)
@@ -326,7 +392,8 @@ fn resource_matches(desk: &Desk, resource: &Addressable, query: &str) -> bool {
 fn session_list(desk: &Desk, p: &Look) -> El {
     let query = &desk.phone.as_ref().expect("phone").query.text;
     let all = desk.addressable();
-    let mut list = col().w_full().gap(p.space.s3);
+    // Leave room for an outside keyboard ring without restoring card insets.
+    let mut list = col().w_full().px(p.space.s1).gap(p.space.s6);
     let mut count = 0;
     for session in desk.ordered_sessions() {
         let members: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
@@ -339,7 +406,7 @@ fn session_list(desk: &Desk, p: &Look) -> El {
             continue;
         }
         count += 1;
-        list = list.child(session_card(desk, session, &members, &filtered, p));
+        list = list.child(session_section(desk, session, &members, &filtered, p));
     }
     // Hub satellite resources aren't members of a local session, but still
     // belong in the navigator with their host-qualified resource addresses.

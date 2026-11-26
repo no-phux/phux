@@ -50,6 +50,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "scroll-half-page-down",
     "scroll-to-top",
     "scroll-to-bottom",
+    "lock-size",
+    "unlock-size",
     "detach",
     "next-pane",
     "previous-pane",

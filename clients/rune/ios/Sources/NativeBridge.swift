@@ -126,9 +126,24 @@ final class NativeBridge {
     }
     /// A tap on the frame's native control `id`: true when Rune ran its press.
     func press(_ id: String) -> Bool { id.withCString { phux_rune_ios_press(pointer, $0) } }
+    /// A tapped card, widget or Dynamic Island: true when the link was one.
+    func openLink(_ link: String) -> Bool { link.withCString { phux_rune_ios_open_link(pointer, $0) } }
+    /// Where the phone's computers post its agent counts while it is closed.
+    func setLive(device: String, gateway: String, grant: String) {
+        device.withCString { d in gateway.withCString { g in grant.withCString { phux_rune_ios_set_live(pointer, d, g, $0) } } }
+    }
     func paste(_ text: String) {
         // A C string ends at its first NUL; a pasteboard's text need not.
         text.replacingOccurrences(of: "\0", with: "").withCString { phux_rune_ios_paste(pointer, $0) }
+    }
+    /// One picked file for `request`; nil when it could not be read.
+    func attach(_ file: Attachments.File?, request: UInt64) {
+        let bytes = file?.data ?? Data()
+        (file?.fileExtension ?? "").withCString { name in
+            bytes.withUnsafeBytes {
+                phux_rune_ios_attach(pointer, request, name, $0.bindMemory(to: UInt8.self).baseAddress, $0.count)
+            }
+        }
     }
     func pathChanged() { phux_rune_ios_path_changed(pointer) }
     func zoom(larger: Bool) { phux_rune_ios_zoom(pointer, larger) }

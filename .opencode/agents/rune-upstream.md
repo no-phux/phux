@@ -112,7 +112,7 @@ from evidence, state the assumption in the PR, and keep going.
    category; pick the strongest observed opportunity and record why a more
    urgent finding overrides rotation. Capture the selected flow **before**
    editing. On a quiet run, take a queued contained adoption or a piece of
-   MOBILE.md's "Next, no upstream needed", or improve an existing flow, on a
+   MOBILE_GAPS.md's "Next, no upstream needed", or improve an existing flow, on a
    `rune-phone/SLUG` branch in `../worktrees/rune-phone-SLUG`. Move completed
    MOBILE rows to "What works". No "current at SHA" maintenance-only escape:
    ship the improvement through steps 6–7, then reconcile phone delivery.
@@ -143,7 +143,7 @@ from evidence, state the assumption in the PR, and keep going.
    README's Known gaps. Integrate it in this PR when it is contained and
    clearly better; file anything larger with `bd create`, citing the upstream
    commit, and queue it in the journal. **The phone app grows here too:**
-   `clients/rune/MOBILE.md` lists each phone stand-in and the upstream
+   `clients/rune/MOBILE_GAPS.md` lists each phone stand-in and the upstream
    capability it waits for. When the range ships one (an iOS shell, system
    text input, safe areas, gestures, haptics), replace that stand-in, move
    its row to "What works", and add the build or check that now becomes

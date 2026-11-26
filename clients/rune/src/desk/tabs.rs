@@ -44,8 +44,9 @@ pub struct Tabs {
     pub by_session: HashMap<u32, Vec<Tab>>,
     /// The pane each tab last had the keyboard in.
     focus: HashMap<[u8; 16], ResourceId>,
-    /// The terminal the keyboard left last (`last-pane`).
-    pub last_pane: Option<ResourceId>,
+    /// What the keyboard left, newest last: `last-pane`, and where a close
+    /// goes back to.
+    pub recent: Vec<ResourceId>,
     /// The tab the keyboard left last (`last-tab`).
     pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
@@ -212,27 +213,32 @@ impl Desk {
 
     /// A new tab in `cwd`, as `new_tab`.
     fn new_tab_at(&mut self, cwd: Option<String>) {
-        let Some(client) = &self.connection.client else {
+        let Some(client) = self.connection.client.clone() else {
             return;
         };
         if self.connection.shown.is_none() {
             return self.new_terminal_at(cwd);
         }
-        let request = client.spawn_terminal(SpawnRequest {
-            command: None,
-            cwd,
-            env: None,
-            session_id: client.selected_session(),
-            initial_size: self.tab_spawn_size(),
-        });
+        let Some(request) = self.spawn_request(
+            &client,
+            SpawnRequest {
+                command: None,
+                cwd,
+                env: None,
+                session_id: client.selected_session(),
+                initial_size: self.tab_spawn_size(),
+            },
+        ) else {
+            return;
+        };
         self.connection
             .pending_splits
-            .insert(request, (self.placement_session(client), None));
+            .insert(request, (self.placement_session(&client), None));
         self.connection.zoomed = None;
     }
 
-    /// Finder's "New phux Terminal at Folder" (`services.rs`).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// A tab in a local folder: Finder's service (`services.rs`) or a
+    /// `phux://folder/` link (`reveal.rs`).
     pub fn terminal_at_folder(&mut self, folder: std::path::PathBuf) {
         if self.machines.current.is_some() {
             return self.say(
@@ -296,6 +302,8 @@ impl Desk {
             return;
         }
         if terminals.iter().any(|id| self.asks_to_close(id)) {
+            // The question is about the tab on screen.
+            self.select_tab(index);
             self.pending = Some(Pending::CloseTab(terminals));
         } else {
             self.request_terminal_close(terminals);
@@ -366,6 +374,14 @@ impl Desk {
     }
 
     pub(super) fn close_now(&mut self, terminal: &ResourceId) {
+        if self.connection.popup.terminal() == Some(terminal) {
+            if let Some(client) = self.connection.client.clone() {
+                self.close_popup(&client, true);
+            } else {
+                self.report_close_submission(None);
+            }
+            return;
+        }
         if self.is_document(terminal) {
             return self.hide_documents(std::slice::from_ref(terminal));
         }
@@ -516,40 +532,4 @@ impl Desk {
 mod close_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use phux_client_core::layout::{Group, LayoutState};
-
-    fn id(n: u32) -> ResourceId {
-        ResourceId::local(n)
-    }
-
-    fn doc() -> ArrangementDoc {
-        ArrangementDoc {
-            groups: vec![
-                Group::new("1".to_owned(), LayoutState::single(id(1))),
-                Group::new("2".to_owned(), LayoutState::single(id(2))),
-                Group::new("gone".to_owned(), LayoutState::single(id(9))),
-            ],
-            active: 0,
-            slots: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn the_active_tab_is_the_one_holding_the_focus() {
-        let mut d = doc();
-        focus_group(&mut d, Some(&id(2)));
-        assert_eq!(d.active, 1);
-        focus_group(&mut d, Some(&id(7)));
-        assert_eq!(d.active, 1);
-    }
-
-    #[test]
-    fn a_group_with_no_live_terminal_is_not_a_tab() {
-        let tabs = list(&doc(), &[id(1), id(2)]);
-        assert_eq!(tabs.len(), 2);
-        assert!(tabs[0].active && !tabs[1].active);
-        assert_eq!(tabs[1].resources, vec![id(2)]);
-    }
-}
+mod tests;

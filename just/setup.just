@@ -40,7 +40,7 @@ scaffold-config:
 [group('setup')]
 [doc('Toolchain pins agree across manifests, Mise, Nix, CI, and containers.')]
 toolchain-check:
-    bun tools/main.ts toolchain-sync-check
+    cd tools && bun test ./src/policy/toolchain-sync.test.ts
 
 
 # Print the toolchain we are pinned to.

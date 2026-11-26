@@ -183,23 +183,33 @@ impl Desk {
                 continue;
             }
             let Some(key) = session.key else { continue };
-            let grab = Grab::Session(key);
-            if self.rect_hit(grab, point) {
-                return Some(grab);
-            }
-            if self.sidebar_collapsed.contains(&key) {
-                continue;
-            }
-            let over_row = self.connection.reorder.rects.iter().any(|(row, rect)| {
-                matches!(*row, Grab::Resource(id, owner)
-                    if owner == key && self.resource_in_session(id, key, session.id))
-                    && contains(*rect, point)
-            });
-            if over_row {
-                return Some(grab);
+            if self.sidebar_session_hit(key, session.id, point) {
+                return Some(Grab::Session(key));
             }
         }
         None
+    }
+
+    /// Both a session handle (including an empty/single session) and a live
+    /// resource row name the owning session as a drop destination.
+    fn sidebar_session_hit(&self, key: SessionKey, session_id: u32, point: [f32; 2]) -> bool {
+        if self.rect_hit(Grab::Session(key), point) {
+            return true;
+        }
+        self.connection.reorder.rects.iter().any(|(row, rect)| {
+            contains(*rect, point)
+                && matches!(*row, Grab::Resource(id, owner)
+                if owner == key && self.resource_in_session(id, key, session_id)
+                    && self.sidebar_row_is_drawn(id))
+        })
+    }
+
+    /// Grouping can retire a previously laid-out member row. Its retained
+    /// rectangle must not steal a later drop from a different session.
+    fn sidebar_row_is_drawn(&self, id: u32) -> bool {
+        let resource = ResourceId::local(id);
+        matches!(crate::ui::sidebar_focus_target(self, &resource),
+            Some((lead, _)) if lead == resource)
     }
 
     /// The pane under `point` the resource `id` would join as a slot tab:
@@ -293,19 +303,24 @@ impl Desk {
     }
 
     /// The one drain of this window's watched Global keys: the session
-    /// order, watched on every client, and the agent stats the fleet views
-    /// ask for. True when either changed.
+    /// order and keep-awake state, watched on every client, and the agent
+    /// stats the fleet views ask for. True when either changed.
     pub(super) fn take_globals(&mut self, client: &Arc<Client>) -> bool {
         let mut changed = false;
         if !Weak::ptr_eq(&self.connection.reorder.watching, &Arc::downgrade(client)) {
             // Remembered by the runtime, and asked again on every attach.
             let _ = client.watch_global_metadata(SESSION_ORDER_KEY.to_owned());
+            let _ = client.watch_global_metadata(phux_config::KeepAwake::STATUS_KEY.to_owned());
             self.connection.reorder.watching = Arc::downgrade(client);
             changed = !std::mem::take(&mut self.connection.reorder.order).is_empty();
         }
         for value in client.take_global_metadata() {
             if value.key == SESSION_ORDER_KEY {
                 self.connection.reorder.order = session_order::decode(value.value.as_deref());
+                changed = true;
+            } else if value.key == phux_config::KeepAwake::STATUS_KEY {
+                self.connection.keep_awake =
+                    super::keep_awake::Awake::parse(value.value.as_deref());
                 changed = true;
             } else if value.key == creature::KEY {
                 self.fleet.here = Stats::parse(value.value.as_deref(), self.clock);

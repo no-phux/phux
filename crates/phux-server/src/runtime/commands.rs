@@ -5,16 +5,21 @@
     reason = "private command modules re-export crate-scoped handlers through this facade; pub would violate unreachable_pub"
 )]
 
+mod agent_append;
 pub(crate) mod attach_terminal;
 mod dispatch;
+pub(crate) mod document;
 mod kill;
+mod kind_commands;
 mod lifecycle;
+pub(crate) mod native_agent;
 mod resource_events;
 mod results;
 mod routing;
 mod satellite;
 pub(crate) mod satellite_lease;
 mod state_query;
+pub(crate) mod terminal;
 
 pub(crate) use attach_terminal::*;
 #[cfg(test)]

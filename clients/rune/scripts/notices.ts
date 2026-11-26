@@ -10,7 +10,7 @@ import {
   renderNotices,
   shippedCrates,
 } from "./third-party.ts";
-import { runeNoticeReader } from "./notice-texts.ts";
+import { identityNotices, runeNoticeReader } from "./notice-texts.ts";
 
 const [target] = process.argv.slice(2);
 if (target === undefined) throw new Error("usage: notices.ts TARGET");
@@ -33,4 +33,4 @@ if (!metadata.success) throw new Error("cargo metadata failed");
 const canonical = canonicalLicenses();
 const crates = shippedCrates(metadata.stdout.toString());
 const read = runeNoticeReader(crates, canonical);
-process.stdout.write(renderNotices(crates, read, "Phux Rune"));
+process.stdout.write(renderNotices(crates, read, "Phux Rune") + identityNotices());

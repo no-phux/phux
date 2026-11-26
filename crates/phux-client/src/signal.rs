@@ -54,8 +54,8 @@ impl LeaseOutcome {
 /// lease (`phux take`): preempts any current holder.
 ///
 /// `ttl_ms` is ADR-0033's lease TTL — `0` means "held until released or the
-/// connection drops" (today's default); any other value arms the
-/// server-side expiry timer (`phux take --ttl SECS`).
+/// connection drops"; any other value also arms the server-side expiry
+/// timer (`phux take --ttl SECS`).
 #[must_use]
 pub const fn take_command(terminal_id: ResourceId, ttl_ms: u32) -> Command {
     Command::AcquireInput {

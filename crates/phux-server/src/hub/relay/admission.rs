@@ -3,16 +3,21 @@
 #[cfg(test)]
 use super::RelayRequest;
 use super::{
-    ClientId, Command, CommandResult, DirectoryListingResult, ErrorCode, FrameKind, Outbound,
-    PathQueryResult, PendingListing, PendingPathQuery, ProxySubscriber, ProxySubscription,
-    Registration, RelaySession, ResourceId, SatelliteSpawn, ServerFeature, SnapshotGate,
-    SpawnError, listing_refusal, oneshot, path_refusal, stream_needs_terminal_profile,
+    ClientId, Command, CommandResult, ContentAttach, DeliveryTurn, DirectoryListingResult,
+    ErrorCode, FrameKind, Outbound, PathQueryResult, PendingListing, PendingPathQuery,
+    ProxySubscriber, ProxySubscription, Registration, RelaySession, ResourceId, SatelliteSpawn,
+    ServerFeature, SnapshotGate, SpawnError, listing_refusal, oneshot, path_refusal,
+    stream_needs_terminal_profile,
 };
 
 impl RelaySession {
     fn method_advertised(&self, name: &str) -> bool {
         phux_protocol::kinds::method_named(name).is_some_and(|method| {
-            method.advertised(self.satellite_features, self.satellite_features_ext)
+            method.advertised(
+                self.satellite_features,
+                self.satellite_features_ext,
+                self.satellite_features_ext2,
+            )
         })
     }
 
@@ -45,6 +50,46 @@ impl RelaySession {
     /// Refuse, without touching the link, a command this satellite cannot
     /// evaluate (conditional kill, or a keyed op without dedupe).
     pub(super) fn command_rejection(&self, command: &Command) -> Option<CommandResult> {
+        if matches!(command, Command::NativeAgent { request } if matches!(request.request(),
+            phux_protocol::native_agent::NativeRequest::PrepareRelaunch { .. }
+            | phux_protocol::native_agent::NativeRequest::ApproveRelaunch { .. }))
+        {
+            return Some(CommandResult::error(
+                ErrorCode::UnsupportedSatelliteRoute,
+                "raw archived recipe review requires a direct local-owner connection to its executing host; nothing was forwarded",
+            ));
+        }
+        let archived = matches!(command, Command::ResourceRelaunch { .. })
+            || matches!(command, Command::NativeAgent { request } if matches!(request.request(),
+                phux_protocol::native_agent::NativeRequest::Spawn { spec }
+                    if spec.guardian.is_some() || spec.guardian_key.is_some()));
+        if archived
+            && !self
+                .satellite_features_ext2
+                .contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)
+        {
+            let earlier_send =
+                crate::hub::operation_fence::fenced_key(command).is_some_and(|key| {
+                    self.operations
+                        .was_forwarded(key, std::time::Instant::now())
+                });
+            return Some(CommandResult::error(
+                if earlier_send {
+                    ErrorCode::InputDeliveryUnknown
+                } else {
+                    ErrorCode::UnsupportedSatelliteRoute
+                },
+                format!(
+                    "satellite {} lacks ARCHIVED_LAUNCH_ADMISSION on this connection; no archived execution was forwarded here{}",
+                    self.host,
+                    if earlier_send {
+                        "; the original operation may already have executed: reconcile it before any fresh launch"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
         if let Some(message) = self.conditional_kill_rejection(command) {
             return Some(CommandResult::Error {
                 code: ErrorCode::PreconditionFailed,
@@ -289,6 +334,7 @@ impl RelaySession {
     /// Register one proxy subscriber idempotently, returning the
     /// [`Registration`] effect for rollback.
     pub(super) fn register_subscriber(&mut self, subscription: ProxySubscription) -> Registration {
+        let content = ContentAttach::of(&subscription);
         let ProxySubscription {
             terminal,
             client,
@@ -304,17 +350,22 @@ impl RelaySession {
         let subs = self.subscribers.entry(terminal).or_default();
         if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
             existing.out_tx = out_tx;
+            existing.turn = DeliveryTurn::default();
             existing.consumer_cancel = consumer_cancel;
             // Keep the freshest token.
             existing.seq = existing.seq.max(seq);
+            let first_content = content.is_some() && existing.content.is_none();
+            existing.content = content.or_else(|| existing.content.take());
             // An upgrade from an `Open` stream to a snapshot attach re-gates
             // until this attach's snapshot lands. Other gates
             // already suppress deltas; event-only re-subscribes leave it.
-            if awaits_snapshot && matches!(existing.gate, SnapshotGate::Open) {
+            let regated = awaits_snapshot && matches!(existing.gate, SnapshotGate::Open);
+            if regated {
                 existing.gate = SnapshotGate::AwaitingFirst;
-                Registration::Regated
-            } else {
-                Registration::Idempotent
+            }
+            Registration::Existing {
+                regated,
+                first_content,
             }
         } else {
             subs.push(ProxySubscriber {
@@ -330,6 +381,8 @@ impl RelaySession {
                 },
                 retire_after_flush: false,
                 current_generation: None,
+                turn: DeliveryTurn::default(),
+                content,
             });
             Registration::New
         }

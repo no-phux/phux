@@ -20,47 +20,12 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::approvals::{Decision, DecisionOutcome};
 
 mod observation;
+mod outcomes;
+mod status;
 
 pub use observation::Observation;
-
-/// Where the session is in its life.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    /// No connection has been opened yet.
-    Idle,
-    /// Dialing, or waiting out the reconnect ladder.
-    Connecting,
-    /// `HELLO_OK` accepted; no attach has completed on this connection.
-    Negotiated,
-    /// The attach barrier released; frames are flowing.
-    Attached,
-    /// The consumer ended the session, or the server detached it at the
-    /// consumer's request. Terminal.
-    Closed,
-    /// A refusal no retry can satisfy, or the initial ladder ran out.
-    /// Terminal; the message is in `last_error`.
-    Failed,
-}
-
-impl Status {
-    /// Whether no further transition can happen.
-    #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Closed | Self::Failed)
-    }
-}
-
-/// How one acknowledged input operation ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryOutcome {
-    /// The server acknowledged the write.
-    Delivered,
-    /// Nothing was written; retyping is safe.
-    Refused,
-    /// Some, all, or none of the bytes may have landed; read the pane
-    /// before retyping.
-    Unknown,
-}
+pub use outcomes::{DeliveryOutcome, TerminalCreationOutcome};
+pub use status::Status;
 
 /// The catalog's facts about an `AgentSession` resource (ADR-0103).
 ///
@@ -141,6 +106,13 @@ pub enum Event {
         terminal_id: Option<ResourceId>,
         /// Why the spawn failed.
         error: Option<String>,
+    },
+    /// Typed settlement of a terminal creation under its original correlation.
+    TerminalCreation {
+        /// The spawn's original command correlation.
+        request_id: u32,
+        /// What is known about the creation.
+        outcome: TerminalCreationOutcome,
     },
     /// The server answered a per-terminal attach.
     TerminalAttached {
@@ -225,6 +197,20 @@ pub enum Event {
         terminal_id: ResourceId,
         /// The selection it asked for.
         selection: phux_client_core::engine::ClipboardSelection,
+    },
+    /// A pane asks to open a link on this machine, sent only to a consumer
+    /// with [`ControlOptions::open_urls`]. The host checks the link, always
+    /// asks its user, and answers with [`ControlPlane::open_url_reply`].
+    ///
+    /// [`ControlOptions::open_urls`]: super::ControlOptions::open_urls
+    /// [`ControlPlane::open_url_reply`]: super::ControlPlane::open_url_reply
+    OpenUrl {
+        /// The asking terminal.
+        terminal_id: ResourceId,
+        /// Names the request in the answer.
+        id: u64,
+        /// The link.
+        url: String,
     },
     /// The terminal's title changed; the topology entry is updated too.
     TitleChanged {

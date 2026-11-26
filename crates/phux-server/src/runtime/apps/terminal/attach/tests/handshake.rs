@@ -138,7 +138,13 @@ pub(super) async fn answer_native_attach(
             ],
             retained_bytes: b"opaque".len(),
             base_seq: 0,
-            publication_cursor: [7; 32],
+            capture: phux_terminal_api::actor::NativeCapture::new(
+                native.owner,
+                native.terminal_id.clone(),
+                native.stream_id,
+                native.bootstrap_id,
+                [7; 32],
+            ),
         }))
         .expect("native success reply");
     let publication = native_publication_rx
@@ -149,6 +155,7 @@ pub(super) async fn answer_native_attach(
     publication
         .reply
         .send(Ok(phux_terminal::actor::NativePublicationReply {
+            interest: phux_terminal_api::actor::NativeCaptureInterest::default(),
             replay: Vec::new(),
             live: tokio::sync::broadcast::channel(1).1,
         }))

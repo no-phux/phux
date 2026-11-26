@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn refusals_are_terminal_and_a_requested_detach_closes() {
     // Another major is a different compatibility line.
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.connection_opened();
     plane.take_outbound();
     let mut other_major = hello_ok(PROTOCOL_VERSION.patch);
@@ -23,7 +23,7 @@ fn refusals_are_terminal_and_a_requested_detach_closes() {
         hello_ok(PROTOCOL_VERSION.patch.wrapping_add(1)),
     );
 
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.connection_opened();
     assert!(matches!(
         plane.feed(FrameKind::AttachReady { attach_id: 1 }),

@@ -64,7 +64,12 @@ pub enum ReplicaAction {
     /// Send this `GET_ORGANIZATION` (the next page of a seed).
     NextPage(Command),
     /// The seed finished; records changed.
-    Seeded,
+    Seeded {
+        /// Records included in the completed seed.
+        filter: OrgFilter,
+        /// Held arrangements invalidated by events buffered behind the seed.
+        arrangements: HashSet<ArrangementKey>,
+    },
     /// The journal skipped events: reseed from the first page.
     Reseed,
     /// Re-read one session's records (a record the event could not

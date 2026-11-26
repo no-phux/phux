@@ -38,14 +38,19 @@ pub(crate) fn dispatch(
         Some(Command::Mv(args)) => commands::spatial::mv(args, socket),
         Some(Command::Rm(args)) => commands::org::run_rm(&args.target, args.yes, args.json, socket),
         Some(Command::Relaunch(args)) => {
-            commands::org::run_relaunch(&args.target, args.json, socket)
+            commands::org::run_relaunch(&args.target, args.approve_raw, args.json, socket)
         }
-        Some(Command::Restore(args)) => {
-            commands::org::run_restore(args.session.as_deref(), args.verbose, args.json, socket)
-        }
+        Some(Command::Restore(args)) => commands::org::run_restore(
+            args.session.as_deref(),
+            args.verbose,
+            args.dry_run,
+            args.json,
+            socket,
+        ),
         Some(Command::Organize(args)) => commands::organize::run(args, socket),
         Some(Command::SwapPane(args)) => commands::spatial::swap_pane(args, socket),
         Some(Command::Slot(args)) => commands::spatial::slot(args, socket),
+        Some(Command::OpenUrl(args)) => commands::open_url::run(&args, socket),
         Some(Command::Resize(args)) => commands::resize::run(args, socket),
         Some(Command::Take(args)) => commands::supervise::take(args, socket),
         Some(Command::Give(args)) => commands::supervise::give(args, socket),
@@ -66,6 +71,9 @@ pub(crate) fn dispatch(
         ),
         Some(Command::NotifyMode(commands::NotifyModeArgs { target, mode, json })) => {
             commands::agent::run_notify_mode(&target, mode, json.json, socket)
+        }
+        Some(Command::Seen(commands::SeenArgs { target, json })) => {
+            commands::agent::run_seen(&target, json.json, socket)
         }
         Some(Command::Approvals(args)) => commands::approvals::run(args, socket),
         Some(Command::Credentials(args)) => commands::credentials::run(args, socket),
@@ -105,6 +113,7 @@ pub(crate) fn dispatch(
         Some(Command::Rec(args)) => commands::rec::run(args, socket),
         Some(Command::Play(args)) => commands::play::run(args, socket),
         Some(Command::Ask(args)) => commands::ask::run(args, socket),
+        Some(Command::Pick(args)) => commands::pick::run(args),
         Some(Command::Agent(args)) => commands::agent::run(args, socket),
         Some(Command::Run(args)) => commands::run::run(args, socket),
         Some(Command::Config(args)) => commands::config::run_config(&args.action, socket),
@@ -126,6 +135,7 @@ pub(crate) fn dispatch(
         Some(Command::Skill(args)) => skill::dispatch(args.action, args.scope, socket),
         Some(Command::Mission(args)) => commands::mission::run(args, socket),
         Some(Command::Mail(args)) => commands::coord::mail(args),
+        Some(Command::Chat(args)) => commands::chat::run(args, socket),
         Some(Command::Claim(args)) => commands::coord::claim(args),
         Some(Command::Worktree(args)) => commands::worktree::run(args, socket),
         Some(Command::Project(args)) => commands::project::run_project(&args.action, socket),

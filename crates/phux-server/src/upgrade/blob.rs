@@ -138,6 +138,10 @@ pub struct DelegationBlob {
 pub struct MetadataBlob {
     /// The Group's wire id, or `None` for Global scope.
     pub group: Option<u32>,
+    /// The pane's wire id, for pane metadata (an unseen mark). Additive: an
+    /// older reader stores it at Global scope, where nothing reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
     /// The metadata key.
     pub key: String,
     /// The stored value.
@@ -326,9 +330,15 @@ pub struct PaneBlob {
     /// exits (ADR-0124), so the request survives the upgrade.
     #[serde(default)]
     pub retain_secs: Option<u32>,
+    /// The question a person has not answered yet, if any. Additive.
+    #[serde(default)]
+    pub asked: Option<phux_agent_session::asked::AskedState>,
     /// The resource record's key in [`StateBlob::org`]. Additive.
     #[serde(default)]
     pub key: Option<phux_core::ResourceKey>,
+    /// The pane's OSC 7577 token. Debug output redacts it. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_resume_token: Option<phux_terminal_api::handoff::RedactedToken>,
 }
 
 /// An `AgentSession` in the blob (ADR-0103): its identity, derived state,

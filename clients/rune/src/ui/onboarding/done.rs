@@ -150,7 +150,7 @@ pub(super) fn done(desk: &Desk, t: &Tokens) -> El {
         )
         .child(start_agent(desk, t))
         .child(
-            text("A few keys worth knowing, from your keymap.")
+            text("Shortcuts you will use most.")
                 .font(t.ty.lead)
                 .color(t.roles.text.dim.paint())
                 .align(Align::Center),

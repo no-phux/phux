@@ -3,6 +3,24 @@ import UIKit
 @main
 @MainActor
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    static func main() {
+        EarlierApp.forgetScenes() // Before UIKit reads its saved sessions.
+        UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(Self.self))
+    }
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        EarlierApp.clearBadge()
+        LivePush.listen()
+        NotificationCenter.default.addObserver(self, selector: #selector(connecting),
+                                               name: UIScene.willConnectNotification, object: nil)
+        return true
+    }
+
+    @objc private func connecting(_ note: Notification) {
+        if let scene = note.object as? UIScene { EarlierApp.claim(scene) }
+    }
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name:"Rune", sessionRole:session.role)
@@ -18,10 +36,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var root: RuneController?
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
+        open(scene, url: options.urlContexts.first?.url)
+    }
+    func open(_ scene: UIWindowScene, url: URL?) {
         phux_rune_ios_prewarm() // Compile the renderer while UIKit builds the window.
         let controller = RuneController()
         root = controller
-        if let url = options.urlContexts.first?.url { controller.importPairing(url) }
+        if let url { controller.importPairing(url) }
         let window = UIWindow(windowScene:scene)
         // UIKit's own controls take the house accent (the generated
         // AccentColor, with its dark and increased-contrast appearances).
@@ -40,7 +61,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         root?.setSceneActive(true)
     }
-    func sceneWillResignActive(_ scene: UIScene) { root?.setSceneActive(false) }
+    func sceneWillResignActive(_ scene: UIScene) {
+        AgentCard.shared.leave(connected: root?.surface?.attached == true)
+        root?.setSceneActive(false)
+    }
     func sceneDidEnterBackground(_ scene: UIScene) { root?.surface?.setActive(false) }
     func sceneDidDisconnect(_ scene: UIScene) { root?.surface?.close() }
 }
@@ -51,12 +75,15 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private let probe = QualificationProbe(arguments:ProcessInfo.processInfo.arguments)
     private var started = false
     private var pendingLink: String?
+    private var pendingCard: String?
     private var qualificationTask: Task<Void,Never>?
     /// What the surface's edges show; UIKit continues it under the status
     /// bar and home indicator so the terminal is not framed by system chrome.
     private static let launchGround = UIColor(named: "LaunchGround") ?? .black
     private var ground = RuneController.launchGround
     private let empty = EmptyState()
+    /// What an update could not carry from the app it replaced.
+    private var refusal: String?
     isolated deinit { qualificationTask?.cancel() }
     private var groundIsDark: Bool {
         var (red, green, blue): (CGFloat, CGFloat, CGFloat) = (0, 0, 0)
@@ -88,6 +115,12 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         view.window?.overrideUserInterfaceStyle = groundIsDark ? .dark : .light
     }
     private func showDisconnected() {
+        if let refusal {
+            empty.show(title: "Pair your computer again", detail: refusal, primary: "Pair a computer") {
+                [weak self] in self?.showConnection()
+            }
+            return
+        }
         empty.show(title: "No computer connected",
             detail: "Pair this phone with a computer running Phux to open its terminals here.",
             primary: "Connect a computer") { [weak self] in self?.showConnection() }
@@ -104,6 +137,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private func reopen() {
         do {
             if let configuration = try HostSettings.load() { open(configuration) }
+            else if refusal != nil { showDisconnected() }
             else { showConnection() }
         } catch { showFailure(error.localizedDescription) }
     }
@@ -115,6 +149,10 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         if let probe {
             qualify(probe)
             return
+        }
+        if let outcome = EarlierHosts.carry() {
+            EarlierHosts.notice = outcome.notice
+            refusal = outcome.carried == nil ? outcome.refusal : nil
         }
         if let link = pendingLink {
             pendingLink = nil
@@ -134,8 +172,25 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             } catch { probe.preparationFailure(error.localizedDescription); self?.show(error.localizedDescription) }
         }
     }
+    /// The schemes the bundle declares (build.py `--url-scheme`), so a
+    /// distributor's own scheme pairs exactly like the preview's.
+    private static let pairingSchemes: Set<String> = Set(
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? [])
+            .flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] })
+
+    /// A tapped card, widget or Dynamic Island. The system hands the app
+    /// its own links whichever schemes the bundle declares.
+    private static func isCardLink(_ url: URL) -> Bool {
+        url.scheme == "phux" && ["inbox", "pane"].contains(url.host() ?? "")
+    }
+
     func importPairing(_ url: URL) {
-        guard url.scheme == "phux-rune" else { return }
+        if Self.isCardLink(url) {
+            guard started else { pendingCard = url.absoluteString; return }
+            surface?.openLink(url.absoluteString)
+            return
+        }
+        guard let scheme = url.scheme, Self.pairingSchemes.contains(scheme) else { return }
         guard started else { pendingLink = url.absoluteString; return }
         connection(link: url.absoluteString)
     }
@@ -147,7 +202,9 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         // camera permission prompt or Tailscale's approval browser. Without
         // one, a passing interruption (Control Center, a banner) keeps the
         // keyboard it would only bring straight back.
+        // The camera is a navigation controller too, but not setup.
         let covered = presentedViewController is UINavigationController
+            && !(presentedViewController is UIImagePickerController)
         surface?.setActive(active && !covered, keepingKeyboard: !covered)
     }
 
@@ -175,6 +232,8 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         let form = OnboardingController(values: try? HostSettings.load())
         form.closed = { [weak self] in self?.setupClosed() }
         form.connected = { [weak self] configuration in
+            AgentCard.shared.forget()
+            EarlierHosts.notice = nil // Its own pairing replaced what that described.
             self?.dismiss(animated:true) { self?.open(configuration) }
         }
         let nav = UINavigationController(rootViewController: form)
@@ -205,6 +264,10 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             let hostname = name.contains(where: \.isLetter) && !name.contains(" ")
             configuration["name"] = hostname ? label : name
         }
+        let app = Bundle.main.infoDictionary ?? [:]
+        if let title = app["CFBundleDisplayName"] as? String, let version = app["CFBundleShortVersionString"] as? String {
+            configuration["app"] = "\(title) \(version)"
+        }
         let surface = RuneView(configuration:configuration)
         surface.qualification = probe
         probe?.surface = surface
@@ -224,6 +287,19 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             surface.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor),
             surface.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor)])
         self.surface = surface
+        if let link = pendingCard { pendingCard = nil; surface.openLink(link) }
+        showNotice()
+    }
+
+    private func showNotice() {
+        guard let notice = EarlierHosts.notice, probe == nil, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Some computers weren't carried over", message: notice, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Change Computer", style: .default) { [weak self] _ in
+            EarlierHosts.notice = nil
+            self?.showConnection()
+        })
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel) { _ in EarlierHosts.notice = nil })
+        present(alert, animated: true)
     }
 }
 
@@ -248,6 +324,7 @@ private final class EmptyState: UIView {
         content.text = title
         content.secondaryText = detail
         content.button = .borderedProminent()
+        content.button.baseForegroundColor = .systemBackground // White on the light accent is unreadable.
         content.button.title = primary
         content.buttonProperties.primaryAction = UIAction { _ in action() }
         if let secondary, let other {

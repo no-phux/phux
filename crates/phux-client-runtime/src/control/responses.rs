@@ -18,7 +18,6 @@ impl ControlPlane {
     // ----- handshake --------------------------------------------------
 
     pub(super) fn hello_ok(&mut self, answer: HelloOk) -> Result<(), ControlError> {
-        crate::connection::trace::phase("hello_received");
         if self.handshake_ready {
             return Err(ControlError::Protocol(
                 "server sent duplicate HELLO_OK".to_owned(),
@@ -32,7 +31,6 @@ impl ControlPlane {
                 return Err(ControlError::Refused(message));
             }
         };
-        self.requalify_attach_target(&info.id)?;
         // Replicas survive a reconnect so the same incarnation can resume
         // their streams. A new incarnation recycles resource ids for fresh
         // PTYs (a restarted server reseeds `@1`), and a replica kept under a
@@ -59,12 +57,12 @@ impl ControlPlane {
             // readily as an agent session's.
             self.end_agent_incarnation();
         }
+        self.requalify_attach_target(&info.id)?;
         let (profile, limits) = (info.profile, info.limits);
         let server_id = info.id.clone();
         self.server = Some(info);
         self.ensure_engine(profile, limits)?;
         self.handshake_ready = true;
-        crate::connection::trace::phase("hello_accepted");
         self.set_status(Status::Negotiated);
         let now_ms = self.now_ms();
         let reports = self
@@ -83,44 +81,6 @@ impl ControlPlane {
         self.approvals_negotiated();
         self.queue_durable_frames();
         self.queue_next_upload();
-        Ok(())
-    }
-
-    /// Session numbers are local to a server incarnation. Recover the same
-    /// logical session by its last authoritative name, never by a recycled ID.
-    fn requalify_attach_target(&mut self, server_id: &[u8]) -> Result<(), ControlError> {
-        // Manual embedders select their own next attach after negotiation; an
-        // old target must not refuse a connection they intend to retarget.
-        if !self.options.automatic_lifecycle {
-            return Ok(());
-        }
-        let Some(AttachTarget::ById(id)) = &self.attach_target else {
-            return Ok(());
-        };
-        if self
-            .server
-            .as_ref()
-            .is_none_or(|previous| previous.id == server_id)
-        {
-            return Ok(());
-        }
-        let name = self
-            .topology
-            .as_ref()
-            .and_then(|topology| {
-                topology
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == id.get())
-            })
-            .map(|session| session.name.clone())
-            .ok_or_else(|| {
-                ControlError::Refused(format!(
-                    "cannot recover session {}: its previous name is unavailable",
-                    id.get()
-                ))
-            })?;
-        self.attach_target = Some(AttachTarget::ByName(name));
         Ok(())
     }
 
@@ -183,23 +143,7 @@ impl ControlPlane {
         });
         let target = self.attach_target.clone();
         match target {
-            Some(target) => {
-                let attach_id = self.next_request_id();
-                self.active_attach_id = Some(attach_id);
-                if let AttachTarget::CreateIfMissing { name, .. } = &target {
-                    // Creation is a one-shot act; a reconnect re-attaches.
-                    self.attach_target = Some(AttachTarget::ByName(name.clone()));
-                }
-                self.viewport.pending = false;
-                self.queue_frame(&FrameKind::Attach {
-                    attach_id,
-                    target,
-                    viewport: self.viewport.desired,
-                    request_scrollback: true,
-                    scrollback_limit_lines: self.options.scrollback_lines,
-                    role_policy: self.options.attach_role,
-                });
-            }
+            Some(target) => self.queue_session_attach(target),
             None => {
                 self.queue_refresh_topology();
             }
@@ -328,7 +272,6 @@ impl ControlPlane {
             )));
         }
         self.attached_once = true;
-        crate::connection::trace::phase("attach_ready");
         self.attach_ended = false;
         self.error = None;
         self.set_status(Status::Attached);

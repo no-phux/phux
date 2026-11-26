@@ -4,16 +4,121 @@
 use super::{Arc, GridFrame, Publication, Scroll, TerminalPublication, lock};
 use super::{Client, ResourceId};
 
+/// Exact immutable publication and delivery fence captured for a presentation.
+///
+/// Acquisition is not visibility: only a completed, visible and unclipped
+/// platform draw may submit this evidence for acknowledgement.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone)]
+pub struct PresentationEvidence {
+    frame: Arc<GridFrame>,
+    view: Option<crate::ViewId>,
+    fence: crate::control::ProjectionFence,
+}
+
+#[cfg(feature = "engine")]
+impl PartialEq for PresentationEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.frame, &other.frame)
+            && self.view == other.view
+            && self.fence == other.fence
+    }
+}
+
+#[cfg(feature = "engine")]
+impl Eq for PresentationEvidence {}
+
 impl Client {
-    /// Create an independent tail-following presentation at canonical PTY size.
+    /// Capture a fence for this exact current frame without acknowledging it.
+    /// `view` is `None` for the default terminal presentation.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn presentation_evidence(
+        &self,
+        view: Option<crate::ViewId>,
+        frame: &Arc<GridFrame>,
+    ) -> Option<PresentationEvidence> {
+        let control = lock(&self.inner.control);
+        if control.status() != crate::control::Status::Attached || !frame.scrollbar.at_tail() {
+            return None;
+        }
+        let current = self
+            .inner
+            .publication
+            .current_frame(&frame.terminal_id, view)?;
+        if !Arc::ptr_eq(&current, frame) {
+            return None;
+        }
+        Some(PresentationEvidence {
+            frame: Arc::clone(frame),
+            view,
+            fence: control.projection_fence(&frame.terminal_id)?,
+        })
+    }
+
+    /// Acknowledge a completed visible, unclipped draw, never mere acquisition.
+    /// Validate the exact publication (including stream/bootstrap), connection
+    /// epoch and latest terminal-wide fence under the runtime owner.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acknowledge_presentation(
+        &self,
+        evidence: &PresentationEvidence,
+        visible: bool,
+        unclipped: bool,
+    ) -> bool {
+        if !visible || !unclipped || !evidence.frame.scrollbar.at_tail() {
+            return false;
+        }
+        self.inner.with(|control| {
+            let current = self
+                .inner
+                .publication
+                .current_frame(&evidence.frame.terminal_id, evidence.view);
+            if control.status() != crate::control::Status::Attached
+                || !current.is_some_and(|frame| Arc::ptr_eq(&frame, &evidence.frame))
+            {
+                return false;
+            }
+            control.acknowledge_projection_if(&evidence.frame.terminal_id, evidence.fence)
+        })
+    }
+
+    /// Capture a source only in the caller's originally observed server and
+    /// connection epoch. `None` represents an embedded/offline owner with no HELLO, not
+    /// permission to ignore a negotiated server. Capture before deferring work
+    /// and retain the returned source; never recapture after stale admission.
+    #[cfg(feature = "engine")]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the control lock pins the checked epoch until the capture completes"
+    )]
+    pub fn view_source(
+        &self,
+        terminal: &ResourceId,
+        expected_server: Option<&[u8]>,
+        expected_connection_epoch: u64,
+    ) -> Result<crate::engine::ViewSource, crate::engine::EngineError> {
+        let control = lock(&self.inner.control);
+        if control.connection_epoch() != expected_connection_epoch
+            || control.server().map(|server| server.id.as_slice()) != expected_server
+        {
+            return Err(crate::engine::EngineError::StaleViewSource);
+        }
+        crate::engine::ViewSource::capture(&self.inner.publication, terminal)
+    }
+
+    /// Admit an independent presentation against its exact original source.
+    /// The engine owner checks the source again when it processes admission.
+    /// Retained offline sources need no live transport or new identity lookup.
     #[cfg(feature = "engine")]
     pub fn create_view(
         &self,
-        terminal: &ResourceId,
+        source: &crate::engine::ViewSource,
     ) -> Result<crate::ViewId, crate::engine::EngineError> {
         self.engine()
             .ok_or(crate::engine::EngineError::Stopped)?
-            .create_view(terminal)
+            .create_view(source)
     }
 
     /// Release only a view's presentation resources, preserving its terminal.
@@ -31,7 +136,8 @@ impl Client {
         self.inner.publication.acquire_view(view)
     }
 
-    /// Poll the independent view's frame generation.
+    /// Poll the view's frame generation: zero while waiting for its first
+    /// frame, or `None` when the view is gone.
     #[cfg(feature = "engine")]
     #[must_use]
     pub fn view_generation(&self, view: crate::ViewId) -> Option<u64> {
@@ -130,9 +236,14 @@ impl Client {
         terminal_id: &ResourceId,
         text: String,
     ) -> Result<bool, crate::engine::EngineError> {
-        self.engine()
+        let predicted = self
+            .engine()
             .ok_or(crate::engine::EngineError::Stopped)?
-            .predict_text(terminal_id, text)
+            .predict_text(terminal_id, text);
+        // The driver's deadline lane erases a guess the program never
+        // echoes; wake it so an idle connection sees this one.
+        self.inner.outbound.notify_one();
+        predicted
     }
 
     /// Clear predictive text and republish authoritative state.

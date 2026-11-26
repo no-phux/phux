@@ -15,13 +15,18 @@ impl super::super::SessionLoop {
         [
             self.notifier.deadline(),
             heal.map(tokio::time::Instant::from_std),
+            self.open_urls
+                .borrow()
+                .deadline()
+                .map(tokio::time::Instant::from_std),
         ]
         .into_iter()
         .flatten()
         .min()
     }
 
-    /// Run whichever of the notifier and the kitty heal came due.
+    /// Run whichever of the notifier, the kitty heal and an unanswered link
+    /// came due.
     pub(in crate::attach::driver::loop_state) fn on_housekeeping_due<
         W: crate::attach::RenderSink,
     >(
@@ -31,6 +36,10 @@ impl super::super::SessionLoop {
     ) {
         self.on_notify_due(out);
         self.heal_kitty_images(out, sidebar, Instant::now(), false);
+        if self.overlays.dismiss_expired() {
+            self.repaint_view(out, sidebar, RepaintLevel::Full);
+            self.paint_overlay(out, sidebar);
+        }
     }
 
     /// The outer terminal reported its focus; regaining it heals images that

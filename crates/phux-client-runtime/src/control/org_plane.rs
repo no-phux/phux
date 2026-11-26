@@ -7,13 +7,12 @@
 //! `ORGANIZATION`: no seed is read, submissions resolve
 //! [`OrgOutcome::NotSent`], and `close_terminals` can use the advertised
 //! legacy `CLOSE_TAB_RESOURCES` path.
+//!
+//! [`OrgOutcome::NotSent`]: phux_client_core::org_ops::OrgOutcome::NotSent
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
 
-use phux_client_core::org_ops::{
-    ORG_JOURNAL_MAX_OPS, OrgJournal, OrgOutcome, OrgReport, OrganizationCommand, SubmitError,
-};
+use phux_client_core::org_ops::OrgJournal;
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
 use phux_protocol::wire::frame::{
@@ -22,9 +21,14 @@ use phux_protocol::wire::frame::{
 
 mod bulk;
 mod commands;
+mod journal;
+#[cfg(test)]
+mod tests;
 
 use bulk::{BulkMove, BulkPhase};
 pub use commands::ArrangementSubmitError;
+pub use journal::mint_operation;
+pub(super) use journal::outcome_sentence;
 
 use super::organization::ReplicaAction;
 use super::{ControlPlane, Event, Pending, Topology};
@@ -48,6 +52,11 @@ pub(super) struct OrgLane {
     /// Terminals created by session key for a spawn request whose session
     /// had no live member to address: operation to spawn request id.
     pub(super) spawns: Vec<(OperationId, u32)>,
+    /// Lookup-only recovery across incarnation change, fenced to authority/key.
+    pub(super) pending_attach: Option<(
+        phux_protocol::ids::AuthorityId,
+        phux_protocol::ids::SessionKey,
+    )>,
     moves: Vec<BulkMove>,
     deferred: usize,
     seed_has_cursor: bool,
@@ -145,10 +154,14 @@ impl ControlPlane {
         if !self.handshake_ready || !self.organization_supported() {
             return None;
         }
-        Some(self.queue_org_read(
+        Some(self.queue_arrangement_read(arrangement))
+    }
+
+    fn queue_arrangement_read(&mut self, arrangement: ArrangementKey) -> u32 {
+        self.queue_org_read(
             Command::ArrangementGet { arrangement },
             Pending::OrgArrangement(arrangement),
-        ))
+        )
     }
 
     /// A connection negotiated: resolve what can no longer be resent, then
@@ -164,6 +177,13 @@ impl ControlPlane {
         self.handle_org_reports(reports);
         if !supported {
             self.cancel_bulk_moves("the server does not advertise ORGANIZATION");
+            if self.org.pending_attach.take().is_some() {
+                self.attach_target = None;
+                self.error = Some(
+                    "cannot recover an exact session key on a peer without ORGANIZATION".into(),
+                );
+                self.set_status(super::Status::Failed);
+            }
         }
         if supported && self.options.automatic_lifecycle {
             self.queue_org_seed(OrgFilter::All);
@@ -183,6 +203,7 @@ impl ControlPlane {
         let reports = self.org.journal.drain(why);
         self.handle_org_reports(reports);
         self.cancel_bulk_moves(why);
+        self.org.pending_attach = None;
     }
 
     /// A `GET_ORGANIZATION` page or `ARRANGEMENT_GET` reply.
@@ -218,6 +239,31 @@ impl ControlPlane {
         }
     }
 
+    fn refresh_seeded_arrangements(
+        &mut self,
+        filter: OrgFilter,
+        mut keys: HashSet<ArrangementKey>,
+    ) {
+        // The seed's journal cut can cover an ArrangementChanged in the same
+        // transaction as a ResourceCreated, but pages carry only the key, not
+        // the arrangement itself. Re-read cached documents in the seeded scope.
+        let seeded = self
+            .organization
+            .sessions()
+            .iter()
+            .filter(|session| match filter {
+                OrgFilter::All => true,
+                OrgFilter::Session(key) => session.key == key,
+                _ => false,
+            })
+            .filter_map(|session| session.arrangement);
+        keys.extend(seeded);
+        keys.retain(|key| self.organization.arrangement(key).is_some());
+        for key in keys {
+            self.queue_arrangement_read(key);
+        }
+    }
+
     fn resolve_org_read_refusal(&mut self, filter: OrgFilter, refusal: &Refusal) {
         // A rejected opaque continuation can be replaced once. Authorization,
         // support and store failures are not evidence of cursor invalidation.
@@ -247,7 +293,13 @@ impl ControlPlane {
                 };
                 self.queue_org_read(command, Pending::OrgPage(filter));
             }
-            ReplicaAction::Seeded => self.org_seeded(),
+            ReplicaAction::Seeded {
+                filter,
+                arrangements,
+            } => {
+                self.refresh_seeded_arrangements(filter, arrangements);
+                self.org_seeded();
+            }
             ReplicaAction::Reseed => {
                 self.queue_org_seed(OrgFilter::All);
             }
@@ -258,10 +310,7 @@ impl ControlPlane {
                 self.organization_changed();
             }
             ReplicaAction::RefetchArrangement(arrangement) => {
-                self.queue_org_read(
-                    Command::ArrangementGet { arrangement },
-                    Pending::OrgArrangement(arrangement),
-                );
+                self.queue_arrangement_read(arrangement);
             }
         }
         self.advance_bulk_moves();
@@ -277,6 +326,7 @@ impl ControlPlane {
             self.handle_org_reports(reports);
             self.flush_org_journal();
         }
+        self.resume_keyed_attach();
         self.organization_changed();
     }
 
@@ -306,164 +356,5 @@ impl ControlPlane {
                 .filter_map(|session| session.key.map(|key| (key, session.id))),
         );
         Topology::from_snapshot(snapshot).with_organization(&self.organization)
-    }
-
-    // ----- the journal -----------------------------------------------------
-
-    /// Submit a mutating organization command. It is sent now, or once a
-    /// connection to an `ORGANIZATION` server has named its authority, and
-    /// resent with the same operation id after a reconnect inside the retry
-    /// horizon. The outcome is [`Event::OrganizationOperation`].
-    ///
-    /// # Errors
-    ///
-    /// [`SubmitError`] — a read, a reused id with another payload, or a full
-    /// journal.
-    pub fn submit_organization(&mut self, command: Command) -> Result<OperationId, SubmitError> {
-        let now_ms = self.now_ms();
-        let operation = self.journal_org_operation(command)?;
-        if self.handshake_ready && !self.organization_supported() {
-            // This server cannot take it; a later connection to one that can
-            // must not run it unasked.
-            let reports = self.org.journal.begin_connection(false, now_ms);
-            self.handle_org_reports(reports);
-            return Ok(operation);
-        }
-        self.flush_org_journal();
-        Ok(operation)
-    }
-
-    /// All producers use this gate: deferred chunks reserve real journal
-    /// slots, and an exact retry of an already journaled operation needs none.
-    pub(super) fn journal_org_operation(
-        &mut self,
-        command: Command,
-    ) -> Result<OperationId, SubmitError> {
-        let operation = command
-            .organization_operation()
-            .ok_or(SubmitError::NotAnOperation)?;
-        if self.org.journal.command(operation).is_none()
-            && self.org.journal.len() + self.org.deferred >= ORG_JOURNAL_MAX_OPS
-        {
-            return Err(SubmitError::Full);
-        }
-        if self
-            .org
-            .moves
-            .iter()
-            .any(|run| run.remaining.iter().any(|(id, _)| id == operation))
-        {
-            return Err(SubmitError::DuplicateOperation);
-        }
-        self.org.journal.submit(command, self.now_ms())
-    }
-
-    pub(super) fn flush_org_journal(&mut self) {
-        if !self.org.ready || !self.handshake_ready {
-            return;
-        }
-        let mut seq = self.request_seq;
-        let frames = self.org.journal.next_frames(&mut || {
-            let id = seq;
-            seq = seq.wrapping_add(1).max(1);
-            id
-        });
-        self.request_seq = seq;
-        for frame in &frames {
-            self.queue_frame(frame);
-        }
-    }
-
-    /// Whether `request_id` is an organization operation's attempt.
-    pub(super) fn owns_org_request(&self, request_id: u32) -> bool {
-        self.org.journal.owns(request_id)
-    }
-
-    pub(super) fn resolve_org_request(&mut self, request_id: u32, result: &CommandResult) {
-        if let Some(report) = self.org.journal.resolve(request_id, result) {
-            self.handle_org_reports(vec![report]);
-        }
-    }
-
-    /// Resolve every attempted operation past the retry horizon. Returns
-    /// whether anything resolved.
-    pub(super) fn expire_org(&mut self) -> bool {
-        let before = self.events.len();
-        let now_ms = self.now_ms();
-        let reports = self.org.journal.expire(now_ms);
-        self.handle_org_reports(reports);
-        let now = Instant::now();
-        self.expire_bulk_reads(now);
-        self.events.len() != before
-    }
-
-    /// The earliest bulk-inventory deadline.
-    pub(super) fn next_org_deadline(&self) -> Option<Instant> {
-        self.org
-            .moves
-            .iter()
-            .filter(|run| !matches!(run.phase, BulkPhase::Submitted(_)))
-            .map(|run| run.deadline)
-            .min()
-    }
-
-    fn handle_org_reports(&mut self, reports: Vec<OrgReport>) {
-        for report in reports {
-            if let Some(position) = self
-                .org
-                .closes
-                .iter()
-                .position(|batch| batch.operations.contains_key(&report.operation))
-            {
-                let batch = &mut self.org.closes[position];
-                if let Some(id) = batch.operations.remove(&report.operation)
-                    && !report.outcome.succeeded()
-                {
-                    batch
-                        .errors
-                        .push(format!("{id}: {}", outcome_sentence(&report.outcome)));
-                }
-                if batch.operations.is_empty() {
-                    let batch = self.org.closes.remove(position);
-                    self.push_event(Event::TerminalsClosed {
-                        request_id: batch.request_id,
-                        error: (!batch.errors.is_empty()).then(|| batch.errors.join("; ")),
-                    });
-                }
-                continue;
-            }
-            if self.resolve_session_spawn(&report) {
-                continue;
-            }
-            let cancelled = self.resolve_bulk_move(&report);
-            self.push_event(Event::OrganizationOperation {
-                operation: report.operation,
-                outcome: report.outcome,
-            });
-            if let Some(run) = cancelled {
-                self.cancel_bulk_tail(run, "a prior bulk move chunk did not commit");
-            }
-        }
-        self.advance_bulk_moves();
-    }
-}
-
-/// A fresh random operation id.
-#[must_use]
-pub fn mint_operation() -> OperationId {
-    loop {
-        if let Some(id) = OperationId::new(*uuid::Uuid::new_v4().as_bytes()) {
-            return id;
-        }
-    }
-}
-
-pub(super) fn outcome_sentence(outcome: &OrgOutcome) -> String {
-    match outcome {
-        OrgOutcome::Refused(refusal) => phux_client_core::org_ops::refusal_sentence(refusal),
-        OrgOutcome::Error { message, .. } => message.clone(),
-        OrgOutcome::Unknown { reason } => format!("outcome unknown: {reason}"),
-        OrgOutcome::NotSent { reason } => format!("not sent: {reason}"),
-        other => format!("{other:?}"),
     }
 }

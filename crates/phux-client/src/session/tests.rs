@@ -7,6 +7,8 @@ use phux_protocol::wire::frame::{
 };
 use std::collections::BTreeMap;
 
+mod create_receipts;
+
 fn scripted(
     spec: ScriptSpec,
 ) -> (

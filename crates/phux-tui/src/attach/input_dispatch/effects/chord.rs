@@ -13,13 +13,13 @@ pub(in crate::attach) enum ChordOutcome {
 }
 
 /// Feed a key press to the resolver (releases and repeats are ignored, so
-/// held keys do not re-fire). `None` without a resolver or on no match.
+/// held keys do not re-fire). `None` on no match.
 pub(in crate::attach) fn consume_chord(
     ctx: &mut DispatchCtx<'_>,
     key_event: &phux_protocol::input::key::KeyEvent,
 ) -> Option<ChordOutcome> {
     use phux_protocol::input::key::{KeyAction, ModSet};
-    let resolver = ctx.resolver.as_deref_mut()?;
+    let resolver = &mut *ctx.resolver;
     if !matches!(key_event.action, KeyAction::Press) {
         return None;
     }

@@ -1,11 +1,11 @@
 use super::{RebuildError, WireResourceId, validate_upgrade_blob};
-use crate::runtime::apps::agent_session::upgrade::{
-    carried_sessions, carry_cuts, request_agent_session_cut, stream_cut,
-};
 use crate::runtime::apps::terminal::test_support::{
     ScreenReply, ScreenRequest, TerminalResource as _, seeded_terminal,
 };
-use crate::runtime::apps::terminal::upgrade::{
+use crate::runtime::upgrade::kinds::agent_session::{
+    carried_sessions, carry_cuts, request_agent_session_cut, stream_cut,
+};
+use crate::runtime::upgrade::kinds::terminal::{
     TerminalResume, carry_handoffs, pane_senders, request_pane_handoff,
 };
 use crate::state::ServerState;
@@ -20,70 +20,69 @@ use std::path::PathBuf;
 #[tokio::test(flavor = "current_thread")]
 async fn build_upgrade_blob_captures_tree_and_snapshot() {
     let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let mut state = ServerState::new();
+    Box::pin(local.run_until(async {
+        let mut state = ServerState::new();
 
-            // A session/window/pane in the registry.
-            let (sid, tid) = state.seed_session("main");
-            let session_wire = state.idspace.intern_session(sid).get();
-            let window_wire = state.idspace.intern_window(sid).get();
+        // A session/window/pane in the registry.
+        let (sid, tid) = state.seed_session("main");
+        let session_wire = state.idspace.intern_session(sid).get();
+        let window_wire = state.idspace.intern_window(sid).get();
 
-            // A real (no-PTY) actor answering the upgrade request.
-            let bundle = seeded_terminal(20, 5, b"hello");
-            let handle = bundle.handle.clone();
-            let token = bundle.token.clone();
-            tokio::task::spawn_local(bundle.actor.run());
-            let pane_wire = state
-                .register_resource_handle(tid, handle, token)
-                .unwrap()
-                .local_id()
-                .expect("local wire id");
+        // A real (no-PTY) actor answering the upgrade request.
+        let bundle = seeded_terminal(20, 5, b"hello");
+        let handle = bundle.handle.clone();
+        let token = bundle.token.clone();
+        tokio::task::spawn_local(bundle.actor.run());
+        let pane_wire = state
+            .register_resource_handle(tid, handle, token)
+            .unwrap()
+            .local_id()
+            .expect("local wire id");
 
-            let blob = state.build_upgrade_blob(7).await;
+        let blob = state.build_upgrade_blob(7).await;
 
-            assert_eq!(blob.listener_fd, 7);
-            assert_eq!(blob.sessions.len(), 2, "the session and the Inbox");
-            assert_eq!(blob.windows.len(), 1, "only the session has a pane");
-            assert_eq!(blob.panes.len(), 1);
-            let org = blob.org.as_ref().expect("records ride the blob");
-            assert_eq!(org.sessions.len(), 2);
-            assert_eq!(org.resources.len(), 1);
+        assert_eq!(blob.listener_fd, 7);
+        assert_eq!(blob.sessions.len(), 2, "the session and the Inbox");
+        assert_eq!(blob.windows.len(), 1, "only the session has a pane");
+        assert_eq!(blob.panes.len(), 1);
+        let org = blob.org.as_ref().expect("records ride the blob");
+        assert_eq!(org.sessions.len(), 2);
+        assert_eq!(org.resources.len(), 1);
 
-            let s = blob
-                .sessions
-                .iter()
-                .find(|s| s.name == "main")
-                .expect("main");
-            assert_eq!(s.wire_id, session_wire);
-            assert_eq!(s.name, "main");
-            assert_eq!(s.window_wire_ids, vec![window_wire]);
-            assert_eq!(s.key, state.registry().session_key(sid));
-            assert!(s.keep_empty, "a persistent session reads keep-empty");
+        let s = blob
+            .sessions
+            .iter()
+            .find(|s| s.name == "main")
+            .expect("main");
+        assert_eq!(s.wire_id, session_wire);
+        assert_eq!(s.name, "main");
+        assert_eq!(s.window_wire_ids, vec![window_wire]);
+        assert_eq!(s.key, state.registry().session_key(sid));
+        assert!(s.keep_empty, "a persistent session reads keep-empty");
 
-            let w = &blob.windows[0];
-            assert_eq!(w.wire_id, window_wire);
-            assert_eq!(w.session_wire_id, session_wire);
-            assert_eq!(w.pane_wire_ids, vec![pane_wire]);
+        let w = &blob.windows[0];
+        assert_eq!(w.wire_id, window_wire);
+        assert_eq!(w.session_wire_id, session_wire);
+        assert_eq!(w.pane_wire_ids, vec![pane_wire]);
 
-            let p = &blob.panes[0];
-            assert_eq!(p.wire_id, pane_wire);
-            assert_eq!(p.window_wire_id, window_wire);
-            assert_eq!(p.key, state.registry().resource_key(tid));
-            assert_eq!((p.cols, p.rows), (20, 5));
-            assert_eq!(p.master_fd, None, "no-PTY actor has no master fd");
-            assert_eq!(p.child_pid, None);
-            assert!(
-                String::from_utf8_lossy(&p.vt_replay_bytes).contains("hello"),
-                "pane snapshot should carry the actor's seeded text"
-            );
+        let p = &blob.panes[0];
+        assert_eq!(p.wire_id, pane_wire);
+        assert_eq!(p.window_wire_id, window_wire);
+        assert_eq!(p.key, state.registry().resource_key(tid));
+        assert_eq!((p.cols, p.rows), (20, 5));
+        assert_eq!(p.master_fd, None, "no-PTY actor has no master fd");
+        assert_eq!(p.child_pid, None);
+        assert!(
+            String::from_utf8_lossy(&p.vt_replay_bytes).contains("hello"),
+            "pane snapshot should carry the actor's seeded text"
+        );
 
-            // Counters sit above every minted id.
-            assert!(blob.counters.next_session_wire_id > session_wire);
-            assert!(blob.counters.next_window_wire_id > window_wire);
-            assert!(blob.counters.next_terminal_wire_id > pane_wire);
-        })
-        .await;
+        // Counters sit above every minted id.
+        assert!(blob.counters.next_session_wire_id > session_wire);
+        assert!(blob.counters.next_window_wire_id > window_wire);
+        assert!(blob.counters.next_terminal_wire_id > pane_wire);
+    }))
+    .await;
 }
 
 /// state → blob → rebuild → blob round-trips tree, ids, and counters.
@@ -112,7 +111,7 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         // phux-1x9s.6: every pane's actor passes through the runtime's
         // wiring before it runs, as a fresh spawn's does.
         let mut terminal = TerminalResume::new(|core, pane, scrollback| {
-            crate::runtime::apps::terminal::upgrade::rebuild_pane(
+            crate::runtime::upgrade::kinds::terminal::rebuild_pane(
                 core,
                 pane,
                 scrollback,
@@ -331,7 +330,56 @@ async fn an_upgrade_keeps_the_user_title_beside_the_program_title() {
     .await;
 }
 
+/// phux-dsako.4: an open question crosses with its source and asked flag,
+/// except a streamed one whose session did not: nothing could retract it.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_question_crosses_while_its_source_does() {
+    use phux_agent_session::asked::{AskedPayload, AskedSource, AskedState};
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async {
+        for (source, crosses) in [
+            (AskedSource::Hook, true),
+            (AskedSource::Sentinel, true),
+            (AskedSource::Stream, false),
+        ] {
+            let mut state = ServerState::new();
+            let (_, pane) = state.seed_session("main");
+            let bundle = seeded_terminal(20, 5, b"hello");
+            tokio::task::spawn_local(bundle.actor.run());
+            state
+                .register_resource_handle(pane, bundle.handle, bundle.token)
+                .unwrap();
+            let payload = AskedPayload {
+                id: "q2".to_owned(),
+                question: "Keep me?".to_owned(),
+                suggestions: vec!["Yes".to_owned()],
+                elapsed_seconds: None,
+            };
+            state.report_agent_asked(pane, source, payload.clone());
+            let blob = state.build_upgrade_blob(7).await;
+
+            let mut fresh = ServerState::new();
+            crate::runtime::apps::terminal::test_support::rebuild_unwired(&mut fresh, &blob)
+                .expect("rebuild");
+            let wire = WireResourceId::local(blob.panes[0].wire_id);
+            let held = fresh
+                .idspace
+                .resource_from_wire(&wire)
+                .and_then(|pane| fresh.asked_observation(pane));
+            let want = crosses.then_some(AskedState { source, payload });
+            assert_eq!(held, want.as_ref());
+            let flag = fresh.metadata().get(
+                &phux_protocol::wire::frame::Scope::Resource(wire),
+                phux_protocol::wire::frame::RESOURCE_ASKED_KEY,
+            );
+            assert_eq!(flag.is_some(), crosses, "{source:?}");
+        }
+    }))
+    .await;
+}
+
 mod merge;
+mod unseen;
 mod validation;
 
 impl ServerState {

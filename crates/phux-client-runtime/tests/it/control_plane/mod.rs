@@ -57,6 +57,8 @@ mod recovery;
 mod roster;
 mod service_http;
 mod spawns;
+#[cfg(feature = "engine")]
+mod view_admission;
 mod views;
 
 #[cfg(feature = "engine")]
@@ -64,7 +66,10 @@ mod views;
 fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {
     let client = embedded_with_history(None);
     let old_owner = client.engine().unwrap();
-    let view = client.create_view(&terminal()).unwrap();
+    let source = client
+        .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
+        .unwrap();
+    let view = client.create_view(&source).unwrap();
     let slot = client.view_slot(view).unwrap();
     let default_slot = client.slot(&terminal()).unwrap();
     let held = slot.acquire().unwrap();
@@ -96,7 +101,10 @@ fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {
 fn dropping_client_retires_views_even_with_an_external_owner_clone() {
     let client = embedded_with_history(None);
     let owner = client.engine().unwrap();
-    let view = client.create_view(&terminal()).unwrap();
+    let source = client
+        .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
+        .unwrap();
+    let view = client.create_view(&source).unwrap();
     let slot = client.view_slot(view).unwrap();
     let held = slot.acquire().unwrap();
     drop(client);
@@ -168,10 +176,13 @@ fn global_changed(plane: &mut ControlPlane, key: &str, value: Option<&[u8]>) {
 
 /// A plane attached to `main` on a `SPAWN_IDEMPOTENCY` server, drained.
 fn idempotent_home() -> ControlPlane {
-    let mut plane = ControlPlane::new(ControlOptions {
-        attach: Some(AttachTarget::ByName("main".to_owned())),
-        ..ControlOptions::default()
-    });
+    let mut plane = ControlPlane::new(
+        std::time::Instant::now(),
+        ControlOptions {
+            attach: Some(AttachTarget::ByName("main".to_owned())),
+            ..ControlOptions::default()
+        },
+    );
     reopen(
         &mut plane,
         hello_ok_with(&[ServerFeature::SpawnIdempotency]),
@@ -317,8 +328,11 @@ fn client_clones_share_the_default_but_explicit_views_are_local_without_wire_ope
     use phux_client_runtime::engine::Scroll;
     let client = embedded_with_history(None);
     let clone = client.clone();
-    let a = client.create_view(&terminal()).unwrap();
-    let b = clone.create_view(&terminal()).unwrap();
+    let source = client
+        .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
+        .unwrap();
+    let a = client.create_view(&source).unwrap();
+    let b = clone.create_view(&source).unwrap();
     assert!(
         client.take_outbound().is_empty(),
         "creating views cannot attach, resize, or spawn"
@@ -357,7 +371,10 @@ fn view_scrolling_routes_history_requests_through_control_plane() {
         })
         .unwrap();
     let _ = client.take_outbound();
-    let view = client.create_view(&terminal()).unwrap();
+    let source = client
+        .view_source(&terminal(), Some(&[0xAB; 16]), client.connection_epoch())
+        .unwrap();
+    let view = client.create_view(&source).unwrap();
     assert!(client.take_outbound().is_empty());
     client.scroll_view(view, Scroll::Top).unwrap();
     let requests = client.take_outbound();

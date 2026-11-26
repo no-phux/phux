@@ -1,4 +1,4 @@
-use phux_protocol::ids::{SessionId, WindowId};
+use phux_protocol::ids::{SessionId, SessionKey, WindowId};
 use phux_protocol::wire::frame::{ExecState, FrameKind, Refusal, Scope, SessionLifetime};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
@@ -19,7 +19,7 @@ fn a_merged_kill_outcome_names_every_id_that_was_not_killed() {
             "failed":[{"id":"devbox/@2","code":107,"message":"link is down"}]}"#;
     assert_eq!(
         KillOutcome::from_result(json(partial)),
-        KillOutcome::Refused("not killed: devbox/@2: link is down".to_owned())
+        KillOutcome::Partial(serde_json::from_str(partial).expect("partial document"))
     );
     assert!(matches!(
         KillOutcome::from_result(json("x")),
@@ -349,4 +349,120 @@ async fn an_unkeyed_empty_session_is_refused_without_writing() {
             .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
         "{seen:?}"
     );
+}
+
+#[tokio::test]
+async fn lost_close_replies_never_become_success_and_keep_the_original_identity() {
+    use crate::testkit::ScriptedServer;
+    use tokio::net::UnixListener;
+    for mode in 0..4 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("drop.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let server = tokio::spawn(async move {
+            ScriptedServer::accept_then_drop_reply(&listener, ScriptSpec::new()).await
+        });
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let key = IdempotencyKey::new([19; 16]).expect("key");
+        let result = match mode {
+            0 => {
+                kill_session(
+                    &mut conn,
+                    SessionKey::new([17; 16]).expect("session"),
+                    "work",
+                )
+                .await
+            }
+            1 => super::session::kill_keyed(&mut conn, "@1", vec![ResourceId::local(1)], key).await,
+            2 => {
+                super::session::kill_whole_session(
+                    &mut conn,
+                    "work",
+                    vec![ResourceId::local(1), ResourceId::local(2)],
+                    Some(key),
+                )
+                .await
+            }
+            _ => {
+                super::session::kill_each_terminal(
+                    &mut conn,
+                    vec![ResourceId::local(1), ResourceId::local(2)],
+                    "#all",
+                )
+                .await
+            }
+        };
+        let error = result.expect_err("EOF cannot confirm destruction");
+        let document = error.outcome_document().expect("typed outcome");
+        assert_eq!(document["error"]["code"], "outcome_unknown");
+        assert_eq!(document["error"]["recovery"]["effect_certainty"], "unknown");
+        assert_eq!(document["error"]["recovery"]["next_action"], "reconcile");
+        if mode == 3 {
+            assert_eq!(document["error"]["target"], "#all");
+            assert_eq!(
+                document["error"]["results"]["not_sent"],
+                serde_json::json!(["@2"])
+            );
+            assert_eq!(
+                document["error"]["results"]["accepted"],
+                serde_json::json!([])
+            );
+        }
+        drop(conn);
+        let frames = server.await.expect("server");
+        let command = frames
+            .iter()
+            .find_map(|frame| match frame {
+                FrameKind::Command { command, .. } => Some(command),
+                _ => None,
+            })
+            .expect("one close command");
+        let original = match command {
+            Command::SessionKill { operation, .. } => Some(operation.to_hex()),
+            Command::KillResource { operation_id, .. }
+            | Command::KillResources { operation_id, .. } => {
+                operation_id.map(phux_protocol::IdempotencyKey::to_hex)
+            }
+            other => panic!("unexpected command {other:?}"),
+        };
+        assert_eq!(
+            document["error"]["recovery"]["operation_id"].as_str(),
+            original.as_deref()
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(frame, FrameKind::Command { .. }))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn keyed_session_close_uses_the_callers_operation_without_reminting() {
+    let mut fixture = OrgFixture::new();
+    fixture.session("work", SessionLifetime::Persistent);
+    let (_dir, mut conn, server) = crate::testkit::connect_one(org_spec(fixture)).await;
+    let operation = IdempotencyKey::new([23; 16]).expect("operation");
+    let selector = crate::selector::parse("work").expect("selector");
+    let done = selected(
+        &mut conn,
+        &selector,
+        "work",
+        Some(operation),
+        &mut Vec::new(),
+    )
+    .await
+    .expect("close accepted");
+    assert_eq!(
+        done.recovery.expect("operation").operation_id,
+        Some(operation.to_hex())
+    );
+    drop(conn);
+    let seen = server.await.expect("server");
+    assert!(seen.iter().any(|frame| matches!(
+        frame, FrameKind::Command { command: Command::SessionKill { operation: actual, .. }, .. }
+            if *actual == operation
+    )));
 }

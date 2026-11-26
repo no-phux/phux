@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LaunchCommand {
     argv: Vec<OsString>,
     env: BTreeMap<OsString, OsString>,
@@ -17,7 +17,10 @@ impl LaunchCommand {
         Self {
             argv: vec![program.as_ref().to_owned()],
             env: std::env::vars_os()
-                .chain(PANE_ENV.get().into_iter().flatten().cloned())
+                // A nested coordinator must not advertise the outer terminal's
+                // pane-control socket. Only its own startup can install one.
+                .filter(|(key, _)| key != TERMINAL_BROWSER_SOCKET_ENV)
+                .chain(pane_env())
                 .collect(),
             removed: BTreeSet::new(),
             cwd: None,
@@ -78,6 +81,31 @@ impl LaunchCommand {
     }
 }
 
+impl std::fmt::Debug for LaunchCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<_> = self
+            .env
+            .iter()
+            .map(|(key, value)| {
+                let shown = if key == OSC7577_TOKEN {
+                    std::ffi::OsStr::new("[redacted]")
+                } else {
+                    value.as_os_str()
+                };
+                (key, shown)
+            })
+            .collect();
+        formatter
+            .debug_struct("LaunchCommand")
+            .field("argv", &self.argv)
+            .field("env", &env)
+            .field("removed", &self.removed)
+            .field("cwd", &self.cwd)
+            .field("controlling_tty", &self.controlling_tty)
+            .finish()
+    }
+}
+
 /// Baseline `TERM` for [`default_shell_command`] and [`shell_command`].
 ///
 /// Ghostty's terminfo advertises kitty keyboard support, which breaks
@@ -89,6 +117,9 @@ pub const DEFAULT_TERM: &str = "xterm-256color";
 /// directory when the recorded cwd cannot be entered. The spawner reads it
 /// and strips it from the child's environment.
 pub const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
+
+/// Discovery endpoint for terminal-browser's optional local pane controls.
+pub const TERMINAL_BROWSER_SOCKET_ENV: &str = "TERMINAL_BROWSER_TERMINAL_SOCKET";
 
 /// A plain interactive `shell`. With `login`, a known shell gets its login
 /// flag (`-l` for bash/zsh/sh, `--login` for fish); an unknown shell gets
@@ -112,12 +143,35 @@ pub fn default_shell_command(shell: &str, login: bool) -> LaunchCommand {
 }
 
 /// Variables every pane's program starts with, beyond the server's own
-/// environment; set once at start (the `[defaults] browser-shim` stand-in).
-static PANE_ENV: std::sync::OnceLock<Vec<(OsString, OsString)>> = std::sync::OnceLock::new();
+/// environment. Startup installs configured values, then listener endpoints.
+static PANE_ENV: std::sync::Mutex<BTreeMap<OsString, OsString>> =
+    std::sync::Mutex::new(BTreeMap::new());
 
-/// Give every program this process launches these variables.
+/// Add or replace variables for every program this process launches.
 pub fn set_pane_env(vars: Vec<(OsString, OsString)>) {
-    let _ = PANE_ENV.set(vars);
+    PANE_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(vars);
+}
+
+fn pane_env() -> Vec<(OsString, OsString)> {
+    PANE_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// Fill startup variables in a command prepared before listeners bound.
+/// Explicit overrides and removals remain launch intent.
+pub fn apply_pane_env(command: &mut LaunchCommand) {
+    for (key, value) in pane_env() {
+        if command.get_env(&key).is_none() && !command.was_removed(&key) {
+            command.env(key, value);
+        }
+    }
 }
 
 /// Where the server keeps the files that make a shell mark its prompts and
@@ -178,6 +232,41 @@ fn integrate(command: &mut LaunchCommand, shell: &str, dir: &std::path::Path) {
 pub fn apply_term(command: &mut LaunchCommand, term: &str) {
     command.env("TERM", term);
 }
+/// Environment variable a pane's first process uses to authenticate OSC 7577.
+pub const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
+
+/// Characters a token may contain. 64 symbols, so a uniform byte maps without bias.
+const TOKEN_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+
+/// How long a minted token is. The spec allows 22 to 64 characters.
+const TOKEN_LEN: usize = 32;
+
+/// A fresh per-pane token. Random, not derived from a clock, a counter, or a pid.
+///
+/// # Panics
+///
+/// When the operating system cannot provide random bytes. A token that is not
+/// random would not protect the pane, so there is no fallback.
+#[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "a program-resume token that is not from the OS CSPRNG is not a token"
+)]
+pub fn mint_program_resume_token() -> String {
+    let mut bytes = [0u8; TOKEN_LEN];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG unavailable for a program-resume token");
+    bytes
+        .iter()
+        .map(|byte| TOKEN_ALPHABET[usize::from(*byte) % TOKEN_ALPHABET.len()] as char)
+        .collect()
+}
+
+/// Set `OSC7577_TOKEN` on the pane's first process. The value is not logged.
+pub fn apply_program_resume_token(command: &mut LaunchCommand, token: &str) {
+    command.env(OSC7577_TOKEN, token);
+}
+
 pub fn apply_terminal_id(command: &mut LaunchCommand, wire: &phux_protocol::ids::ResourceId) {
     if let Some(id) = wire.local_id() {
         command.env("PHUX_TERMINAL_ID", id.to_string());
@@ -220,8 +309,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn two_panes_get_distinct_tokens_and_debug_hides_them() {
+        let first = mint_program_resume_token();
+        let second = mint_program_resume_token();
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' })
+        );
+        let mut command = LaunchCommand::new("sh");
+        apply_program_resume_token(&mut command, &first);
+        let rendered = format!("{command:?}");
+        assert!(!rendered.contains(&first));
+        assert!(rendered.contains("[redacted]"));
+        assert_eq!(
+            command
+                .get_env(OSC7577_TOKEN)
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(first)
+        );
+    }
+
+    #[test]
     fn pane_variables_reach_every_launch() {
+        let mut prepared = LaunchCommand::new("prepared-before-listening");
+        let mut cleared = prepared.clone();
+        cleared.env_remove("PHUX_TEST_PANE_VAR");
         set_pane_env(vec![("PHUX_TEST_PANE_VAR".into(), "set".into())]);
+        apply_pane_env(&mut prepared);
+        apply_pane_env(&mut cleared);
+        assert_eq!(
+            prepared.get_env("PHUX_TEST_PANE_VAR"),
+            Some(OsStr::new("set"))
+        );
+        assert_eq!(cleared.get_env("PHUX_TEST_PANE_VAR"), None);
         let command = LaunchCommand::new("anything");
         let seen = command.environment().get(OsStr::new("PHUX_TEST_PANE_VAR"));
         assert_eq!(

@@ -33,6 +33,8 @@ fn fixture(checkout: bool) -> (Arc<Client>, Runtime<Desk>) {
     let terminal = replica.terminal;
     let mut desk = crate::test_support::window();
     desk.connection.client = Some(Arc::clone(&client));
+    desk.connection
+        .seed_view_sources(vec![1; 16], &replica.sources);
     desk.connection.status = Status::Attached;
     // Replica starts with its activity drained. Adopt the retained inventory
     // before polling so reconnect reconciliation can reopen the shown view.
@@ -110,6 +112,12 @@ fn requests(client: &Client) -> Vec<(u32, CheckoutRequest)> {
                 Some((request_id, request))
             }
             FrameKind::ResizeTerminal { .. } => None,
+            // The panel covers the panes, so they report leaving view.
+            FrameKind::SetMetadata { key, .. }
+                if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY =>
+            {
+                None
+            }
             frame => panic!("unexpected outbound frame: {frame:?}"),
         })
         .collect()

@@ -10,7 +10,7 @@ use rune::{Color, Cx, El, Phase, PointerButton, Transition, col, el, row};
 
 use super::status::placeholder;
 use super::tokens::Tier;
-use super::{PAD, Paint, Tokens, overlay};
+use super::{PAD, Paint, Tokens, overlay, terminal_padding};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, Grab, SplitPath};
 use crate::ui::Cover;
@@ -186,7 +186,10 @@ impl Lit {
 
 /// A floating card around `content`: `radius.lg`, on the raised
 /// tier at rest and lifted to floating when it has the keyboard, edged
-/// with a top-lit hairline rim that is firmer on the lifted card.
+/// with a top-lit hairline rim. The lifted card's rim opens at
+/// `border.control`, the 3:1 edge a control draws: its shadow vanishes on
+/// a black ground (Omarchy's Vantablack, Matte Black), and the resting and
+/// lifted rims alone differ by too little to say which pane has the keys.
 /// `content` is clipped to the corners; the rim draws over it and never
 /// takes the pointer.
 pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
@@ -195,7 +198,7 @@ pub(super) fn card(content: El, ground: Color, lit: Lit, ink: &Tokens) -> El {
     let b = &t.roles.border;
     let (top, bottom, tier) = match lit {
         Lit::Resting => (b.base.paint(), b.muted.paint(), Tier::Raised),
-        Lit::Focused => (b.strong.paint(), b.base.paint(), Tier::Floating),
+        Lit::Focused => (b.control.paint(), b.strong.paint(), Tier::Floating),
         Lit::Flush => (Color::TRANSPARENT, Color::TRANSPARENT, Tier::Flat),
     };
     let lifted = el()
@@ -259,15 +262,16 @@ fn terminal_pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Tokens) -> E
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
     perf::ACQUIRE.record_elapsed(acquiring);
     let laid = id.clone();
+    let pad = terminal_padding(desk);
     let host = super::questions::retirement_target(el(), super::questions::pane_focus(id))
         .w_full()
         .h_full()
-        .padding(PAD)
+        .padding(pad)
         .on_layout(move |d: &mut Desk, rect| {
             let [x, y, w, h] = rect;
             d.laid_out(
                 laid.clone(),
-                [x + PAD, y + PAD, w - 2.0 * PAD, h - 2.0 * PAD],
+                [x + pad, y + pad, w - 2.0 * pad, h - 2.0 * pad],
             )
         });
     let Some((frame, view)) = frame else {
@@ -360,6 +364,10 @@ fn terminal_layer(
             desk.blink_on,
             &metrics,
             ink.selection(),
+            grid::Bold {
+                bright: desk.file.bold_is_bright == Some(true),
+                color: desk.theme().and_then(|theme| theme.bold),
+            },
         ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && desk.modal().is_none() && !editing {
@@ -393,6 +401,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
         id.clone(),
         id.clone(),
     );
+    let pad = terminal_padding(desk);
     let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
     host.cursor(if linked {
         rune::Cursor::Pointer
@@ -400,7 +409,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
         rune::Cursor::Text
     })
     .on_pointer_move_local(move |d: &mut Desk, event, tx| {
-        d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
+        d.hover(&moved, event.x - pad, event.y - pad, tx.mods());
     })
     .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
     .pointer_buttons([
@@ -411,8 +420,8 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
     .on_secondary_press_local(move |d: &mut Desk, event, tx| {
         let at = Press {
             phase: Phase::Down,
-            x: event.x - PAD,
-            y: event.y - PAD,
+            x: event.x - pad,
+            y: event.y - pad,
             clicks: 1,
             mods: tx.mods(),
             button: PointerButton::Secondary,
@@ -426,7 +435,7 @@ fn terminal_input(host: El, desk: &Desk, id: &ResourceId) -> El {
         }
     })
     .on_wheel(move |d: &mut Desk, event, _| {
-        d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
+        d.wheel(&wheel, event.x - pad, event.y - pad, event.dy, event.mods);
         true
     })
     // The terminal owns the entire gesture, including stationary word holds.
@@ -442,7 +451,8 @@ fn terminal_drag(d: &mut Desk, terminal: &ResourceId, drag: &rune::Drag, tx: &mu
         tx.blur();
     }
     // Drag points include the padding; the grid starts inside it.
-    let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+    let pad = terminal_padding(d);
+    let (x, y, mods) = (drag.x - pad, drag.y - pad, tx.mods());
     // A phone's finger scrolls, holds to select and taps (`phone/touch.rs`).
     if d.phone.is_some() && tx.button() == PointerButton::Primary {
         let step = Press {
@@ -454,7 +464,8 @@ fn terminal_drag(d: &mut Desk, terminal: &ResourceId, drag: &rune::Drag, tx: &mu
             button: PointerButton::Primary,
         };
         let travel = [drag.dx, drag.dy];
-        return d.phone_touch(terminal, &step, travel, drag.cancelled(), tx);
+        let edge = drag.window_point()[0] <= crate::desk::phone::swipe::EDGE;
+        return d.phone_touch(terminal, &step, travel, drag.cancelled(), edge, tx);
     }
     // Only the primary button opens links; the rest are the program's.
     let cmd = mods.cmd && tx.button() == PointerButton::Primary;

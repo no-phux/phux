@@ -126,10 +126,11 @@ pub(super) const ROWS: &[SettingSpec] = &[
         section: SettingSection::Defaults,
         kind: SettingKind::Bool,
         summary: "Hand links to you when a pane's program opens a browser",
-        detail: "For a server with no screen. Panes start with BROWSER set to a small script \
-                 that prints the link in the pane and copies it to the attached person's \
-                 clipboard, so a sign-in started there can be finished on your own machine. \
-                 Nothing opens by itself. The server reads this when it starts.",
+        detail: "For a server with no screen. Panes start with BROWSER set to a small script, \
+                 also last on their PATH as xdg-open, that asks the person typing in the pane \
+                 to open the link on their own machine. Declined, or with nobody to ask, it \
+                 prints the link in the pane and copies it to their clipboard. Nothing opens \
+                 by itself. The server reads this when it starts.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {
@@ -327,6 +328,17 @@ pub(super) const ROWS: &[SettingSpec] = &[
         applies: Applies::NextSpawn,
     },
     SettingSpec {
+        key: "defaults.lock-size",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Bool,
+        summary: "Lock the terminal UI's view size on attach",
+        detail: "true makes phux attach and a bare phux claim the view size lock, as \
+                 --lock-size does: while the client is attached, only its own sizes apply \
+                 to the panes it shows, and other views see them letterboxed or cropped. \
+                 The lock-size and unlock-size actions switch it live.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
         key: "defaults.keep-awake",
         section: SettingSection::Defaults,
         kind: SettingKind::Choice(KEEP_AWAKE),
@@ -335,7 +347,8 @@ pub(super) const ROWS: &[SettingSpec] = &[
                  systemd-inhibit on Linux) while any agent's state is working and drops it \
                  within about 15 seconds of the last one stopping; always holds it for as \
                  long as the server runs. The display may still sleep, and closing a laptop \
-                 lid still sleeps it. phux status shows the current state.",
+                 lid still sleeps it. phux status shows the current state, and Rune can \
+                 switch the mode until the server restarts.",
         applies: Applies::NextSpawn,
     },
 ];

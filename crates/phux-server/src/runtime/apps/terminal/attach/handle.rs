@@ -27,9 +27,8 @@ pub(crate) async fn stage_session(
         ..AttachStaging::default()
     };
     let context = PaneCaptureContext {
-        state: capture.state,
+        lease: &capture.lease,
         out_tx: capture.out_tx,
-        connection_token: capture.connection_token,
         live_gate_rx: capture.live_gate.clone(),
         client_id: capture.client_id,
         wire_client_id: crate::runtime::wire_client(capture.client_id),
@@ -49,65 +48,35 @@ pub(crate) async fn stage_session(
         terminal_staging.frames,
         terminal_staging.budget.staged_bytes,
     )?;
-    let state = capture.state.clone();
-    let token = capture.connection_token.clone();
-    let client_id = capture.client_id;
-    let stream_id = capture.stream_id;
-    let bootstrap_id = capture.bootstrap_id;
-    let mut pumps = terminal_staging.pumps;
-    let gates = terminal_staging.gates;
-    staging.park_owner(
-        &capture,
-        Box::pin(async move {
-            release_gates(&state, &token, client_id, stream_id, bootstrap_id, gates).await;
-            while pumps.join_next().await.is_some() {}
-        }),
-    );
+    let lease = capture.lease.clone();
+    let publication = terminal_staging.publication;
+    staging.park_owner(&capture, Box::pin(publication.run(lease)));
     Ok(())
 }
 
-/// Size each Terminal of `panes` to `viewport` as its size policy resolves
-/// it, in the lock that recorded the viewport.
-pub(crate) fn apply_panes_viewport(
-    state: &mut crate::state::ServerState,
-    panes: &[AttachSnapshotPane],
-    viewport: phux_protocol::wire::frame::ViewportInfo,
-) {
-    for pane in panes {
-        apply_pane_viewport(state, pane, viewport);
-    }
-}
-
-fn apply_pane_viewport(
-    state: &mut crate::state::ServerState,
-    pane: &AttachSnapshotPane,
-    viewport: phux_protocol::wire::frame::ViewportInfo,
-) {
-    let Ok(terminal) = pane.handle.terminal() else {
-        return;
-    };
-    if state.retained().exit(pane.terminal_id).is_some() {
-        return;
-    }
-    let Some((cols, rows)) = state.resolve_terminal_geometry(pane.terminal_id, Some(viewport))
-    else {
-        return;
+/// Queue host-resolved geometry on one exact Terminal engine. Host policy and
+/// registry updates stay with the host; the app only owns its resize effect.
+pub(crate) fn apply_viewport(
+    handle: &ResourceHandle,
+    cols: u16,
+    rows: u16,
+    cell_px: Option<(u16, u16)>,
+) -> bool {
+    let Ok(terminal) = handle.terminal() else {
+        return false;
     };
     match terminal.resize.try_send(ResizeRequest {
         cols,
         rows,
-        cell_px: state.resolve_terminal_cell_px(pane.terminal_id),
+        cell_px,
         resync_clients: false,
         resync_only: false,
         resync_for: None,
     }) {
-        Ok(()) => {
-            if let Some(terminal) = state.registry_mut().terminal_mut(pane.terminal_id) {
-                terminal.dims = (cols, rows);
-            }
-        }
+        Ok(()) => true,
         Err(error) => {
-            debug!(terminal_id = ?pane.terminal_id, %error, "ATTACH viewport apply: actor gone");
+            debug!(%error, "ATTACH viewport apply: actor gone");
+            false
         }
     }
 }

@@ -5,7 +5,7 @@
 //! [`crate::projection`] owns what those values mean. This module lowers the
 //! projected values into the stable Swift-facing vocabulary and nothing else.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use phux_client_runtime::control::Event;

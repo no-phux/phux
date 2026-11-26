@@ -282,8 +282,8 @@ async fn deferred_edits_survive_a_failed_arrangement_read_and_are_saved_on_recov
                 if reopen { "reopen-views" } else { "close-view" }.to_owned(),
             ),
         );
-        state.settings.resolver = Some(phux_config::keybind::Resolver::new(&bindings).unwrap());
-        state.settings.keybindings = Some(bindings);
+        state.settings.resolver = phux_config::keybind::Resolver::new(&bindings).unwrap();
+        state.settings.keybindings = bindings;
         let mut events = Vec::new();
         state.parser.feed_into(b"\x01r", &mut events);
         state

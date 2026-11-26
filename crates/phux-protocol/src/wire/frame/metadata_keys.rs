@@ -51,6 +51,17 @@ pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 /// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
 pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
+/// Global key claiming (`true`) or releasing (`false`) the writer's view
+/// size lock.
+///
+/// Applied to the writing attachment, not stored or broadcast. While a view
+/// holds the lock, only its `RESIZE_TERMINAL` and viewport size the panes of
+/// its session it subscribes to; other views see them letterboxed or
+/// cropped. A claim puts back the sizes the view last set, the newest claim
+/// wins, and the lock ends with the attachment, so a client re-claims after
+/// each `ATTACHED`. An older server stores the value and ignores it.
+pub const VIEW_SIZE_LOCK_KEY: &str = "phux.view.size-lock/v1";
+
 /// Global key grouping sessions under a project tag.
 ///
 /// Stored, not intercepted (`docs/organization.md`). Value: `name\0project`,
@@ -164,6 +175,27 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
+/// Terminal-scoped key naming the pane this one was started from, so a list
+/// can fold children under their parent (`docs/scripting.md#child-panes`).
+///
+/// UTF-8 bare digits, the parent's local pane id (`7` for `@7`). Unlike a
+/// spawn `parent`, it binds no lifecycle: closing the parent leaves the child,
+/// which keeps naming it. The server refuses any other value or a pane naming
+/// itself, and keeps it on the pane's record, so it survives upgrades and
+/// restarts.
+pub const RESOURCE_PARENT_KEY: &str = "phux.parent/v1";
+
+/// Decode a [`RESOURCE_PARENT_KEY`] value: the parent's local pane id, never
+/// the reserved 0.
+#[must_use]
+pub fn decode_pane_parent(value: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(value).ok()?;
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().filter(|id| *id != 0)
+}
+
 /// Terminal-scoped key holding the latest note posted with `phux notify`.
 ///
 /// UTF-8 JSON `{ "level", "title", "body"?, "at" }`, `level` one of `info`,
@@ -263,6 +295,13 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
+/// Server-owned global index of OSC 7577 program-resume records.
+///
+/// JSON object keyed by the resource key's text form. Each value is
+/// `{ "command", "trusted", "tried" }` with `command` already escaped.
+/// The per-pane token is never included. Clients may read it and must not write it.
+pub const PROGRAM_RESUME_INDEX_KEY: &str = "phux.program-resume/v1";
+
 /// Server-owned OSC 7501 record index and active status.
 pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";
 
@@ -305,6 +344,15 @@ pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 /// wrote the key is gone, and, when the object says `"finished": true`, when
 /// an agent finishes.
 pub const PUSH_GRANT_KEY_PREFIX: &str = "phux.push/v1/";
+
+/// `Global`-scope key family a device registers its Lock Screen card under
+/// (`docs/protocol-files.md#live-activity`).
+///
+/// `phux.live/v1/<device>` holds the same object as a push grant, its
+/// `gateway` the device's Live Activity endpoint. While the connection that
+/// wrote the key is gone, the server posts how many agents wait and work
+/// there whenever either count moves.
+pub const LIVE_GRANT_KEY_PREFIX: &str = "phux.live/v1/";
 
 /// A decision's value: release the held action once.
 pub const APPROVAL_APPROVE: &[u8] = b"approve";

@@ -59,6 +59,13 @@ impl Client {
             .with(|control| control.send_clipboard_reply(terminal_id, selection, text))
     }
 
+    /// Answer a pane's link request; see
+    /// [`ControlPlane::open_url_reply`](crate::control::ControlPlane::open_url_reply).
+    pub fn open_url_reply(&self, terminal_id: &ResourceId, id: u64, opened: bool) {
+        self.inner
+            .with(|control| control.open_url_reply(terminal_id, id, opened));
+    }
+
     /// Send one mouse event.
     #[must_use]
     pub fn send_mouse(&self, terminal_id: &ResourceId, event: MouseEvent) -> bool {
@@ -124,6 +131,29 @@ impl Client {
         id
     }
 
+    /// Submit user clipboard input to the current input-ready execution.
+    /// Queue acceptance is distinct from the journal's later delivery receipt.
+    pub fn apply_user_paste(
+        &self,
+        terminal_id: &ResourceId,
+        text: &str,
+    ) -> phux_client_core::input_replay::InputSubmission {
+        use phux_client_core::input_replay::InputSubmission;
+        let result = self.inner.with(|control| {
+            if control.input_ready(terminal_id) {
+                control.apply_user_paste(terminal_id, text)
+            } else {
+                InputSubmission::NotQueued
+            }
+        });
+        match result {
+            InputSubmission::AwaitingReceipt { .. } => self.nudge(),
+            InputSubmission::Refused { .. } => self.inner.wake(),
+            InputSubmission::NotQueued | InputSubmission::QueuedRaw => {}
+        }
+        result
+    }
+
     /// Whether raw input for the terminal would pass the server's gate now.
     #[must_use]
     pub fn input_ready(&self, terminal_id: &ResourceId) -> bool {
@@ -134,34 +164,6 @@ impl Client {
     #[must_use]
     pub fn delivery_fenced(&self, terminal_id: &ResourceId) -> bool {
         lock(&self.inner.control).delivery_fenced(terminal_id)
-    }
-
-    /// Confirm that a fresh authoritative projection reached the consumer.
-    pub fn acknowledge_projection(&self, terminal_id: &ResourceId) {
-        self.inner
-            .with(|control| control.acknowledge_projection(terminal_id));
-    }
-
-    /// Capture the exact delivery fence to associate with an authoritative
-    /// projection. For an atomic projection snapshot use `with_control`.
-    #[must_use]
-    pub fn projection_fence(
-        &self,
-        terminal_id: &ResourceId,
-    ) -> Option<crate::control::ProjectionFence> {
-        lock(&self.inner.control).projection_fence(terminal_id)
-    }
-
-    /// Validate and clear the captured fence under the control-owner lock.
-    /// This never clears a newer Unknown, even within the same connection.
-    #[must_use]
-    pub fn acknowledge_projection_if(
-        &self,
-        terminal_id: &ResourceId,
-        expected: crate::control::ProjectionFence,
-    ) -> bool {
-        self.inner
-            .with(|control| control.acknowledge_projection_if(terminal_id, expected))
     }
 
     // ----- events subscription and extension points --------------------

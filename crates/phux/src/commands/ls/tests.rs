@@ -220,7 +220,7 @@ fn agent_sessions_nest_under_their_pane() {
                 .with_agent(Some(AgentFacet::new("claude", "working"))),
         ]);
     assert_eq!(
-        session_lines(&snapshot, None),
+        session_lines(&snapshot, None, &std::collections::BTreeMap::new()),
         vec![
             "work: 3 members (3 running), 1 window",
             "  @7",
@@ -286,7 +286,7 @@ fn grouped_listing_keeps_satellite_terminal_selectors() {
             24,
         ));
     assert_eq!(
-        session_lines(&snapshot, None),
+        session_lines(&snapshot, None, &std::collections::BTreeMap::new()),
         vec![
             "This host",
             "  work: 1 member (1 running), 1 window",
@@ -327,7 +327,7 @@ fn claimed_satellite_terminals_are_not_listed_twice() {
         ],
     )]);
     assert_eq!(
-        session_lines(&snapshot, None),
+        session_lines(&snapshot, None, &std::collections::BTreeMap::new()),
         vec![
             "This host",
             "  work: 1 member (1 running), 1 window",
@@ -342,7 +342,7 @@ fn claimed_satellite_terminals_are_not_listed_twice() {
 fn lines_are_name_sorted() {
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
         .with_sessions(vec![session("beta", 1, 0), session("alpha", 1, 0)]);
-    let lines = session_lines(&snapshot, None);
+    let lines = session_lines(&snapshot, None, &std::collections::BTreeMap::new());
     assert_eq!(
         lines,
         vec!["alpha: 0 members, 1 window", "beta: 0 members, 1 window"]

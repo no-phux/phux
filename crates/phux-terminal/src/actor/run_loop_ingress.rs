@@ -10,7 +10,7 @@ impl TerminalActor {
     pub(super) fn service_encoded_input_batch(&mut self, request: EncodedInputRequest) {
         self.service_encoded_input(request);
         for _ in 1..MAX_INPUT_COALESCE {
-            match self.encoded_input_rx.try_recv() {
+            match self.process.encoded_input_rx.try_recv() {
                 Ok(next) => self.service_encoded_input(next),
                 Err(_) => break,
             }
@@ -21,7 +21,7 @@ impl TerminalActor {
     pub(super) fn service_input_batch(&mut self, input: &TerminalInput) {
         self.service_input(input);
         for _ in 1..MAX_INPUT_COALESCE {
-            match self.input_rx.try_recv() {
+            match self.process.input_rx.try_recv() {
                 Ok(next) => self.service_input(&next),
                 Err(_) => break,
             }
@@ -47,13 +47,15 @@ impl TerminalActor {
         crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
         // Server-side echo latency; slower than the ceiling means the
         // program did not echo.
-        if let Some(input_at) = self.last_input_at.take() {
+        if let Some(input_at) = self.process.last_input_at.take() {
             let since_input = input_at.elapsed();
             if since_input < crate::perf::ECHO_SAMPLE_CEILING {
                 crate::perf::ECHO_SERVER.record_duration(since_input);
             }
         }
-        self.last_output_at.set(Some(std::time::Instant::now()));
+        self.process
+            .last_output_at
+            .set(Some(std::time::Instant::now()));
         let burst = self.coalesce_pty_burst(first);
         crate::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
         crate::perf::PTY_BURST_CHUNKS.record(burst.chunks);
@@ -63,7 +65,7 @@ impl TerminalActor {
         );
         let Some(seq) = self.core.next_seq() else {
             error!("resource output sequence exhausted");
-            self.shutdown_pty().await;
+            self.process.shutdown_pty().await;
             return PtyTurn::Shutdown;
         };
         let deferred = self.buffer_native_live_output(seq, &burst.payload);
@@ -101,7 +103,7 @@ impl TerminalActor {
                 hit_byte_cap = true;
                 break;
             }
-            match self.pty_rx.as_mut().map(mpsc::Receiver::try_recv) {
+            match self.process.pty_rx.as_mut().map(mpsc::Receiver::try_recv) {
                 Some(Ok(PtyEvent::Bytes { chunk: more, .. })) => {
                     total += more.len();
                     queued.push(more);
@@ -137,7 +139,8 @@ impl TerminalActor {
         // Three samples, three clock reads. Drop guards around the same
         // intervals read the clock again on the way out and fold that probe
         // into `pty.vt_apply`.
-        self.resume.observe(payload);
+        self.observe_resume(payload);
+        self.observe_program_resume(payload);
         self.observe_icon(payload);
         let started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
@@ -145,6 +148,9 @@ impl TerminalActor {
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        if let Some(keep) = &mut self.keep {
+            keep.touch(started);
+        }
         self.source_events();
         self.start_next_native_bootstrap();
         let done = std::time::Instant::now();

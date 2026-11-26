@@ -4,6 +4,11 @@
 //! [`prepare_upgrade`] is reversible; [`UpgradePlan::exec`] is not, and the
 //! caller acks the client between the two.
 
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-private upgrade modules share their items across the runtime; pub would violate unreachable_pub"
+)]
+
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
@@ -15,7 +20,8 @@ use std::time::Duration;
 use futures_util::future::join_all;
 
 use super::RuntimeFlags;
-use crate::runtime::apps::UpgradeCut;
+pub(crate) mod kinds;
+use crate::runtime::upgrade::kinds::UpgradeCut;
 use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 
@@ -186,7 +192,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 
 async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
     refuse_invalid_org_store(state)?;
-    let mut cuts = crate::runtime::apps::upgrade::begin(state).ok_or(UpgradeError::TreeChanged)?;
+    let mut cuts = crate::runtime::upgrade::kinds::begin(state).ok_or(UpgradeError::TreeChanged)?;
     let UpgradeContext {
         listener_fd,
         socket_path,

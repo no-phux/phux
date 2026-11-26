@@ -112,18 +112,15 @@ fn tracked_pump_abort_fences_blocked_send_and_reclaims_churn() {
             let subscription = output.subscribe();
             let sender = mailbox.clone();
             let (entered, entry) = tokio::sync::oneshot::channel();
-            super::spawn_tracked(
-                &state,
-                client,
-                terminal,
-                Some(&mut tasks),
-                None,
-                async move {
-                    let _subscription = subscription;
-                    entered.send(()).unwrap();
-                    sender.send(round).await.unwrap();
-                },
-            );
+            let reservation = crate::runtime::apps::StreamHost::new(&state, client)
+                .reserve_next(terminal, &tokio_util::sync::CancellationToken::new())
+                .unwrap();
+            assert!(reservation.lease.spawn(Some(&mut tasks), None, async move {
+                let _subscription = subscription;
+                entered.send(()).unwrap();
+                sender.send(round).await.unwrap();
+            },));
+            assert!(reservation.published(|| true));
             entry.await.unwrap();
             assert_eq!(output.receiver_count(), 1);
             tokio::time::timeout(
@@ -166,10 +163,14 @@ fn tracked_pump_can_be_detached_before_its_first_poll() {
         let terminal = phux_core::ResourceId::default();
         let (output, _) = tokio::sync::broadcast::channel::<()>(1);
         let receiver = output.subscribe();
-        super::spawn_tracked(&state, client, terminal, None, None, async move {
+        let reservation = crate::runtime::apps::StreamHost::new(&state, client)
+            .reserve_next(terminal, &tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        assert!(reservation.lease.spawn(None, None, async move {
             let _receiver = receiver;
             panic!("aborted task must never run");
-        });
+        }));
+        assert!(reservation.published(|| true));
         tokio::time::timeout(
             Duration::from_secs(1),
             super::stop_output(&state, client, terminal),

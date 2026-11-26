@@ -129,7 +129,7 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     let (reply, replied) = oneshot::channel();
     actor.start_native_bootstrap(native_bootstrap(31, reply));
     assert!(
-        actor.pending_native_bootstrap.is_some(),
+        actor.publication.pending_native_bootstrap.is_some(),
         "the capture must be in flight for this to be the race under test",
     );
 
@@ -154,7 +154,7 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     let _ = actor.flush_final_gap_resync(&mut resync);
 
     assert!(
-        actor.pending_native_bootstrap.is_none(),
+        actor.publication.pending_native_bootstrap.is_none(),
         "the in-flight cut must be landed, not left holding the terminal",
     );
     assert!(
@@ -171,6 +171,7 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
     let (reply, replied) = oneshot::channel();
     actor.start_native_bootstrap(native_bootstrap(31, reply));
     actor
+        .publication
         .pending_native_bootstrap
         .as_mut()
         .expect("pending capture")
@@ -180,7 +181,7 @@ async fn native_bootstrap_capture_lifetime_retires_staged_state() {
 
     actor.step_native_bootstrap();
 
-    assert!(actor.pending_native_bootstrap.is_none());
+    assert!(actor.publication.pending_native_bootstrap.is_none());
     assert_eq!(
         replied.await.expect("capture reply").unwrap_err(),
         phux_terminal_api::native_state::NativeStateError::LimitExceeded
@@ -207,6 +208,7 @@ async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
             wire_terminal_id: 1,
             stream_id,
             bootstrap_id,
+            cancellation: CancellationToken::new(),
             wants_state_sync: true,
             state_sync_scrollback: None,
             bootstrap_max_bytes: usize::MAX,

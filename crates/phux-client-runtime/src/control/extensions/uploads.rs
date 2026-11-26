@@ -124,7 +124,11 @@ impl ControlPlane {
                 );
                 continue;
             }
-            if upload.created_at.elapsed() >= INPUT_RETRY_HORIZON {
+            if self
+                .observed_time()
+                .saturating_duration_since(upload.created_at)
+                >= INPUT_RETRY_HORIZON
+            {
                 self.finish_upload(
                     transfer_id,
                     self.upload_failure_outcome(transfer_id),

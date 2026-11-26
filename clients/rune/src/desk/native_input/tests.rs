@@ -58,23 +58,15 @@ fn system_keyboard_consumes_the_drawn_accessory_latches_once() {
             PhysicalKey::B,
             ModSet::ALT,
         ),
-        (
-            super::super::phone::Latch::Shift,
-            "phone-latch-Shift",
-            Action::Key {
-                name: "Tab".into(),
-                ctrl: false,
-                alt: false,
-                shift: false,
-                command: false,
-            },
-            PhysicalKey::Tab,
-            ModSet::SHIFT,
-        ),
     ]
     .into_iter()
     .enumerate()
     {
+        // The strip scrolls; the last latch starts past its edge.
+        rt.update(|_, tx| tx.scroll_into_view(button));
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
         let (x, y) = rt.find(button).unwrap();
         assert!((0.0..393.0).contains(&x) && (0.0..852.0).contains(&y));
         let at = 1.0 + index as f64;
@@ -204,6 +196,7 @@ fn a_native_connection_replacement_keeps_its_host_and_trust() {
         "desk::native_input::tests::a_native_connection_replacement_keeps_its_host_and_trust",
         || {
             let mut state = crate::mobile::state(crate::mobile::Configuration {
+                app: None,
                 endpoint: "quic://localhost:8788".into(),
                 name: None,
                 tls_server_name: None,

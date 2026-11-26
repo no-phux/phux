@@ -7,120 +7,55 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// Handle [`AttachTarget::CreateIfMissing`]: seed `name` as an
-/// ephemeral session when it does not exist. A server-wide seed command wins
-/// over the wire `command`; a stale wire `cwd` falls back. Spawn failure is
-/// `SessionNotFound`.
-pub(crate) async fn resolve_create_if_missing(
-    seed: crate::runtime::apps::SessionSeed<'_>,
-) -> Option<String> {
-    let crate::runtime::apps::SessionSeed {
-        state,
-        name,
-        command,
-        cwd,
-        out_tx,
-        root_token,
-        default_colors,
-    } = seed;
-    if state.with(|s| s.sessions().by_name(&name).is_some()) {
-        debug!(session = %name, "CreateIfMissing: session already exists, attaching");
-        return Some(name);
-    }
-
-    let (with_pty, scrollback, term) = state.with(|s| {
-        (
-            s.config().attach_create_seeds_pty,
-            s.config().scrollback,
-            s.config().term.as_str().to_owned(),
-        )
-    });
-
-    // `cwd-inheritance = "fixed"` places a session the request left unplaced.
-    let cwd = cwd.or_else(|| state.with(|s| s.config().fixed_cwd.clone()));
-    let seed_result = if with_pty {
-        let mut seed_cmd = spawn_argv_builder(state, command);
-        phux_terminal_api::launch::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
-        phux_terminal_api::launch::apply_term(&mut seed_cmd, &term);
-        seed_session_with_pty_and_colors(
-            state,
-            &name,
-            seed_cmd,
-            scrollback,
-            root_token,
-            default_colors,
-            phux_core::SessionLifetime::Ephemeral,
-        )
-    } else {
-        // No child to exec a wire `command` on.
-        crate::runtime::apps::terminal::commands::seed::seed_session_with_actor_as(
-            state,
-            &name,
-            scrollback,
-            root_token,
-            phux_core::SessionLifetime::Ephemeral,
-        )
-    };
-
-    if let Err(err) = seed_result {
-        warn!(
-            session = %name,
-            error = %err,
-            "CreateIfMissing: failed to spawn pane actor for newly-created session",
-        );
-        send_error(
-            out_tx,
-            ErrorCode::SessionNotFound,
-            &format!("CreateIfMissing: failed to create session {name:?}: {err}"),
-        )
-        .await;
-        return None;
-    }
-
-    debug!(
-        session = %name,
-        pty = with_pty,
-        "CreateIfMissing: created session and seeded pane"
-    );
-    Some(name)
-}
-
 /// A new pane's working directory from `defaults.cwd-inheritance` when the
-/// spawn left `cwd` unset; `None` inherits the server's CWD.
+/// spawn left `cwd` unset; `None` starts in the home directory. The spawn's
+/// `owner_terminal` stands in for the spawning client's focused pane.
 pub(crate) async fn resolve_inherited_cwd(
     state: &SharedState,
     client_id: ClientId,
+    owner_terminal: Option<&phux_protocol::ids::ResourceId>,
 ) -> Option<String> {
-    match state.with(|s| s.config().cwd_inheritance) {
-        phux_config::CwdInheritance::InheritFocused => focused_pane_cwd(state, client_id).await,
-        phux_config::CwdInheritance::Home => std::env::var("HOME").ok().filter(|h| !h.is_empty()),
-        phux_config::CwdInheritance::SessionRoot => session_root_cwd(state, client_id).await,
-        phux_config::CwdInheritance::LastCwdPerWindow => last_window_cwd(state, client_id).await,
-        phux_config::CwdInheritance::Fixed => state.with(|s| s.config().fixed_cwd.clone()),
+    let mode = state.with(|s| s.config().cwd_inheritance);
+    match mode {
+        phux_config::CwdInheritance::Home => {
+            return std::env::var("HOME").ok().filter(|h| !h.is_empty());
+        }
+        phux_config::CwdInheritance::Fixed => return state.with(|s| s.config().fixed_cwd.clone()),
+        phux_config::CwdInheritance::InheritFocused
+        | phux_config::CwdInheritance::SessionRoot
+        | phux_config::CwdInheritance::LastCwdPerWindow => {}
     }
-}
-
-/// The live PTY CWD of the spawning client's focused pane.
-async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
-    let handle = state.with(|s| {
+    let (session, pane) = state.with(|s| {
+        if let Some(owner) = owner_terminal {
+            let session = s.session_of_terminal_owner(owner)?;
+            return Some((session, s.idspace.resource_from_wire(owner)));
+        }
         let session = s.attached().get(&client_id)?.session;
-        let focused = s.sessions().default_pane_of(session)?;
-        s.resources().handle(focused).cloned()
+        Some((session, s.sessions().default_pane_of(session)))
     })?;
-    query_pane_cwd(handle).await
+    let handle = pane.and_then(|pane| state.with(|s| s.resources().handle(pane).cloned()));
+    match mode {
+        phux_config::CwdInheritance::SessionRoot => session_root_cwd(state, session).await,
+        phux_config::CwdInheritance::LastCwdPerWindow => {
+            last_window_cwd(state, session, handle).await
+        }
+        _ => query_pane_cwd(handle?).await,
+    }
 }
 
 /// The session's creation directory: the seed pane's CWD, frozen on first
 /// observation so a later `cd` does not move it.
-async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
-    let (session, handle) = state.with(|s| {
-        let session = s.attached().get(&client_id)?.session;
+async fn session_root_cwd(
+    state: &SharedState,
+    session: phux_core::ids::SessionId,
+) -> Option<String> {
+    let handle = state.with(|s| {
         if let Some(root) = s.sessions().root(session) {
-            return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
+            return Some(FrozenOrQuery::Frozen(path_to_string(root)?));
         }
         let seed = s.sessions().seed_pane_of(session)?;
         let handle = s.resources().handle(seed).cloned()?;
-        Some((session, FrozenOrQuery::Query(handle)))
+        Some(FrozenOrQuery::Query(handle))
     })?;
     match handle {
         FrozenOrQuery::Frozen(root) => Some(root),
@@ -135,17 +70,13 @@ async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<St
     }
 }
 
-/// The spawning client's session CWD: live from its default pane, else the
-/// last value recorded for the session.
-async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
-    let (session, handle) = state.with(|s| {
-        let session = s.attached().get(&client_id)?.session;
-        let handle = s
-            .sessions()
-            .default_pane_of(session)
-            .and_then(|p| s.resources().handle(p).cloned());
-        Some((session, handle))
-    })?;
+/// The session's CWD: live from the pane `handle`, else the last value
+/// recorded for the session.
+async fn last_window_cwd(
+    state: &SharedState,
+    session: phux_core::ids::SessionId,
+    handle: Option<ResourceHandle>,
+) -> Option<String> {
     let resolved = match handle {
         Some(handle) => query_pane_cwd(handle).await,
         None => None,

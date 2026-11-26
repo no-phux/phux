@@ -121,6 +121,26 @@ host.
 
 A gateway MUST refuse an unknown `action` rather than alert it as an ask.
 
+## Live Activity
+
+A phone keeps its Lock Screen card current while its app is closed by
+writing the same object as a push grant under `phux.live/v1/<device>`, with
+`gateway` its Live Activity endpoint (`finished` is ignored). The same bounds
+and 32-grant cap apply.
+
+While the connection that wrote the key is gone, the server checks every
+five seconds and, when the counts differ from what that key was last sent
+(or the phone has just left), makes one unretried `POST` with the grant as
+bearer:
+
+```json
+{"schema_version":1,"host":"mini","waiting":1,"working":2}
+```
+
+`waiting` counts agents whose record is `blocked` plus actions held for
+approval; `working` counts records in `working`. Nothing else leaves the
+host. `waiting` and `working` both 0 ends the card.
+
 ## Host checklist
 
 `HOST_CHECKLIST` answers the `checklist` document of the host's

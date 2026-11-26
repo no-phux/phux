@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.3...claude-plugin-v0.8.0) (2026-11-24)
+
+
+### Features
+
+* **chat:** add native scoped buddy and agent conversations ([#2915](https://github.com/no-phux/phux/issues/2915)) ([7ab5109](https://github.com/no-phux/phux/commit/7ab5109b8b1f61a23ef303ca4eede66e47ac8a04))
+
 ## [0.7.3](https://github.com/no-phux/phux/compare/claude-plugin-v0.7.2...claude-plugin-v0.7.3) (2026-11-23)
 
 

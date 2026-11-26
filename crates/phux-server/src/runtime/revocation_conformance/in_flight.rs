@@ -203,12 +203,12 @@ async fn revoking_a_hub_consumer_tears_down_its_relay_state() {
             "every relay proxy keyed on the connection token is torn down"
         );
         assert!(
-            matches!(mailbox.unsubscribes.try_recv(), Ok(Unsubscribe::Client(client)) if client == agent.client),
+            matches!(mailbox.unsubscribes.try_recv().map(|queued| queued.unsubscribe), Ok(Unsubscribe::Client(client)) if client == agent.client),
             "the hub drops the consumer's proxy subscriptions"
         );
         assert!(
             matches!(
-                mailbox.requests.try_recv(),
+                mailbox.requests.try_recv().map(|queued| queued.request),
                 Ok(RelayRequest::Command { command: Command::ReleaseInput { terminal_id }, .. })
                     if terminal_id == WireResourceId::local(7)
             ),

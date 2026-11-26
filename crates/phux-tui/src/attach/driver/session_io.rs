@@ -9,6 +9,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 
+use crate::attach::agent_forward::AgentLink;
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 
@@ -123,6 +124,12 @@ pub(super) async fn send_attach(
         role_policy,
     })
     .await?;
+    // The lock ends with each attachment; frames apply in order, so this
+    // claims it on the attachment just made.
+    if crate::attach::attach_role::size_locked() {
+        conn.send(&crate::attach::attach_role::size_lock_frame(0, true))
+            .await?;
+    }
     Ok(attach_id)
 }
 
@@ -132,7 +139,20 @@ pub(super) async fn wait_for_attached(
     conn: &mut Connection,
     expected_attach_id: u32,
 ) -> Result<FrameKind, AttachError> {
-    let frame = conn.recv().await?;
+    wait_for_attached_serving(conn, expected_attach_id, None).await
+}
+
+/// [`wait_for_attached`] on a connection that may be serving an agent, whose
+/// requests can come between `ATTACH` and its answer.
+pub(super) async fn wait_for_attached_serving(
+    conn: &mut Connection,
+    expected_attach_id: u32,
+    agent: Option<&AgentLink>,
+) -> Result<FrameKind, AttachError> {
+    let mut frame = conn.recv().await?;
+    while agent.is_some_and(|agent| agent.take(&frame).is_some()) {
+        frame = conn.recv().await?;
+    }
     match frame {
         FrameKind::Attached { attach_id, .. } if attach_id == expected_attach_id => Ok(frame),
         FrameKind::Attached { attach_id, .. } => Err(AttachError::Protocol(format!(
@@ -150,25 +170,4 @@ pub(super) async fn wait_for_attached(
             ))
         }
     }
-}
-
-/// Make the session `new-session` asked for persistent by creating it
-/// headless with that lifetime, as `phux new` does; the `CreateIfMissing`
-/// attach then opens it.
-pub(super) async fn create_persistent_session(conn: &mut Connection, target: &AttachTarget) {
-    let AttachTarget::CreateIfMissing { name, cwd, .. } = target else {
-        return;
-    };
-    let request = phux_client::session::CreateSessionRequest {
-        name,
-        command: None,
-        cwd: cwd.as_deref(),
-        env: &std::collections::BTreeMap::new(),
-        agent_session: None,
-        idempotency_key: None,
-        lifetime: phux_protocol::wire::frame::SessionLifetime::Persistent,
-        attrs: &[],
-    };
-    let created = phux_client::session::create_session(conn, &request, &mut Vec::new()).await;
-    tracing::debug!(session = %name, ?created, "new-session: persistent create");
 }

@@ -16,8 +16,8 @@ use crate::runtime::services::{
     spawn_hub_links, spawn_shutdown_folder,
 };
 use crate::runtime::startup::{
-    adopt_or_bind_listener, install_hub_table, load_connector_consumer_tokens, open_org_store,
-    read_resume_blob, resume_session_tree, seed_initial_session,
+    adopt_or_bind_listener, install_hub_table, load_connector_consumer_tokens, location_path,
+    open_org_store, read_resume_blob, resume_session_tree, seed_initial_session,
 };
 use crate::runtime::{delegation, revocation};
 use crate::state::{SharedState, StateConfig};
@@ -228,9 +228,14 @@ impl ServerRuntime {
                 let cold_start = resume_blob.is_none();
                 let started = (|| -> Result<(), ServerError> {
                     open_org_store(&state, &org_store)?;
+                    crate::runtime::apps::terminal::scrollback::start(
+                        &state,
+                        location_path(&org_store).map(std::path::PathBuf::as_path),
+                        &root_token,
+                    );
                     if let Some(blob) = &resume_blob {
                         resume_session_tree(&state, blob, &root_token)?;
-                        crate::runtime::apps::retry_pending_agent_closures(&state);
+                        crate::runtime::commands::native_agent::retry_pending_closures(&state);
                         delegation::resume_delegations(
                             &state,
                             &blob.delegations,
@@ -259,7 +264,7 @@ impl ServerRuntime {
                     info!(
                         lost = reconciled.lost,
                         unobserved = reconciled.unobserved,
-                        never_launched = reconciled.never_launched,
+                        unresolved = reconciled.unresolved,
                         "reconciled activations a previous run left live"
                     );
                 }
@@ -290,6 +295,7 @@ impl ServerRuntime {
                     );
                 }
                 crate::keep_awake::spawn(&state, &root_token);
+                crate::push::live::spawn(&state, &root_token);
                 // Overlay detection shells out, so it runs inside the accept
                 // set (see `serve_auto_overlay_listeners`); only the cheap gate
                 // is evaluated here.
@@ -346,6 +352,7 @@ impl ServerRuntime {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(8), task).await;
                 }
                 drain_engines(&state).await;
+                crate::runtime::apps::terminal::scrollback::finish(&state).await;
                 accept_result
             })
             .await;

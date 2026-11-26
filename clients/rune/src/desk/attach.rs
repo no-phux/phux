@@ -30,6 +30,12 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
+        if let Some(native) = &mut self.native {
+            // The host exports one pending native request ID. A new intent
+            // supersedes undrained flags, not already-answerable pickers.
+            native.paste_requested = false;
+            native.attach_requested = false;
+        }
         if self.native.is_none() && self.paste_into_document(tx) {
             return;
         }
@@ -40,10 +46,14 @@ impl Desk {
             return;
         }
         let terminal = terminal.clone();
-        if let Some(native) = &mut self.native {
+        if self.native.is_some() {
             // The system owns a phone's pasteboard and asks its user first;
-            // the host answers through the input bridge's paste.
-            native.paste_requested = true;
+            // a copied image answers the request captured for this invocation,
+            // never an older picker left in the answerable queue.
+            let captured = self.pastes_allowed() && self.begin_attaching();
+            if let Some(native) = &mut self.native {
+                native.paste_requested = captured;
+            }
             return;
         }
         let server = self.link.server;
@@ -100,7 +110,7 @@ impl Desk {
             return self.paste(terminal, &paths_line(content.files()));
         }
         if let Some(image) = content.image().filter(|_| content.text().is_empty()) {
-            return self.upload_image(terminal, image.png().to_vec());
+            return self.upload(terminal, "png", image.png().to_vec());
         }
         if content.text().is_empty() {
             return self.say(NoticeKind::Error, "Nothing here can be pasted.");
@@ -108,18 +118,42 @@ impl Desk {
         self.paste(terminal, content.text());
     }
 
-    fn upload_image(&mut self, terminal: &ResourceId, png: Vec<u8>) {
+    pub(in crate::desk) fn upload(
+        &mut self,
+        terminal: &ResourceId,
+        extension: &str,
+        data: Vec<u8>,
+    ) {
         if self.is_document(terminal) {
             return;
         }
         let Some(client) = &self.connection.client else {
             return;
         };
-        let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
+        let transfer = client.put_file(terminal.clone(), extension.to_owned(), data);
+        self.track_upload(terminal, extension, transfer);
+    }
+
+    /// Bookkeeping after an upload was admitted, including native admission
+    /// that checks its destination under the control lock.
+    pub(in crate::desk) fn track_upload(
+        &mut self,
+        terminal: &ResourceId,
+        extension: &str,
+        transfer: u64,
+    ) {
         self.connection
             .uploads
             .push((transfer, terminal.clone(), None));
-        self.say(NoticeKind::Info, "Uploading image…");
+        let image = ["png", "jpg", "jpeg", "gif", "webp"].contains(&extension);
+        self.say(
+            NoticeKind::Info,
+            if image {
+                "Uploading image…"
+            } else {
+                "Uploading file…"
+            },
+        );
     }
 
     /// Files dropped on a pane land in that pane.
@@ -160,13 +194,13 @@ impl Desk {
                     if !sent {
                         self.say(
                             NoticeKind::Error,
-                            format!("Image saved at {path}; not pasted."),
+                            format!("Uploaded to {path}; not pasted."),
                         );
                     }
                 }
                 _ => self.say(
                     NoticeKind::Error,
-                    format!("Image not sent: {}", receipt.message),
+                    format!("Upload not sent: {}", receipt.message),
                 ),
             }
         }
@@ -332,7 +366,13 @@ mod tests {
             desk.connection.client = Some(client.clone());
             desk.connection.shown = Some(crate::desk::Shown {
                 resource: ResourceId::local(1),
-                view: client.create_view(&ResourceId::local(1)).ok(),
+                view: client
+                    .create_view(
+                        &client
+                            .view_source(&ResourceId::local(1), Some(&[1; 16]), 1)
+                            .unwrap(),
+                    )
+                    .ok(),
             });
         });
         rt.frame(0.1);

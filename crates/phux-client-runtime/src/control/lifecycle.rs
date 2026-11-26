@@ -13,7 +13,7 @@ use super::{
 impl ControlPlane {
     /// A control plane that has opened no connection.
     #[must_use]
-    pub fn new(options: ControlOptions) -> Self {
+    pub fn new(now: Instant, options: ControlOptions) -> Self {
         let offered_caps = options.client_caps();
         Self {
             attach_target: options.attach.clone(),
@@ -24,7 +24,7 @@ impl ControlPlane {
             options,
             offered_caps,
             connection_epoch: 0,
-            attempt_trace: None,
+            observed_time: now,
             live_connection_epoch: None,
             status: Status::Idle,
             handshake_ready: false,
@@ -62,7 +62,7 @@ impl ControlPlane {
             command_states: HashMap::new(),
             input_deadlines: HashMap::new(),
             input_delivery_seq: 1,
-            clock_origin: Instant::now(),
+            clock_origin: now,
             outbound: Vec::new(),
             events: Vec::new(),
             clipboard_event_bytes: 0,
@@ -214,6 +214,17 @@ impl ControlPlane {
         let outcome = engine.scroll_view(view, scroll)?;
         self.process_outcome(outcome, true)
             .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
+    /// Draw `text` in `view` ahead of the server's echo (see
+    /// [`EngineHandle::predict_view_text`]). The caller sends the input
+    /// itself; a guess the program never echoes is erased when it expires.
+    ///
+    /// [`EngineHandle::predict_view_text`]: crate::engine::EngineHandle::predict_view_text
+    #[cfg(feature = "engine")]
+    pub fn predict_view_text(&self, view: crate::ViewId, text: &str) -> Result<bool, EngineError> {
+        let engine = self.engine.as_ref().ok_or(EngineError::Stopped)?;
+        engine.predict_view_text(view, text.to_owned())
     }
 
     /// Pin an independent presentation and route its history requests.
@@ -398,6 +409,9 @@ impl ControlPlane {
         self.approvals_connection_ended();
         self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_native_pending("the connection ended before the server answered");
+        self.strand_once_only_spawns(
+            "the connection ended before the spawn was confirmed; check its panes before retrying",
+        );
         if let Some(message) = &message {
             self.error = Some(message.clone());
         }

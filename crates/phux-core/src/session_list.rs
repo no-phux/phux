@@ -125,7 +125,8 @@ pub struct ResourceJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Canonical selector of the parent, or `null` for a root (emitted, not
-    /// omitted).
+    /// omitted). A Terminal's parent is the pane it was started from
+    /// (`phux.parent/v1`), which may have closed; closing it closes nothing.
     #[serde(default)]
     pub parent: Option<String>,
     /// Process lifecycle: `running`, `frozen`, or `exited` (ADR-0124).
@@ -149,6 +150,11 @@ pub struct ResourceJson {
     /// record executes as this resource.
     #[serde(default)]
     pub key: Option<String>,
+    /// What happened in a Terminal since anyone last looked
+    /// (`phux.unseen/v1`): `output`, `bell`, or `finished`. Omitted when
+    /// nothing did, for another kind, or from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen: Option<String>,
 }
 
 fn running_lifecycle() -> String {
@@ -352,6 +358,7 @@ mod tests {
                 producer: None,
                 control: None,
                 key: Some("0123456789ABCDEFGHJKMNPQRT".to_owned()),
+                unseen: Some("finished".to_owned()),
             },
             ResourceJson {
                 id: "@9".to_owned(),
@@ -363,6 +370,7 @@ mod tests {
                 producer: None,
                 control: None,
                 key: None,
+                unseen: None,
             },
         ])
         .with_hosts(vec![
@@ -420,7 +428,8 @@ mod tests {
                             "status": 42, "signal": null, "reason": "exited",
                             "exited_at_ms": 10, "retained_until_ms": 20
                         },
-                        "key": "0123456789ABCDEFGHJKMNPQRT"
+                        "key": "0123456789ABCDEFGHJKMNPQRT",
+                        "unseen": "finished"
                     },
                     {
                         "id": "@9", "kind": "agent_session", "parent": "@7",

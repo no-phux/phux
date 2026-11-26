@@ -65,7 +65,15 @@ def marker_command(marker=MARKER):
     return f"printf '{escaped}'"
 
 
+_lifecycle = _sibling("rune_qualify_lifecycle", "qualify_lifecycle")
+_lifecycle.bind(SESSION=SESSION, INPUT_GATE=INPUT_GATE, MARKER=MARKER,
+                QUERY_ATTEMPTS=QUERY_ATTEMPTS, marker_command=marker_command)
+
+
 class Qualification:
+    # qualify() replaces it with the app's own (build.py --bundle-id).
+    bundle_id = BUNDLE_ID
+
     def __init__(self, app, phux, out, scratch, transport="quic"):
         self.transport = transport
         # Normalize trusted output like the CLI, including macOS temp aliases.
@@ -122,7 +130,7 @@ class Qualification:
     def app_container(self):
         """The app's data container. On a just-booted iOS 26 simulator this
         lookup has outlasted 30s right after a successful install."""
-        found = self.simctl("get_app_container", self.udid, BUNDLE_ID, "data",
+        found = self.simctl("get_app_container", self.udid, self.bundle_id, "data",
                             timeout=CONTAINER_TIMEOUT, attempts=CONTAINER_ATTEMPTS)
         return Path(found.strip())
 
@@ -210,13 +218,13 @@ class Qualification:
             # This is a new simulator and freshly installed app: there cannot
             # be an old process to terminate. Asking SpringBoard to terminate
             # it first can stall cold launch registration before any app runs.
-            "launch", self.udid, BUNDLE_ID,
+            "launch", self.udid, self.bundle_id,
             "--qualification-configuration", secret.name, "--qualification-session", SESSION,
             "--qualification-input", marker_command(), "--qualification-marker", MARKER,
             # Cold launch on a loaded runner has outlasted 60s, as install does.
             timeout=120,
         )
-        match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", result, re.MULTILINE)
+        match = re.search(rf"^{re.escape(self.bundle_id)}: ([0-9]+)$", result, re.MULTILINE)
         if not match:
             raise ValueError(f"simctl returned no app PID: {result}")
         self.diagnostic_pid = int(match[1])
@@ -272,47 +280,6 @@ class Qualification:
             time.sleep(0.5)
         return json.loads(source.read_text())
 
-    def cycle_scene(self, documents, pid, prefix=""):
-        # Drive the actual UIKit scene to background/foreground on our own
-        # simulator. An in-app state toggle is not OS lifecycle evidence.
-        background = documents / "rune-background.json"
-        background.unlink(missing_ok=True)
-        # Home is already running; cold Settings startup can stall its launch RPC.
-        # Home twice is still Home: a stalled call may be retried.
-        self.simctl("launch", self.udid, "com.apple.springboard", attempts=QUERY_ATTEMPTS)
-        self.await_scene_report(background, pid, "native scene did not acknowledge OS backgrounding")
-        shutil.copy2(background, self.out / (prefix + background.name))
-        self.require_alive(pid)
-        lifecycle = documents / "rune-lifecycle.json"
-        lifecycle.unlink(missing_ok=True)
-        self.simctl("launch", self.udid, BUNDLE_ID)
-        resumed = self.await_scene_report(lifecycle, pid, "no presented frame after native background/foreground")
-        if not resumed.get("marker_seen") or resumed.get("resumed_frames", 0) <= resumed.get("background_frames", 0):
-            raise ValueError("native lifecycle did not resume the same live terminal")
-        shutil.copy2(lifecycle, self.out / (prefix + lifecycle.name))
-
-    def resume_identity(self, original):
-        # New process, no ticket/configuration launch argument: only saved
-        # public preferences plus Keychain token and held key may reconnect.
-        self.finish_connection_diagnostics()
-        self.simctl("terminate", self.udid, BUNDLE_ID, timeout=60)
-        self.preserve_connection_diagnostics(prefixes=("",))
-        for name in ("rune-qualification.json", "rune-tree.json", INPUT_GATE):
-            (self.documents / name).unlink(missing_ok=True)
-        marker = MARKER + "_RESUMED"
-        self.diagnostic_prefixes.append("resume-")
-        launched = self.simctl("launch", self.udid, BUNDLE_ID, "--qualification-resume",
-            "--qualification-session", SESSION, "--qualification-input", marker_command(marker),
-            "--qualification-marker", marker, timeout=120)
-        match = re.search(rf"^{re.escape(BUNDLE_ID)}: ([0-9]+)$", launched, re.MULTILINE)
-        if not match:
-            raise ValueError("simulator did not report the resumed app PID")
-        self.diagnostic_pid = int(match[1])
-        report = self.collect_report(self.diagnostic_pid, resumed=True)
-        if report["key_id"] != original["key_id"]:
-            raise ValueError("relaunch did not use the same saved device identity")
-        return report
-
     def emit_input_order(self):
         """Print input_ready:true, then the first InputKey send, per capture."""
         for prefix, label in (("", self.transport), ("resume-", f"{self.transport} resume")):
@@ -323,6 +290,8 @@ class Qualification:
                 continue
             print_input_order_lines(label, text)
 
+    cycle_scene = _lifecycle.cycle_scene
+    resume_identity = _lifecycle.resume_identity
     preserve_connection_diagnostics = _trace.preserve_connection_diagnostics
     require_connection_diagnostics = _trace.require_connection_diagnostics
     finish_connection_diagnostics = _trace.finish_connection_diagnostics
@@ -338,7 +307,8 @@ class Qualification:
 def qualify(app, phux, out, transport="quic"):
     with (app / "Info.plist").open("rb") as handle:
         info = plistlib.load(handle)
-    if info.get("CFBundleIdentifier") != BUNDLE_ID:
+    bundle_id = info.get("CFBundleIdentifier")
+    if not isinstance(bundle_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", bundle_id):
         raise ValueError("unexpected app bundle identifier")
     if info.get("CFBundleSupportedPlatforms") != ["iPhoneSimulator"]:
         raise ValueError("qualification requires an iOS simulator bundle")
@@ -348,6 +318,7 @@ def qualify(app, phux, out, transport="quic"):
     # Explicitly short UDS: simulator clients share the host's Unix namespace.
     with tempfile.TemporaryDirectory(prefix="rune-ios-", dir="/tmp") as temporary:
         lane = Qualification(app, phux, out, Path(temporary), transport)
+        lane.bundle_id = bundle_id
         try:
             socket = lane.start_server()
             lane.create_simulator()

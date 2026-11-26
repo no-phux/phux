@@ -17,8 +17,8 @@
 //! projected or deferred; [`Publication::acquire_document`] reads it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use crate::ViewId;
@@ -29,7 +29,9 @@ pub use phux_client_core::session::DocumentPublication;
 use phux_protocol::ResourceId;
 
 mod model;
+mod slot;
 pub use model::{FrameColors, GridFrame, ImageData, ImagePlacement, Rgb, Scrollbar};
+use slot::{Hook, Slot};
 
 /// What one slot publishes: a terminal presentation's grid or a document
 /// resource's newest whole document.
@@ -74,124 +76,6 @@ pub(crate) enum FrameKey {
 /// answers.
 pub(crate) type CatchUp = Arc<dyn Fn(&FrameKey) -> Option<Arc<GridFrame>> + Send + Sync>;
 
-/// The catch-up the current owner installed, shared by the table and every
-/// slot so a held [`TerminalPublication`] reaches the owner too.
-#[derive(Default)]
-struct Hook(RwLock<Option<CatchUp>>);
-
-impl Hook {
-    fn get(&self) -> Option<CatchUp> {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-}
-
-impl std::fmt::Debug for Hook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Hook").finish_non_exhaustive()
-    }
-}
-
-/// One presentation's or document's slot: the generation counter a consumer
-/// polls, what is published behind it, and the read/stale pair that paces
-/// grid publication.
-#[derive(Debug)]
-struct Slot {
-    key: FrameKey,
-    hook: Arc<Hook>,
-    generation: AtomicU64,
-    /// A consumer acquired the current frame since it was published.
-    read: AtomicBool,
-    /// The owner deferred a projection past the current frame; the next
-    /// acquire catches up.
-    stale: AtomicBool,
-    frame: RwLock<Option<Published>>,
-    /// Signalled after every publish and on removal, for
-    /// [`TerminalPublication::wait_past`].
-    changed: (Mutex<()>, Condvar),
-}
-
-impl Slot {
-    const fn new(key: FrameKey, hook: Arc<Hook>) -> Self {
-        Self {
-            key,
-            hook,
-            generation: AtomicU64::new(0),
-            read: AtomicBool::new(false),
-            stale: AtomicBool::new(false),
-            frame: RwLock::new(None),
-            changed: (Mutex::new(()), Condvar::new()),
-        }
-    }
-
-    /// Wake every [`TerminalPublication::wait_past`]. Taking the lock
-    /// after the change orders it before a waiter's check, so no wake is
-    /// lost.
-    fn signal(&self) {
-        let (lock, changed) = &self.changed;
-        drop(lock.lock().unwrap_or_else(PoisonError::into_inner));
-        changed.notify_all();
-    }
-
-    fn current(&self) -> Option<Published> {
-        self.frame
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    /// What is published with the generation stamped on it, read under the
-    /// one lock a publish stamps both under.
-    fn current_stamped(&self) -> Option<(u64, Published)> {
-        let frame = self.frame.read().unwrap_or_else(PoisonError::into_inner);
-        let stamped = frame
-            .clone()
-            .map(|published| (self.generation.load(Ordering::Acquire), published));
-        drop(frame);
-        stamped
-    }
-
-    /// The consumer half of the read/stale handshake. `read` is raised after
-    /// the frame is loaded, so a publish landing in between leaves `read`
-    /// set on a frame nobody saw: the owner then publishes once more instead
-    /// of deferring, the safe direction. `read` before `stale` pairs with
-    /// the owner's `stale` before `read` in [`Self::defer`]: under `SeqCst`
-    /// at least one side sees the other, so no deferral goes unanswered.
-    /// A document is whole and never paced: it is handed back as it is, and
-    /// is not a grid acquire in `perf`.
-    fn acquire(&self) -> Option<Published> {
-        let frame = self.current();
-        if matches!(frame, Some(Published::Document(_))) {
-            return frame;
-        }
-        crate::perf::ACQUIRED.incr();
-        self.read.store(true, Ordering::SeqCst);
-        if !self.stale.swap(false, Ordering::SeqCst) {
-            return frame;
-        }
-        // No publication lock is held here; the owner takes them to publish.
-        let caught_up = self.hook.get().and_then(|catch_up| catch_up(&self.key));
-        // A slot removed meanwhile stays removed, even when a replacement
-        // owner answered for the same key.
-        self.current()?;
-        caught_up.map(Published::Grid).or(frame)
-    }
-
-    /// The owner half: skip this projection while the current frame is
-    /// unread, leaving the slot stale for the next acquire.
-    fn defer(&self) -> bool {
-        if self.read.load(Ordering::SeqCst) {
-            return false;
-        }
-        self.stale.store(true, Ordering::SeqCst);
-        // A consumer that read between the two loads may have missed
-        // `stale`: publish for it instead. The publish clears `stale`.
-        !self.read.load(Ordering::SeqCst)
-    }
-}
-
 /// A consumer's handle on one terminal's slot: [`Self::generation`] is one
 /// atomic load, and [`Self::acquire`] clones the current frame's `Arc`.
 ///
@@ -203,6 +87,28 @@ pub struct TerminalPublication {
 }
 
 impl TerminalPublication {
+    /// The original slot and replica token identify source, not presentation.
+    #[cfg(feature = "engine")]
+    pub(crate) fn same_slot(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.slot, &other.slot)
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn source_generation(&self) -> Option<u128> {
+        match self
+            .slot
+            .frame
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()?
+        {
+            Published::Grid(frame) => {
+                Some(u128::from(frame.stream_id) << 64 | u128::from(frame.bootstrap_id))
+            }
+            Published::Document(_) => None,
+        }
+    }
+
     /// The generation of the current frame; zero before the first publish.
     #[must_use]
     pub fn generation(&self) -> u64 {
@@ -264,6 +170,21 @@ impl Publication {
         Self::default()
     }
 
+    /// Inspect a current grid without acquiring it or driving a deferred
+    /// projection. A deferred newer projection makes old evidence stale.
+    pub(crate) fn current_frame(
+        &self,
+        terminal: &ResourceId,
+        view: Option<ViewId>,
+    ) -> Option<Arc<GridFrame>> {
+        let key = view.map_or_else(|| FrameKey::Default(terminal.clone()), FrameKey::View);
+        let slot = self.slot_arc(&key)?;
+        if slot.stale.load(Ordering::Acquire) {
+            return None;
+        }
+        slot.current()?.into_grid()
+    }
+
     /// The current frame for `terminal`, if one is published.
     #[must_use]
     pub fn acquire(&self, terminal: &ResourceId) -> Option<Arc<GridFrame>> {
@@ -323,7 +244,8 @@ impl Publication {
         self.view_slot(view).and_then(|slot| slot.acquire())
     }
 
-    /// The independent view's publication generation.
+    /// The independent view's publication generation, zero before its first
+    /// complete frame, or `None` after the view has been destroyed.
     #[must_use]
     pub fn view_generation(&self, view: ViewId) -> Option<u64> {
         self.view_slot(view).map(|slot| slot.generation())
@@ -337,6 +259,15 @@ impl Publication {
 
     fn slot_key(&self, key: &FrameKey) -> Option<TerminalPublication> {
         self.slot_arc(key).map(|slot| TerminalPublication { slot })
+    }
+
+    fn ensure_slot(&self, key: FrameKey) -> Arc<Slot> {
+        let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            slots
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Slot::new(key, Arc::clone(&self.hook)))),
+        )
     }
 
     /// The terminals with a published frame.
@@ -410,6 +341,12 @@ impl Publication {
         self.publish_key(FrameKey::View(view), frame)
     }
 
+    pub(crate) fn register_view(&self, view: ViewId) {
+        // A live view can wait for synchronized output without a frame yet.
+        // Keep its identity visible so the client doesn't abandon it.
+        drop(self.ensure_slot(FrameKey::View(view)));
+    }
+
     fn publish_key(&self, key: FrameKey, mut frame: GridFrame) -> Option<Arc<GridFrame>> {
         self.swap(key, |generation| {
             frame.generation = generation;
@@ -442,14 +379,7 @@ impl Publication {
         key: FrameKey,
         published: impl FnOnce(u64) -> Published,
     ) -> (u64, Option<Published>) {
-        let slot = {
-            let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(
-                slots
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(Slot::new(key, Arc::clone(&self.hook)))),
-            )
-        };
+        let slot = self.ensure_slot(key);
         let generation = slot.generation.load(Ordering::Acquire) + 1;
         let published = published(generation);
         // Cleared before the swap: a consumer that loads the new frame

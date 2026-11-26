@@ -39,6 +39,26 @@ fn outside_group(
     false
 }
 
+/// `pid`, its ancestors nearest first, then its session leader.
+///
+/// What tells which resource's process started it. The leader still tells it
+/// for a process whose parent exited. Ends at a query that fails.
+#[must_use]
+pub fn lineage(pid: i32) -> Vec<i32> {
+    const MAX_ANCESTORS: usize = 64;
+    let mut pids: Vec<i32> = std::iter::successors(Some(pid).filter(|pid| *pid > 1), |pid| {
+        super::start::parent(*pid).filter(|parent| *parent > 1)
+    })
+    .take(MAX_ANCESTORS)
+    .collect();
+    if pid > 0
+        && let Ok(leader) = nix::unistd::getsid(Some(nix::unistd::Pid::from_raw(pid)))
+    {
+        pids.push(leader.as_raw());
+    }
+    pids
+}
+
 #[cfg(target_os = "linux")]
 /// Every thread's `children` list: a child forked off a worker thread
 /// is listed under that thread, not the leader.
@@ -87,7 +107,27 @@ const fn child_pids(_pid: i32) -> Vec<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::outside_group;
+    use super::{lineage, outside_group};
+
+    #[test]
+    fn lineage_starts_at_the_process_and_names_its_parent_and_session() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        let pids = lineage(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            pids[..2],
+            [pid, i32::try_from(std::process::id()).unwrap()],
+            "{pids:?}"
+        );
+        let session = nix::unistd::getsid(None).unwrap().as_raw();
+        assert_eq!(pids.last(), Some(&session));
+        assert!(lineage(0).is_empty() && lineage(-1).is_empty());
+    }
 
     /// shell 1 → leader 2 (group 2) → helper 3 (group 2) and detached 4 (group 4).
     fn children(pid: i32) -> Vec<i32> {

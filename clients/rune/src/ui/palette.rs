@@ -372,6 +372,7 @@ fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
         "terminal" | "pane" => Some(&icons::PROMPT),
         "session" => Some(&icons::WINDOW),
         "path" => Some(&icons::FOLDER),
+        "keep-awake" => Some(&icons::AWAKE),
         _ => None,
     }
 }
@@ -413,7 +414,8 @@ fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
 }
 
 /// One ranked result (OWN): its kind or swatch, the title with the
-/// matched characters in the accent's text ink one weight heavier, a
+/// matched characters in the accent's text ink one weight heavier (and
+/// underlined when that ink is body text), a
 /// detail, and for a screen its machine. The picked row is the keyboard's
 /// cursor.
 fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El {
@@ -421,14 +423,19 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
     let r = &t.roles;
     let title = &hit.item.title;
     let heavy = t.ty.label.semibold().weight;
+    // Where the accent fell back to body text (a grey accent,
+    // `Roles::emphasis`), its colour cannot mark a match; an underline does.
+    let underline = (r.accent.accent_text == r.text.text).then(|| r.text.text.paint());
     let spans = hit
         .matched
         .iter()
         .filter_map(|&at| title.char_indices().nth(at))
         .map(|(start, ch)| {
-            Span::new(start, start + ch.len_utf8())
+            let mut span = Span::new(start, start + ch.len_utf8())
                 .color(r.accent.accent_text.paint())
-                .weight(heavy)
+                .weight(heavy);
+            span.underline = underline;
+            span
         })
         .collect();
     // Faint never sits on a wash: the picked row's detail reads dim.
@@ -486,13 +493,24 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El
         .child(shortcut_or_detail(hit, detail.paint(), t))
 }
 
-/// An action's keys as a key cap (`⇧⌘P`), like every shortcut Rune shows;
-/// any other row's detail (its session, a pane id) as words.
+/// A command's keys as a key cap (`⇧⌘P`), like every shortcut Rune shows;
+/// any other detail (a session, a pane id, what the row does) as words.
 fn shortcut_or_detail(hit: &Hit, ink: rune::Color, t: &Tokens) -> El {
-    if hit.item.kind == "action" && !hit.item.detail.is_empty() {
-        return super::keycap(hit.item.detail.clone(), t);
+    let detail = &hit.item.detail;
+    if details_keys(&hit.item) {
+        return super::keycap(detail.clone(), t);
     }
-    detail_text(&hit.item.detail, ink, t)
+    detail_text(detail, ink, t)
+}
+
+/// Whether an item's detail is its command's chords, not words about it.
+fn details_keys(item: &crate::palette::Item) -> bool {
+    let Target::Action(action) = item.target else {
+        return false;
+    };
+    let detail = &item.detail;
+    !detail.is_empty()
+        && crate::keys::command(action).is_some_and(|c| *detail == c.hint() || *detail == c.hints())
 }
 
 /// A row's detail in its voices: the session's name in the ui face,

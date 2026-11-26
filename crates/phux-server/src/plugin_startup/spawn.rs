@@ -41,6 +41,10 @@ const SCRUB_ENV: &[&str] = &[
     "PHUX_FOCUS",
 ];
 
+/// Rex's nested-terminal resume token. A server started inside a Rex pane
+/// must not hand it to a sidecar (OSC 7577).
+const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
+
 /// A live sidecar. Drop is the last resort: `SIGKILL` the group only when
 /// the direct child has not been reaped. `killpg` on a pgid we already
 /// waited would hit whatever process reused that group. `kill_on_drop`
@@ -202,6 +206,7 @@ pub(super) fn spawn_child(
     for key in crate::upgrade::HANDOFF_ENV_VARS {
         cmd.env_remove(key);
     }
+    cmd.env_remove(OSC7577_TOKEN);
     cmd.env("PHUX_SOCKET", socket)
         .env("PHUX_PLUGIN_ID", &spec.plugin_id)
         .env("PHUX_PLUGIN_NAME", &spec.plugin_name)

@@ -7458,6 +7458,13 @@
           "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened.",
           "type": "boolean"
         },
+        "conversation_record": {
+          "description": "Exact private conversation.json from phux chat invite/join. Pins this call's hub and identity independently of the MCP host's HOME/profile; defaults the sender/reader to that conversation's inbox. Does not redirect claims.",
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^/",
+          "type": "string"
+        },
         "idempotency_key": {
           "description": "Nonzero 32-hex-digit retry key. Same tool and arguments replay one invocation during this adapter's lifetime (128 keys, no eviction). Not durable across reconnect/restart. phux_new/spawn/kill/signal additionally forward server-backed keys. Reconcile state before retrying after a disconnect.",
           "maxLength": 32,
@@ -7699,6 +7706,13 @@
           "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened.",
           "type": "boolean"
         },
+        "conversation_record": {
+          "description": "Exact private conversation.json from phux chat invite/join. Pins this call's hub and identity independently of the MCP host's HOME/profile; defaults the sender/reader to that conversation's inbox. Does not redirect claims.",
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^/",
+          "type": "string"
+        },
         "idempotency_key": {
           "description": "Nonzero 32-hex-digit retry key. Same tool and arguments replay one invocation during this adapter's lifetime (128 keys, no eviction). Not durable across reconnect/restart. phux_new/spawn/kill/signal additionally forward server-backed keys. Reconcile state before retrying after a disconnect.",
           "maxLength": 32,
@@ -7892,6 +7906,13 @@
         "background": {
           "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened.",
           "type": "boolean"
+        },
+        "conversation_record": {
+          "description": "Exact private conversation.json from phux chat invite/join. Pins this call's hub and identity independently of the MCP host's HOME/profile; defaults the sender/reader to that conversation's inbox. Does not redirect claims.",
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^/",
+          "type": "string"
         },
         "id": {
           "description": "Message id from phux_mail_read.",

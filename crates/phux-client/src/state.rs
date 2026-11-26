@@ -4,7 +4,8 @@ use std::path::Path;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, RESOURCE_TAGS_KEY, Scope, StateScope,
+    Command, CommandResult, CommandValue, FrameKind, PaneUnseen, RESOURCE_TAGS_KEY, Scope,
+    StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
@@ -88,6 +89,8 @@ pub struct StateView {
     /// The organization records read alongside, when the reader asked for
     /// them.
     organization: Option<Box<crate::org::OrgInventory>>,
+    /// Each pane's unseen mark, when the reader asked for them.
+    unseen: Vec<(ResourceId, PaneUnseen)>,
 }
 
 impl StateView {
@@ -97,6 +100,7 @@ impl StateView {
             snapshot,
             degradation,
             organization: None,
+            unseen: Vec::new(),
         }
     }
 
@@ -110,6 +114,18 @@ impl StateView {
     #[must_use]
     pub fn organization(&self) -> Option<&crate::org::OrgInventory> {
         self.organization.as_deref()
+    }
+
+    /// Attach the panes' unseen marks (`phux.unseen/v1`).
+    pub(crate) fn with_unseen(mut self, unseen: Vec<(ResourceId, PaneUnseen)>) -> Self {
+        self.unseen = unseen;
+        self
+    }
+
+    /// The unseen mark of each pane that has one.
+    #[must_use]
+    pub fn unseen(&self) -> &[(ResourceId, PaneUnseen)] {
+        &self.unseen
     }
 
     /// The snapshot and its degradation, both bound.

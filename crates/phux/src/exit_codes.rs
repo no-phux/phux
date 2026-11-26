@@ -36,6 +36,22 @@ pub(crate) fn transport_exit(err: &phux_client::attach::AttachError) -> u8 {
     }
 }
 
+/// [`transport_exit`] for ssh, from what it printed: [`EXIT_UNREACHABLE`]
+/// when the machine never answered, else [`EXIT_FAILURE`].
+pub(crate) fn ssh_exit(stderr: &str) -> u8 {
+    const UNANSWERED: [&str; 4] = [
+        "timed out",
+        "No route to host",
+        "Network is unreachable",
+        "Host is down",
+    ];
+    if UNANSWERED.iter().any(|why| stderr.contains(why)) {
+        EXIT_UNREACHABLE
+    } else {
+        EXIT_FAILURE
+    }
+}
+
 /// `phux wait` gave up because `--timeout` expired (the conventional
 /// `timeout(1)` code).
 pub(crate) const EXIT_WAIT_TIMEOUT: u8 = 124;

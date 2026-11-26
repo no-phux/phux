@@ -133,7 +133,7 @@ pub(in crate::attach) fn push_getting_started(ActionCall { ctx, .. }: ActionCall
     ctx.overlays
         .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(ctx.keybindings, *ctx.sidebar_enabled),
+            crate::attach::onboarding::hint_lines(Some(ctx.keybindings), *ctx.sidebar_enabled),
             ctx.theme,
         )));
 }
@@ -206,7 +206,7 @@ pub(in crate::attach) fn push_context_menu(ActionCall { ctx, focused, .. }: Acti
     let rect = focused_pane_rect(ctx, focused);
     let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
     let zoomed = ctx.zoomed.is_some();
-    let spec = crate::attach::context_menu::pane_menu(ctx.keybindings, zoomed);
+    let spec = crate::attach::context_menu::pane_menu(Some(ctx.keybindings), zoomed);
     open_context_menu(ctx, spec, anchor);
 }
 
@@ -259,7 +259,7 @@ pub(in crate::attach) fn push_session_picker(ActionCall { ctx, .. }: ActionCall<
 
 /// Push the live agent-fleet dashboard: every pane with its agent record,
 /// attention, and branch; peers with cached layouts list one-step rows.
-/// Bells with nothing to list.
+/// Opens on the pane that has waited longest. Bells with nothing to list.
 pub(in crate::attach) fn push_agent_fleet(
     ActionCall {
         ctx,
@@ -273,6 +273,7 @@ pub(in crate::attach) fn push_agent_fleet(
         ctx.vcs,
         &crate::attach::agent_rows::agent_session_rows(ctx.engine_kernel),
     );
+    let oldest = crate::attach::fleet::oldest_waiting(ctx.workspace, ctx.agent_meta, &meta);
     let mut items = crate::attach::fleet::fleet_items(
         ctx.workspace,
         ctx.peers.sessions,
@@ -297,6 +298,7 @@ pub(in crate::attach) fn push_agent_fleet(
     }
     ctx.overlays.push(Box::new(
         SelectList::new("Agents", items, ctx.theme)
+            .with_selected(oldest.as_ref())
             .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
     ));
 }

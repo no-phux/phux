@@ -323,6 +323,21 @@ pub struct NativeIntegrationCatalog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeRequest {
+    /// Read the exact inert archived recipe for one proposed owner operation.
+    PrepareRelaunch {
+        /// Operation that will consume this approval, as nonzero 32-digit lowercase hex.
+        #[serde(with = "relaunch::operation_hex")]
+        operation: crate::ids::OperationId,
+        /// Exact dormant resource.
+        resource: crate::ids::ResourceKey,
+        /// Observed record revision.
+        expected: crate::ids::Revision,
+    },
+    /// Explicit local-owner approval of the complete displayed recipe.
+    ApproveRelaunch {
+        /// Unmodified executing-host proposal, reviewed by the local owner.
+        approval: relaunch::RelaunchApproval,
+    },
     /// Observe current questions for one exact local resource.
     CurrentQuestions {
         /// Exact local handle or durable authority-qualified resource.

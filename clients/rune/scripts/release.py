@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from feed import TAG_PREFIX, VERSION, cargo_version
@@ -30,6 +31,9 @@ from feed import TAG_PREFIX, VERSION, cargo_version
 MANIFEST = "clients/rune/Cargo.toml"
 LOCK = "clients/rune/Cargo.lock"
 NOTES = "clients/rune/RELEASE_NOTES.md"
+NEWS = "clients/rune/news.json"
+# ponytail: the bell shows the newest notes only; older ones live in git.
+NEWS_KEPT = 80
 BRANCH = "rune-release/next"
 # ponytail: only commits under clients/rune count, not the shared crates
 # Rune builds from; route through tools/src/routing if that misses releases.
@@ -64,6 +68,15 @@ def notes(version, previous, changes):
     lines = "\n".join(f"- {change}" for change in changes)
     count = f"{len(changes)} change{'s' if len(changes) != 1 else ''}"
     return f"**Phux Rune {version}**: {count} since {previous}.\n\n{lines}\n"
+
+
+def news(feed, version, date, changes):
+    """The bell's feed (news.json) with this release's changes on top."""
+    added = [
+        {"date": date, "title": re.sub(r" \(#\d+\)$", "", change), "body": f"In Rune {version}."}
+        for change in changes
+    ]
+    return json.dumps((added + json.loads(feed))[:NEWS_KEPT], indent=2, ensure_ascii=False) + "\n"
 
 
 def bump(manifest, lock, version):
@@ -182,10 +195,25 @@ def tag_step(version):
 
 def open_bump_pr():
     """Find the same-repository bump; never arm a fork's matching branch."""
-    prs = json.loads(sh(
+    command = (
         "gh", "pr", "list", "--base", "main", "--head", BRANCH, "--state", "open",
         "--json", "number,isDraft,headRefOid,isCrossRepository",
-    ))
+    )
+    done = sh(*command, check=False)
+    stdout = done.stdout.strip()
+    if done.returncode != 0 or not stdout:
+        message = f"{' '.join(command)} exited {done.returncode}; stderr: {done.stderr.strip()}"
+        if stdout:
+            message += f"; stdout: {stdout}"
+        elif done.stdout:
+            message += f"; stdout was whitespace: {done.stdout!r}"
+        else:
+            message += "; stdout was empty"
+        raise RuntimeError(message)
+    try:
+        prs = json.loads(done.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"gh pr list did not return JSON: {done.stdout}") from error
     if not isinstance(prs, list):
         raise ValueError("gh pr list did not return a JSON array")
     for pr in prs:
@@ -243,6 +271,8 @@ def bump_step(version):
     Path(MANIFEST).write_text(manifest)
     Path(LOCK).write_text(lock)
     Path(NOTES).write_text(notes(new, f"alpha.{version.rsplit('.', 1)[1]}" if "alpha" in version else version, changes))
+    today = datetime.now(timezone.utc).date().isoformat()
+    Path(NEWS).write_text(news(Path(NEWS).read_text(), new, today, changes))
     title = f"chore(rune): release {new}"
     sh("git", "switch", "-C", BRANCH)
     sh("git", "commit", "-qam", title)

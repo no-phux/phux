@@ -31,6 +31,7 @@ include!("tests_events/overlays.rs");
 include!("tests_events/sidebar.rs");
 include!("tests_events/status_bar.rs");
 include!("tests_events/pane_mouse.rs");
+include!("tests_events/held_typing.rs");
 include!("tests_events/input_delivery_prediction.rs");
 include!("tests_events/floating.rs");
 include!("tests_events/layout_read.rs");

@@ -31,8 +31,14 @@ else
     stage="$(mktemp -d "$base/.zig-download.XXXXXX")"
     trap 'rm -rf "$stage"' EXIT
     phux_info "installing Zig $ZIG_VERSION ($target)"
-    curl -fSL --retry 3 --connect-timeout 20 --max-time 600 \
-        "https://ziglang.org/download/${ZIG_VERSION}/${archive}" -o "$stage/$archive" >&2
+    # Each try resumes: `--retry` starts over and gives up on a transfer cut off
+    # midway. The digest below still decides.
+    for try in 1 2 3 4; do
+        curl -fSL -C - --connect-timeout 20 --max-time 600 \
+            "https://ziglang.org/download/${ZIG_VERSION}/${archive}" -o "$stage/$archive" >&2 && break
+        [[ $try -lt 4 ]] || { phux_error "could not download Zig $ZIG_VERSION"; exit 1; }
+        sleep 2
+    done
     (
         cd "$stage"
         if command -v sha256sum >/dev/null 2>&1; then

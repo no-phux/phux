@@ -15,10 +15,6 @@ with `phux plugin install no-phux/phux/plugins/nvim`. Nor does it enable
 [agent-stats](./agent-stats/README.md): tasks finished and time worked per
 agent, published for every client.
 
-[index](./index/) is not a plugin: it is the generator, a separate Cargo
-workspace, that builds the public plugin index
-([plugin-index.yml](../.github/workflows/plugin-index.yml)).
-
 Keep `plugins/` beside `distros/` when copying the bundle. Existing configs
 extending the starter layer pick up its manifest paths automatically. Plugin
 IDs are unchanged, including the historical

@@ -15,12 +15,20 @@ fn marker(id: &str, suggestions: &[&str]) -> AskMarker {
 /// answer must not land in whatever replaced the question.
 #[test]
 fn an_id_the_pane_has_moved_past_is_refused_as_stale() {
-    let marker = live_ask(Some("phux-ask[deploy]:Deploy to prod??s=Yes|No"), "deploy")
-        .expect("a live sentinel with the named id is answerable");
+    let marker = live_ask(
+        Some("phux-ask[deploy]:Deploy to prod??s=Yes|No"),
+        None,
+        "deploy",
+    )
+    .expect("a live sentinel with the named id is answerable");
     assert_eq!(marker.suggestions, ["Yes", "No"]);
 
-    let refusal = live_ask(Some("phux-ask[migrate]:Run migrations??s=Yes|No"), "deploy")
-        .expect_err("a different live question must not be answered");
+    let refusal = live_ask(
+        Some("phux-ask[migrate]:Run migrations??s=Yes|No"),
+        None,
+        "deploy",
+    )
+    .expect_err("a different live question must not be answered");
     assert_eq!(refusal.err.code, super::codes::ASK_STALE);
     assert_eq!(refusal.exit, crate::exit_codes::EXIT_USAGE);
     // The diagnostic must name BOTH ids, or the caller cannot tell a
@@ -43,17 +51,34 @@ fn an_id_the_pane_has_moved_past_is_refused_as_stale() {
 fn a_pane_with_no_ask_is_refused() {
     for title in [Some("vim README.md"), Some(""), None] {
         let refusal =
-            live_ask(title, "deploy").expect_err("a pane that is not asking has no answer");
+            live_ask(title, None, "deploy").expect_err("a pane that is not asking has no answer");
         assert_eq!(refusal.err.code, super::codes::NO_ACTIVE_ASK);
         assert_eq!(refusal.exit, crate::exit_codes::EXIT_USAGE);
     }
+}
+
+/// A `phux ask` question sets no title, so the server's copy is the live ask;
+/// a title question the pane shows now wins over it.
+#[test]
+fn a_reported_ask_is_answerable_until_the_title_asks_something_else() {
+    let reported = || Some(marker("q3", &["Yes", "No"]));
+    let live = |title, id| live_ask(title, reported(), id).map_err(|refusal| refusal.err.code);
+    assert_eq!(live(Some("bash"), "q3"), Ok(marker("q3", &["Yes", "No"])));
+    assert_eq!(live(None, "q2"), Err(super::codes::ASK_STALE));
+    let moved_on = Some("phux-ask[q4]:Run migrations?");
+    assert_eq!(live(moved_on, "q3"), Err(super::codes::ASK_STALE));
+    assert_eq!(live(moved_on, "q4").map(|ask| ask.id), Ok("q4".to_owned()));
+    // The same question without an id in its title takes the reported id.
+    assert!(live(Some("phux-ask:Deploy to prod?"), "q3").is_ok());
+    let other = live(Some("phux-ask:Run migrations?"), "q3");
+    assert_eq!(other, Err(super::codes::ASK_UNIDENTIFIED));
 }
 
 /// An anonymous ask cannot be correlated, so it is refused rather than
 /// answered on the strength of its text alone.
 #[test]
 fn an_ask_with_no_id_is_refused_rather_than_matched_on_text() {
-    let refusal = live_ask(Some("phux-ask:Deploy to prod??s=Yes|No"), "deploy")
+    let refusal = live_ask(Some("phux-ask:Deploy to prod??s=Yes|No"), None, "deploy")
         .expect_err("an anonymous ask must not be answerable");
     assert_eq!(refusal.err.code, super::codes::ASK_UNIDENTIFIED);
 }

@@ -6,6 +6,7 @@
 
 pub mod action_registry;
 pub mod actions;
+mod agent_forward;
 mod agent_rows;
 mod arrangement_link;
 mod attach_role;
@@ -37,6 +38,7 @@ mod jobs;
 mod kitty_heal;
 mod notify;
 mod onboarding;
+mod open_url;
 pub mod paint;
 pub mod palette_recent;
 mod restore_hint;
@@ -82,7 +84,7 @@ pub use driver::{
 };
 
 // ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
-pub use attach_role::set_attach_role;
+pub use attach_role::{set_attach_role, set_size_lock};
 
 /// Tell the tab strip where `[chrome] new-tab-after-current` puts a new tab.
 pub(crate) fn set_new_tab_after_current(on: bool) {

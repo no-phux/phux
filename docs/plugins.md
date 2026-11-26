@@ -127,6 +127,40 @@ look up the client's later focus. Missing or ambiguous target facts are
 absent, never guessed. An action that needs the server must call a public
 operation from an authorized client.
 
+## Link handlers
+
+A `[[links]]` entry runs when you ⌘-click (Ctrl-click off macOS) a link it
+takes in Rune, instead of the default open. The first handler whose
+`schemes` or `patterns` match wins; a pattern is a glob over the whole link
+where `*` matches anything. With no match the click opens as before. A
+handler's pattern also makes a matching word clickable, in panes on other
+machines too.
+
+```toml
+[[links]]
+id = "edit"
+title = "Open in Neovim"
+patterns = ["*.rs:*"]
+run_on = "pane-host"
+command = ["nvim", "+{line}", "{path}"]
+```
+
+`{url}` is the link as clicked, `{path}` and `{line}` split a `:line[:col]`
+suffix off it, and `{pane}`, `{host}` (empty for this machine) and `{cwd}`
+describe the pane. Each fills in inside one argv element and is also set
+as `PHUX_LINK_URL`, `PHUX_LINK_PATH`, `PHUX_LINK_LINE`, `PHUX_LINK_PANE`,
+`PHUX_LINK_HOST` and `PHUX_LINK_CWD`. A shell command (`sh -c` and the
+like) may not use placeholders: it reads the variables, so output can't
+inject code. A link that starts with `-` matches no handler.
+
+- `run_on = "client"` (the default) runs on the machine you clicked from,
+  in the pane's directory when the pane is local, else the plugin's.
+- `run_on = "pane-host"` opens a split beside the pane running the command
+  in its directory, on the server that runs it. A federated satellite's
+  pane refuses it; open a window on that machine.
+
+The terminal UI's URL picker still only copies.
+
 ## Startup sidecars
 
 A `[[startup]]` entry is a long-running process the server supervises for

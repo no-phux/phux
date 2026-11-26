@@ -83,8 +83,8 @@ impl super::super::SessionLoop {
         self.which_key_deadline = None;
         if push_which_key_overlay(
             &mut self.overlays,
-            self.settings.resolver.as_ref(),
-            self.settings.keybindings.as_ref(),
+            &self.settings.resolver,
+            &self.settings.keybindings,
             &self.settings.theme,
         ) {
             self.paint_overlay(out, sidebar);

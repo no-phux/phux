@@ -1,9 +1,9 @@
 //! Relaying satellite stream frames: events, output, lease mirrors, closes, and bells.
 
 use super::{
-    AgentEvent, ClientId, ControlAction, FrameKind, RelaySession, ResourceId, ServerFeature,
-    foreign_client, link_journal_gap, satellite_gap_as_source_gap, stream_frame_scope,
-    stream_frame_scope_mut, warn,
+    AgentEvent, BootstrapId, ClientId, ControlAction, FrameKind, RelaySession, ResourceId,
+    ServerFeature, foreign_client, link_journal_gap, satellite_gap_as_source_gap,
+    stream_frame_bootstrap_mut, stream_frame_scope, stream_frame_scope_mut, warn,
 };
 
 impl RelaySession {
@@ -26,10 +26,22 @@ impl RelaySession {
             // Pre-detach frames; a fresh proxy must not take them as its prefix.
             return Ok(());
         }
-        if self.enforce_bootstrap_flow {
+        let outward = if self.enforce_bootstrap_flow {
+            if matches!(frame, FrameKind::BootstrapTombstone { .. })
+                && !self.bootstrap_flows.contains_key(&id)
+            {
+                // Retires nothing: a reattach that cut a resync short
+                // tombstones its generation a second time.
+                return Ok(());
+            }
+            // A tombstone takes its flow away; a BEGIN replaces it.
+            let before = self.outward_generation(id);
             self.enforce_stream_frame_flow(id, &frame)?;
-        }
-        let retagged = self.retag_stream_frame(frame, id);
+            self.outward_generation(id).or(before)
+        } else {
+            None
+        };
+        let retagged = self.retag_stream_frame(frame, id, outward);
         self.deliver_stream_frame(id, retagged);
         Ok(())
     }
@@ -251,6 +263,12 @@ impl RelaySession {
             _ => return,
         };
         journal.with_mut(|s| {
+            if !s
+                .federation()
+                .satellite_link_is_current(&self.host, self.epoch)
+            {
+                return None;
+            }
             s.federation_mut()
                 .mirror_satellite_lease_event(&self.host, id, is_end, seq)
         });
@@ -297,14 +315,22 @@ impl RelaySession {
             FrameKind::ResourceOutput {
                 stream_id,
                 bootstrap_id,
+                seq,
                 ..
-            } => self.validate_ready_identity(id, *stream_id, *bootstrap_id, "RESOURCE_OUTPUT"),
+            } => {
+                self.validate_ready_identity(id, *stream_id, *bootstrap_id, "RESOURCE_OUTPUT")?;
+                if let Some(flow) = self.bootstrap_flows.get_mut(&id) {
+                    flow.last_seq = *seq;
+                }
+                Ok(())
+            }
             FrameKind::BootstrapBegin {
                 stream_id,
                 bootstrap_id,
                 profile,
+                base_seq,
                 ..
-            } => self.begin_bootstrap_flow(id, *stream_id, *bootstrap_id, *profile),
+            } => self.begin_bootstrap_flow(id, *stream_id, *bootstrap_id, *profile, *base_seq),
             FrameKind::BootstrapChunk {
                 stream_id,
                 bootstrap_id,
@@ -351,10 +377,26 @@ impl RelaySession {
         }
     }
 
+    /// The id consumers see `terminal`'s live generation under.
+    fn outward_generation(&self, terminal: u32) -> Option<BootstrapId> {
+        self.bootstrap_flows.get(&terminal).map(|flow| flow.outward)
+    }
+
     /// Re-tag a stream frame's scope `Local { id }` -> `Satellite { host,
-    /// id }`, leaving every other field verbatim (ADR-0007). Only frames
-    /// [`stream_frame_scope`] scoped reach here, so the scope slot exists.
-    pub(super) fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
+    /// id }` and its generation to the hub's `outward` id, leaving every other
+    /// field verbatim (ADR-0007). Only frames [`stream_frame_scope`] scoped
+    /// reach here, so the scope slot exists.
+    pub(super) fn retag_stream_frame(
+        &self,
+        mut frame: FrameKind,
+        id: u32,
+        outward: Option<BootstrapId>,
+    ) -> FrameKind {
+        if let Some(outward) = outward
+            && let Some(bootstrap_id) = stream_frame_bootstrap_mut(&mut frame)
+        {
+            *bootstrap_id = outward;
+        }
         if let Some(scope) = stream_frame_scope_mut(&mut frame) {
             *scope = ResourceId::satellite(self.host.clone(), id);
         }

@@ -120,6 +120,7 @@ pub(crate) struct NegotiatedBootstrap {
     /// Features the satellite advertised in `HELLO_OK`.
     server_features: phux_protocol::caps::ServerFeatureSet,
     server_features_ext: ServerFeatureExtSet,
+    server_features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// The satellite's `HELLO_OK.server_id`, for the incarnation fence.
     server_id: Option<[u8; 16]>,
 }
@@ -143,6 +144,9 @@ pub(crate) trait LinkConn {
     fn server_features_ext(&self) -> Result<ServerFeatureExtSet, String> {
         Ok(ServerFeatureExtSet::new())
     }
+
+    /// Current executing peer's archived execution enforcement, never hub caps.
+    fn server_features_ext2(&self) -> Result<phux_protocol::caps::ServerFeatureExt2Set, String>;
 
     /// The satellite's `HELLO_OK.server_id`; `None` fences as one
     /// incarnation.

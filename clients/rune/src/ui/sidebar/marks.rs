@@ -5,8 +5,9 @@
 use phux_design::{State, Tone};
 use rune::{Color, El, Icon, row};
 
-use super::super::{Tokens, badge, icons};
+use super::super::{Tokens, icons};
 use crate::activity::Mark;
+use crate::ui::tokens::Voice;
 
 /// The ladder state a terminal's mark stands for. A shell's own
 /// command counts as work under way; a bell asks for you, as the pane's
@@ -80,8 +81,7 @@ impl Counts {
     }
 }
 
-/// The histogram (`● 2  ✕ 1  ◆ 3`): one tone badge per rung with a count,
-/// each named by its plural for a screen reader.
+/// A quiet unboxed summary (`● 2  ✕ 1  ◆ 3`), preserving tone, shape and count.
 pub(in crate::ui) fn histogram(counts: Counts, t: &Tokens) -> El {
     let rungs = [
         (State::NeedsYou, counts.needs_you, "count.needs_you"),
@@ -98,7 +98,22 @@ pub(in crate::ui) fn histogram(counts: Counts, t: &Tokens) -> El {
                 .map(|(state, n, key)| {
                     let said = phux_design::plural(key, u64::try_from(n).unwrap_or(u64::MAX))
                         .unwrap_or_else(|| n.to_string());
-                    badge::tone_badge(t, state, Some(n.to_string())).label(said)
+                    let rung = t.status.state(state);
+                    row()
+                        .gap(t.space.s1)
+                        .items_center()
+                        .label(said)
+                        .child(
+                            rune::icon(rung.icon, t.icon.size.xs)
+                                .color(rung.tone.ink)
+                                .a11y_hidden(),
+                        )
+                        .child(
+                            rune::text(n.to_string())
+                                .font(t.ty.caption.semibold())
+                                .color(rung.tone.ink)
+                                .a11y_hidden(),
+                        )
                 }),
         )
 }

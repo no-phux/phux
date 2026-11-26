@@ -25,7 +25,7 @@ fn plane_with_surface() -> ControlPlane {
                 .with_session(Some(session))
                 .with_parent(Some(terminal())),
         ]);
-    let mut plane = ControlPlane::new(ControlOptions::default());
+    let mut plane = ControlPlane::new(std::time::Instant::now(), ControlOptions::default());
     plane.topology = Some(Topology::from_snapshot(&snapshot));
     plane.handshake_ready = true;
     plane

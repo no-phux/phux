@@ -33,6 +33,10 @@ pub struct RuneCfg {
     pub wheel_arrows: Option<bool>,
     /// Ask before closing a terminal or tab with something running.
     pub confirm_close: Option<bool>,
+    /// Bold text in ANSI colours 0 to 7 draws in the bright variant, 8 to
+    /// 15, like xterm's `boldColors`. Off when unset; true colour never
+    /// brightens.
+    pub bold_is_bright: Option<bool>,
     /// List the session used last first, instead of in the arranged order.
     pub recent_first: Option<bool>,
     /// Where the terminal tabs go: `"auto"` in the title bar while the

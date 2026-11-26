@@ -1,7 +1,7 @@
 {
   "name": "phux",
   "displayName": "phux",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Expose shared phux terminals as Grok tools and publish Grok lifecycle metadata.",
   "author": {
     "name": "phall"

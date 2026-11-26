@@ -14,7 +14,7 @@ impl TerminalActor {
         debug!(
             cols = self.cols,
             rows = self.rows,
-            has_pty = self.pty.is_some(),
+            has_pty = self.process.pty.is_some(),
             "TerminalActor started",
         );
 
@@ -37,8 +37,13 @@ impl TerminalActor {
         let tick = armed_interval(tick_interval).await;
 
         self.install_agent_detector();
+        // A resumed pane's title came with its seed, before any sink, and a
+        // program waiting on its title question prints nothing.
+        self.source_ask_marker();
         let detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
         let detect_tick = armed_interval(detect_interval).await;
+
+        let keep_tick = armed_interval(super::super::keep::POLL).await;
 
         // Native control and PTY output share one arm, alternating
         // preference; both stay enabled so a silent PTY never parks history.
@@ -48,6 +53,7 @@ impl TerminalActor {
             detect_interval,
             detect_tick,
             detect_deadline_valid: true,
+            keep_tick,
             resync: ResyncDebounce::idle(),
             prefer_native: false,
             native_step_due: false,
@@ -88,13 +94,13 @@ impl TerminalActor {
                 }
 
                 // Encoded input from the input lane: highest priority.
-                Some(request) = self.encoded_input_rx.recv() =>
+                Some(request) = self.process.encoded_input_rx.recv() =>
                     self.service_encoded_input_batch(request),
 
                 // Inline input (ROUTE_INPUT and attached input events), encoded here.
                 // Before PTY output so keystrokes are not starved; batch
                 // bounded by `MAX_INPUT_COALESCE`.
-                Some(input) = self.input_rx.recv(), if !bootstrap_pending =>
+                Some(input) = self.process.input_rx.recv(), if !bootstrap_pending =>
                     self.service_input_batch(&input),
 
                 // Apply admitted geometry before a bootstrap/screen capture
@@ -112,9 +118,16 @@ impl TerminalActor {
                 () = std::future::ready(()), if state.service.due =>
                     self.service_pending_turn(state, resync_deadline.as_mut()),
 
+                Some(((), interest)) =
+                    self.publication.next_cancelled() =>
+                    self.service_cancelled_consumer(
+                        &interest,
+                        &mut state.tick, &mut state.tick_interval,
+                    ),
+
                 ingress = recv_native_or_pty(
                     &mut self.native_requests,
-                    self.pty_rx.as_mut(),
+                    self.process.pty_rx.as_mut(),
                     state.prefer_native,
                 ) => {
                     state.service.due = true;
@@ -171,6 +184,10 @@ impl TerminalActor {
                 // adaptive interval, never by PTY bytes.
                 scheduled = state.detect_tick.tick(), if detector_armed =>
                     self.service_detector_deadline(scheduled, state),
+
+                // `[restore] scrollback`: disarmed unless a save is owed.
+                _ = state.keep_tick.tick(), if !bootstrap_pending && self.keep_owed() =>
+                    self.service_keep(),
 
                 () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue =>
                     state.native_step_due = true,

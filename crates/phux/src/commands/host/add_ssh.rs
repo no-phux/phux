@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use super::super::enroll::{self, CertificateStatus, EnrollEvent, EnrollRequest, ServicePolicy};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self, Endpoint, RemoteEntry};
-use super::super::remote_target::RemoteTarget;
+use super::super::remote_target::{self, RemoteTarget};
 
 use super::HostRole;
 use super::add::add_failure_error;
@@ -35,7 +35,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     };
     // `ssh` takes the typed `user@host` spelling as its destination.
     let ssh_host = target.registry_name();
-    let name = opts.name.clone().unwrap_or_else(|| target.host.clone());
+    let name = add_name(&target, opts);
     let quic_port = target.port.unwrap_or(opts.quic_port);
 
     if opts.ssh_only {
@@ -75,16 +75,15 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     // gets phux installed or updated.
     let remote_phux = match provisioned_phux(&name, &ssh_host, opts, &mut narrate) {
         Ok(phux) => phux,
-        Err(err) => return json_err::emit(json, &err, 1),
+        Err((err, code)) => return json_err::emit(json, &err, code),
     };
 
     // Prefer credentials already on file for this name when re-enrolling so
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
     let remotes_dir = phux_config::instance::state_dir().join("remotes");
-    let workload = previous
-        .held
-        .replacement(&remotes_dir, &name, opts.hardware_key);
+    let held = &previous.held;
+    let workload = held.replacement(&remotes_dir, &name, opts.hardware_key);
     let req = EnrollRequest {
         ssh_host: &ssh_host,
         remote_phux: &remote_phux,
@@ -103,7 +102,8 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     let outcome = match enroll::enroll_over_ssh(&req, &mut |event| narrate(&event)) {
         Ok(outcome) => outcome,
         Err(failure) => {
-            return json_err::emit(json, &add_failure_error(&ssh_host, opts.role, &failure), 1);
+            let err = add_failure_error(&ssh_host, opts.role, &failure);
+            return json_err::emit(json, &err, failure.exit_code());
         }
     };
 
@@ -135,6 +135,14 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     }
 }
 
+/// `--name`, else the host: a second server on the machine at another port
+/// is another host, `HOST-PORT`.
+fn add_name(target: &RemoteTarget, opts: &AddOpts) -> String {
+    opts.name
+        .clone()
+        .unwrap_or_else(|| remote_target::registration_name(opts.role, &target.host, target.port))
+}
+
 /// The `phux` to enroll with: `--remote-phux`, else the one the entry
 /// recorded, else `phux`; under `--install`, the one put on (or updated on)
 /// the host first.
@@ -143,7 +151,7 @@ fn provisioned_phux(
     ssh_host: &str,
     opts: &AddOpts,
     narrate: &mut dyn FnMut(&EnrollEvent),
-) -> Result<String, CliError> {
+) -> Result<String, (CliError, u8)> {
     let remote_phux = if opts.remote_phux == "phux" && opts.role == HostRole::Remote {
         remote::find(name).map_or_else(|| "phux".to_owned(), |entry| entry.remote_phux().to_owned())
     } else {
@@ -152,8 +160,14 @@ fn provisioned_phux(
     if !opts.install {
         return Ok(remote_phux);
     }
-    enroll::provision_remote_phux(ssh_host, &remote_phux, &mut |event| narrate(&event))
-        .map_err(|failure| add_failure_error(ssh_host, opts.role, &failure))
+    enroll::provision_remote_phux(ssh_host, &remote_phux, &mut |event| narrate(&event)).map_err(
+        |failure| {
+            (
+                add_failure_error(ssh_host, opts.role, &failure),
+                failure.exit_code(),
+            )
+        },
+    )
 }
 
 /// A registered remote whose saved route answers and whose workload client

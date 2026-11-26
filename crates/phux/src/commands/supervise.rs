@@ -26,9 +26,9 @@ pub(crate) const SUPERVISE_SCHEMA_VERSION: u8 = 1;
 
 /// `phux take TARGET [--ttl SECS]` — seize the input lease over the
 /// resolved pane so only this client's input reaches the PTY (ADR-0033).
-/// Uses `Seize` mode, so it preempts any current holder. `ttl` arms the
-/// server-side expiry timer this lane adds: the lease auto-releases after
-/// that many seconds even if this process has long since exited.
+/// Uses `Seize` mode, so it preempts any current holder. The lease belongs
+/// to this one-shot connection: the server releases it when the connection
+/// closes, or after `ttl` seconds if that is sooner.
 pub(crate) fn run_take(
     target: &str,
     ttl: Option<u32>,

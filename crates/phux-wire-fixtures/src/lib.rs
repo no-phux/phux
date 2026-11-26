@@ -19,8 +19,8 @@ use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile,
-    ClientCapabilities, Layer, LayerSet, ServerCapabilities, ServerFeatureExtSet, ServerFeatureSet,
-    select_bootstrap_profile,
+    ClientCapabilities, Layer, LayerSet, ServerCapabilities, ServerFeatureExt2Set,
+    ServerFeatureExtSet, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{CloseReason, CommandResult, CommandValue, ErrorCode, FrameKind};
@@ -78,6 +78,13 @@ impl HelloOk {
     #[must_use]
     pub const fn features_ext(mut self, features_ext: ServerFeatureExtSet) -> Self {
         self.caps = self.caps.with_features_ext(features_ext);
+        self
+    }
+
+    /// Replace the advertised third feature word.
+    #[must_use]
+    pub const fn features_ext2(mut self, features_ext2: ServerFeatureExt2Set) -> Self {
+        self.caps = self.caps.with_features_ext2(features_ext2);
         self
     }
 

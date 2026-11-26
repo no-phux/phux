@@ -11,6 +11,7 @@ use crate::desk::surfaces::Surface;
 use crate::features::changes;
 use phux_config_core::rune::TabBar;
 
+mod archived_relaunch;
 mod badge;
 mod chief;
 mod controls;
@@ -44,12 +45,13 @@ mod pitch;
 mod pitlane;
 mod playground;
 mod popup;
-mod questions;
+pub(crate) mod questions;
 #[allow(clippy::disallowed_methods)] // illustration art
 mod reef;
 pub(crate) mod rows;
 mod settings;
 mod sidebar;
+pub(crate) use sidebar::focus_target as sidebar_focus_target;
 mod spatial;
 mod status;
 mod tabs;
@@ -71,8 +73,13 @@ pub(crate) const MOD: &str = if cfg!(any(target_os = "macos", target_os = "ios")
 } else {
     "Ctrl+Shift+"
 };
-/// Space between the terminal area's edge and its grid.
+/// Space between a desktop terminal card's edge and its grid.
 pub(crate) use tokens::TERMINAL_PAD as PAD;
+
+/// The phone gives the grid the whole pane viewport inside the system safe area.
+fn terminal_padding(desk: &Desk) -> f32 {
+    if desk.phone.is_some() { 0.0 } else { PAD }
+}
 
 /// The tokens for a theme, or the system appearance with none, as a
 /// window with no machine, glass or accessibility setting has them.
@@ -128,6 +135,7 @@ fn window(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     desk.follow_appearance(dark);
     let t = Tokens::for_window(desk, cx);
     wire(&t, cx);
+    desk.watch_focus(cx);
     if desk.phone.is_some() {
         return phone::view(desk, cx);
     }
@@ -246,6 +254,7 @@ fn tooltip(t: &Tokens) -> rune::HelpLook {
 /// What floats over the window: banners, cards, sheets and menus.
 fn floating(root: El, desk: &Desk, p: &Tokens, band: f32, cx: &mut Cx<Desk>) -> El {
     let root = root
+        .on_key(|d: &mut Desk, event, _| d.heard_key(event))
         .children(status::banner(desk, p))
         .children(updates::card(desk, p, band));
     floating_surfaces(root, desk, p, band, cx)
@@ -268,7 +277,8 @@ fn surface_view(
     cx: &mut Cx<Desk>,
 ) -> Option<El> {
     match surface {
-        Surface::PhoneNavigation => phone::navigation::view(desk, top),
+        Surface::RawRelaunch => archived_relaunch::view(desk, p),
+        Surface::PhoneNavigation | Surface::PhonePull => phone::navigation::view(desk, top),
         Surface::Inbox => Some(inbox::view(desk, p)),
         Surface::Playground(_) => playground::open(desk, p, cx),
         // A phone's Settings is already painted in its stage, not a scrim.

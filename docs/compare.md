@@ -37,7 +37,7 @@ differences.
 | Event                     | tmux             | Herdr                                     | cmux                                              | phux                                                       |
 | ------------------------- | ---------------- | ----------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
 | client detaches or closes | programs run on  | programs run on                           | quitting ends them, unless the [tmux owner](https://github.com/manaflow-ai/cmux/blob/main/docs/local-tmux.md) holds them | programs run on |
-| server or app restarts    | everything gone  | layout, new shells; [some agents resume](https://herdr.dev/docs/session-state/) | layout, directories, some scrollback, new shells; [some agents resume](https://github.com/manaflow-ai/cmux#session-restore) | sessions, tabs, panes return; programs and scrollback don't ([details](./concepts.md#what-survives-what)) |
+| server or app restarts    | everything gone  | layout, new shells; [some agents resume](https://herdr.dev/docs/session-state/) | layout, directories, some scrollback, new shells; [some agents resume](https://github.com/manaflow-ai/cmux#session-restore) | sessions, tabs, panes return, scrollback if you turn it on; programs don't ([details](./concepts.md#what-survives-what)) |
 
 None of the four keeps programs running across a reboot.
 

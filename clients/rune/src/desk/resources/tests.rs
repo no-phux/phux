@@ -83,7 +83,9 @@ fn seed(client: &Client, records: &[ResourceRecord]) -> Option<u32> {
         request,
         CommandValue::OrganizationPage(Box::new(page)),
     );
-    attach_id(&sent)
+    // After a server restart the client attaches only by `work`'s exact
+    // durable key, which this seed is what names: that attach follows it.
+    attach_id(&sent).or_else(|| attach_id(&outbound(client)))
 }
 
 fn install_arrangement(client: &Client, records: &[ResourceRecord], doc: &ArrangementDoc) {
@@ -483,6 +485,7 @@ fn mixed_layout_keeps_terminal_view_and_readonly_secondary_document() {
 }
 
 mod addressable;
+mod closing;
 mod input;
 mod lifecycle;
 mod native;

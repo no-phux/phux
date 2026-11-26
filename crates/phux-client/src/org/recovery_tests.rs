@@ -6,6 +6,15 @@ fn key(byte: u8) -> OperationId {
     OperationId::new([byte; 16]).unwrap()
 }
 
+fn mutation_reply(operation: OperationId, result: &CommandResult) -> OrgOutcome {
+    phux_client_core::org_ops::OrgReplyExpectation::for_command(&Command::SessionRename {
+        operation,
+        session: phux_protocol::ids::SessionKey::new([1; 16]).unwrap(),
+        name: "renamed".into(),
+    })
+    .classify(result)
+}
+
 #[test]
 fn foreign_commit_keeps_original_recovery_identity_instead_of_false_success() {
     let original = key(1);
@@ -13,7 +22,7 @@ fn foreign_commit_keeps_original_recovery_identity_instead_of_false_success() {
         key(2),
         Revision::new(1),
     ))));
-    let error = checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap_err();
+    let error = checked_outcome(mutation_reply(original, &result), Some(original)).unwrap_err();
     assert!(matches!(error, OrgError::OutcomeUnknown { operation: Some(id) } if id == original));
     assert_eq!(error.recovery().operation_id, Some(original.to_hex()));
 }
@@ -25,7 +34,7 @@ fn unreadable_mutation_reply_preserves_identity_and_uncertainty() {
         code: phux_protocol::wire::frame::ErrorCode::Unknown(65535),
         message: "unreadable reply".into(),
     };
-    let error = checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap_err();
+    let error = checked_outcome(mutation_reply(original, &result), Some(original)).unwrap_err();
     assert_eq!(error.code(), "outcome_unknown");
     assert_eq!(error.recovery().operation_id, Some(original.to_hex()));
 }
@@ -38,7 +47,7 @@ fn matching_commit_remains_successful_and_read_only_errors_are_not_reclassified(
         Revision::new(1),
     ))));
     assert!(matches!(
-        checked_outcome(OrgOutcome::from_result(&result), Some(original)).unwrap(),
+        checked_outcome(mutation_reply(original, &result), Some(original)).unwrap(),
         OrgOutcome::Committed(_)
     ));
     let unreadable = CommandResult::Error {

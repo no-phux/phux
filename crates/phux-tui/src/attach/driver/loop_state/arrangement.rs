@@ -106,7 +106,7 @@ impl super::SessionLoop {
         self.peers
             .apply_arrangement_reads(done.reads, done.asked == PeerReads::All);
         self.reconcile_peer_agents(conn).await?;
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
         let mut repaint = RepaintAccumulator::default();
         repaint.raise_fleet();
         self.drain_repaint(out, sidebar, &mut repaint);

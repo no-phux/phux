@@ -63,13 +63,18 @@ pub(crate) async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     warn_partial_view("kill", &notices);
     match result {
         Ok(done) => {
-            let mut document = json!({ "schema_version": 1, "killed": true, "target": target });
+            // `killed` is the frozen 1.x close-ack field, not exit evidence.
+            // State that distinction explicitly without changing its wire type.
+            let mut document = json!({
+                "schema_version": 1, "killed": true, "target": target,
+                "accepted": true, "end_observed": false,
+            });
             if let Some(members) = done.killed {
                 document["members"] = json!(members);
             }
             Ok(document)
         }
-        Err(err) => Err(kill_error(err)),
+        Err(err) => Err(kill_error(err, &target)),
     }
 }
 

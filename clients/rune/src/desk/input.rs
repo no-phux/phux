@@ -12,6 +12,7 @@ use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
 mod echo;
+pub(super) mod focus;
 mod modal;
 pub(super) mod selection;
 mod shortcuts;
@@ -183,6 +184,11 @@ impl Desk {
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
             Modal::Confirm => self.confirm_bar_key(event, tx),
+            Modal::RawRelaunch => {
+                if event.key == rune::Key::Escape {
+                    self.cancel_raw_relaunch();
+                }
+            }
             Modal::PhonePicker => {
                 self.phone_picker_key(event);
             }
@@ -213,6 +219,8 @@ impl Desk {
     pub(super) fn confirm_bar_key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) {
         if self.clipboard_read_key(event, tx).is_none()
             && self.clipboard_write_key(event, tx).is_none()
+            && self.open_url_key(event, tx).is_none()
+            && self.agent_sign_key(event, tx).is_none()
         {
             self.confirm_key(event);
         }
@@ -240,18 +248,31 @@ impl Desk {
         ) else {
             return false;
         };
-        self.send_input(|control, terminal| match &typed {
+        self.send_typed(&typed);
+        true
+    }
+
+    /// Send what a keyboard typed, drawn ahead of a remote server's echo.
+    pub(super) fn send_typed(&mut self, typed: &Typed) {
+        self.send_input(echo::guess(typed), |control, terminal| match typed {
             Typed::Text(text) => control.send_text(terminal, text),
             Typed::Key(atom) => control.send_key(terminal, atom.clone()),
         });
-        true
     }
 
     /// Send typed input to the focused terminal, whole or not at all: it
     /// returns to the live tail first and clears a stale highlight, as
     /// Ghostty does. Input the connection can't take now is said, not dropped
     /// quietly. With `sync-panes` on, the tab's other terminals get it too.
-    pub(super) fn send_input(&mut self, send: impl Fn(&mut ControlPlane, &ResourceId) -> bool) {
+    ///
+    /// `guess` is what the keys should put on screen. It is drawn at once
+    /// on a terminal whose echo crosses a network (`[experimental]
+    /// predictive-echo`), and the server's echo confirms or replaces it.
+    pub(super) fn send_input(
+        &mut self,
+        guess: Option<&str>,
+        send: impl Fn(&mut ControlPlane, &ResourceId) -> bool,
+    ) {
         self.stop_coast();
         self.leave_copy_mode(false);
         let (Some(client), Some((terminal, Some(view)))) =
@@ -260,19 +281,27 @@ impl Desk {
             return;
         };
         let terminal = terminal.clone();
+        // Only this computer's server echoes inside a frame; anything else
+        // is a round trip away.
+        let local =
+            self.machines.current.is_none() && self.native.is_none() && terminal.host().is_none();
+        let guess = guess.filter(|_| self.predictive_echo.unwrap_or(!local));
         let others = self.sync_others(&terminal);
         let frame = client.acquire_view(view);
         let behind = frame.as_ref().is_some_and(|f| !f.scrollbar.at_tail());
         let sent = client.with_control(|control| {
             if !control.input_ready(&terminal) {
-                control.trace_input(false);
+                client.trace_input(false);
                 return false;
             }
             if behind {
                 let _ = control.scroll_view(view, Scroll::Bottom);
             }
             let sent = send(control, &terminal);
-            control.trace_input(sent);
+            client.trace_input(sent);
+            if let Some(text) = guess.filter(|_| sent) {
+                let _ = control.predict_view_text(view, text);
+            }
             for other in &others {
                 if control.input_ready(other) {
                     send(control, other);
@@ -285,9 +314,7 @@ impl Desk {
             return self.say(NoticeKind::Error, INPUT_PAUSED);
         }
         phux_perf::echo_hop::record("send");
-        // Only this computer's server echoes inside the wait; a remote
-        // one would stall every key for nothing.
-        let local = self.machines.current.is_none() && self.native.is_none();
+        // A remote server would stall every key for nothing.
         if let Some(before) = frame.as_ref().filter(|_| local) {
             echo::await_echo(&client, view, before);
         }
@@ -332,7 +359,9 @@ impl Desk {
             rune::Ime::Commit(text) => {
                 self.connection.preedit = None;
                 self.restart_blink();
-                self.send_input(|control, terminal| control.send_text(terminal, text));
+                self.send_input(Some(text), |control, terminal| {
+                    control.send_text(terminal, text)
+                });
             }
             // Select reconverts editable text, not server-owned terminal
             // output. Enabled/Disabled aren't terminal input either.
@@ -367,8 +396,14 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Mirror(source, target)) => self.start_mirror(source, &target),
             Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
-            // Answered through `confirm_pending_tx`, which can reach the clipboard.
-            Some(Pending::ClipboardRead(..) | Pending::ClipboardWrite(..)) => {}
+            // Answered through `confirm_pending_tx`, which can reach the
+            // clipboard and the browser.
+            Some(
+                Pending::ClipboardRead(..)
+                | Pending::ClipboardWrite(..)
+                | Pending::OpenUrl(_)
+                | Pending::SshSign(_),
+            ) => {}
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
                 let terminals = terminals
@@ -389,7 +424,9 @@ impl Desk {
     }
 
     pub fn cancel_pending(&mut self) {
+        self.decline_open_url();
         self.pending = None;
+        self.cancel_raw_relaunch();
     }
 
     /// To the terminal it was meant for, wherever the keyboard went since.
@@ -422,16 +459,17 @@ impl Desk {
         let Some(client) = self.connection.client.clone() else {
             return Err(OFFLINE);
         };
-        if !client.input_ready(terminal) {
-            return Err(OFFLINE);
+        use phux_client_core::input_replay::InputSubmission;
+        match client.apply_user_paste(terminal, text) {
+            InputSubmission::NotQueued => return Err(OFFLINE),
+            InputSubmission::Refused { .. } => {
+                return Err("Paste refused; nothing was written.");
+            }
+            InputSubmission::QueuedRaw => {}
+            InputSubmission::AwaitingReceipt { delivery_id } => {
+                self.connection.pastes.insert(delivery_id);
+            }
         }
-        // The server brackets it per DEC 2004 and classifies it. A paste too
-        // large for acknowledged input goes as one atomic event, unreceipted.
-        // A refusal's receipt is left untracked: the caller says it instead.
-        let receipt = client.with_control(|control| control.apply_user_paste(terminal, text));
-        client.wake();
-        let receipt = receipt.map_err(|_| "Paste refused; nothing was written.")?;
-        self.connection.pastes.extend(receipt);
         self.reclaim_fits();
         Ok(())
     }

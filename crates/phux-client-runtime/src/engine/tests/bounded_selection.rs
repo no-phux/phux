@@ -41,7 +41,8 @@ fn bounded_copy_matches_legacy_utf8_wrap_trim_and_rectangle_semantics() {
         &terminal,
         "é界e\u{301} -- wrapped text past column twenty\r\nnext  ".as_bytes(),
     );
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     assert_eq!(
         owner.selection_text_view_bounded(view, 10).unwrap(),
         BoundedSelectionText::Unavailable
@@ -102,8 +103,9 @@ fn several_megabytes_are_refused_before_formatting_and_sibling_stays_intact() {
         .repeat(30_000)
         .into_bytes();
     apply_ok(&owner, output(&terminal, 1, &bytes));
-    let huge = owner.create_view(&terminal).unwrap();
-    let sibling = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let huge = owner.create_view(&source).unwrap();
+    let sibling = owner.create_view(&source).unwrap();
     let bar = publication.acquire_view(huge).unwrap().scrollbar;
     assert!(
         bar.total > 29_000,

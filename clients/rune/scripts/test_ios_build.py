@@ -53,20 +53,71 @@ class BuildTests(unittest.TestCase):
 
     def test_plist_deployment_and_bundle_contract(self):
         for simulator, platform in ((True, "iPhoneSimulator"), (False, "iPhoneOS")):
-            info = build.bundle_plist("1.2.3-beta", simulator, ["Font.ttf"])
+            info = build.bundle_plist(build.preview_identity("1.2.3-beta"), simulator, ["Font.ttf"])
             self.assertEqual(info["CFBundleIdentifier"], qualify.BUNDLE_ID)
             self.assertEqual(info["MinimumOSVersion"], "26.0")
             self.assertEqual(info["CFBundleVersion"], "1.2.3")
             self.assertEqual(info["CFBundleSupportedPlatforms"], [platform])
             self.assertEqual(info["CFBundleURLTypes"][0]["CFBundleURLSchemes"], ["phux-rune"])
             self.assertIn("NSCameraUsageDescription", info)
+            self.assertIs(info["ITSAppUsesNonExemptEncryption"], False)
             self.assertIn("NSLocalNetworkUsageDescription", info)
             self.assertEqual(info["UILaunchScreen"], {"UIColorName": "LaunchGround"})
             self.assertEqual(info["UIDeviceFamily"], [1])  # A portrait phone form only.
             self.assertIs(info["CADisableMinimumFrameDurationOnPhone"], True)
             self.assertEqual(plistlib.loads(plistlib.dumps(info)), info)
         icons = {"CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconName": "AppIcon"}}}
-        self.assertEqual(build.bundle_plist("1.0.0", False, [], icons)["CFBundleIcons"], icons["CFBundleIcons"])
+        self.assertEqual(build.bundle_plist(build.preview_identity("1.0.0"), False, [], icons)["CFBundleIcons"], icons["CFBundleIcons"])
+
+    def test_distributor_identity_replaces_the_preview_identity(self):
+        identity = {"bundle_id": "dev.phux.mobile", "display_name": "phux",
+                    "url_schemes": ["phux", "phux-rune"], "version": "0.5.0",
+                    "build_number": "812"}
+        info = build.bundle_plist(identity, False, [])
+        self.assertEqual(info["CFBundleIdentifier"], "dev.phux.mobile")
+        self.assertEqual((info["CFBundleName"], info["CFBundleDisplayName"]), ("phux", "phux"))
+        self.assertEqual((info["CFBundleShortVersionString"], info["CFBundleVersion"]), ("0.5.0", "812"))
+        self.assertEqual(info["CFBundleURLTypes"],
+                         [{"CFBundleURLName": "dev.phux.mobile.pairing",
+                           "CFBundleURLSchemes": ["phux", "phux-rune"]}])
+        with tempfile.TemporaryDirectory() as temporary:
+            entitlements = plistlib.loads(
+                build.simulator_entitlements(Path(temporary), "dev.phux.mobile").read_bytes())
+        self.assertEqual(entitlements["application-identifier"], "PHUXSIMDEV.dev.phux.mobile")
+
+    def test_widgets_need_an_app_group_both_bundles_name(self):
+        plain = build.bundle_plist(build.preview_identity("1.0.0"), False, [])
+        self.assertNotIn("NSSupportsLiveActivities", plain)
+        self.assertNotIn("PhuxAppGroup", plain)
+        identity = {**build.preview_identity("1.0.0"), "bundle_id": "dev.phux.mobile",
+                    "app_group": "group.dev.phux.mobile"}
+        info = build.bundle_plist(identity, False, [])
+        self.assertIs(info["NSSupportsLiveActivities"], True)
+        widgets = load("widgets")
+        extension = widgets.extension_plist(identity, False, build.MIN_IOS)
+        self.assertEqual(extension["PhuxAppGroup"], info["PhuxAppGroup"])
+        # The store refuses an extension outside its app's identifier or version.
+        self.assertEqual(extension["CFBundleIdentifier"], "dev.phux.mobile.agentstatus")
+        for key in ("CFBundleShortVersionString", "CFBundleVersion", "MinimumOSVersion"):
+            self.assertEqual(extension[key], info[key])
+        with tempfile.TemporaryDirectory() as temporary:
+            entitlements = plistlib.loads(build.simulator_entitlements(
+                Path(temporary), "dev.phux.mobile.agentstatus", "group.dev.phux.mobile").read_bytes())
+        self.assertEqual(entitlements["com.apple.security.application-groups"], ["group.dev.phux.mobile"])
+        self.assertEqual(build.app_group("group.dev.phux.mobile"), "group.dev.phux.mobile")
+        for bad in ("dev.phux.mobile", "group.", "group"):
+            with self.assertRaises(build.argparse.ArgumentTypeError):
+                build.app_group(bad)
+
+    def test_identity_arguments_reject_malformed_values(self):
+        for parse, value in ((build.bundle_id, "nodots"), (build.bundle_id, "a..b"),
+                             (build.url_scheme, "Phux"), (build.url_scheme, "1phux"),
+                             (build.marketing_version, "v1"), (build.build_number, "1-beta"),
+                             (build.display_name, "a/b"), (build.display_name, "")):
+            with self.subTest(value=value), self.assertRaises(build.argparse.ArgumentTypeError):
+                parse(value)
+        self.assertEqual(build.build_number("812"), "812")
+        self.assertEqual(build.marketing_version("0.5.0-rc.1"), "0.5.0-rc.1")
 
     def test_build_commands_real_staticlib_and_swift_link(self):
         with tempfile.TemporaryDirectory(prefix="rune path ") as temporary:

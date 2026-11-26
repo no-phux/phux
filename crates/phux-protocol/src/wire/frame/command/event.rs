@@ -356,14 +356,25 @@ pub enum AgentEvent {
     },
     /// One ssh-agent request from a pane on this server, sent only to the
     /// connection that offered its agent (`AGENT_OFFER`), which answers
-    /// with `AGENT_REPLY`. Unjournaled and server-scoped: no stamp, no
-    /// resource.
+    /// with `AGENT_REPLY`. Unjournaled: no stamp. The envelope names the
+    /// pane the request seems to come from, a hint only: `None` when the
+    /// server cannot tell, and from an older one.
     SshAgentRequest {
         /// Names the request in the reply.
         id: u64,
         /// The ssh-agent request, without its length prefix: always
         /// `SSH_AGENTC_REQUEST_IDENTITIES` or `SSH_AGENTC_SIGN_REQUEST`.
         message: Vec<u8>,
+    },
+    /// The envelope's Terminal asks to open a link on the receiving client's
+    /// machine, sent only to the attached connection that last typed into it
+    /// and offered `OPEN_URL` at `HELLO`, which answers with
+    /// `OPEN_URL_REPLY`. Unjournaled: no stamp.
+    OpenUrl {
+        /// Names the request in the reply.
+        id: u64,
+        /// The link as the server normalized it. The client checks it again.
+        url: String,
     },
     /// An event tag this build does not know, body kept verbatim. Produced
     /// only by the decoder.

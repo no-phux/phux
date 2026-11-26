@@ -1,5 +1,6 @@
 use phux_protocol::ids::KEY_MIN_PREFIX;
 
+use super::restore_report::restore_lines;
 use super::*;
 
 /// A key prints as its shortest prefix no other listed key shares, at
@@ -60,4 +61,29 @@ fn restore_summarizes_and_names_each_refusal() {
     let lines = restore_lines(&KeyNames::default(), &results, None, true);
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(lines[1].ends_with("relaunched"), "{lines:?}");
+}
+
+/// A pane no current trusted template admits names the exact review command;
+/// any other refusal does not invent one.
+#[test]
+fn restore_names_the_review_for_an_untrusted_recipe() {
+    use phux_protocol::wire::frame::Refusal;
+    let key = ResourceKey::new([4; 16]).expect("non-zero");
+    let untrusted = OrgError::Refused(Refusal::InvalidArgument {
+        field: "archived_recipe".into(),
+        reason: "no current trusted host template admits this recipe".into(),
+    });
+    let names = KeyNames::new([*key.as_bytes()]);
+    let shown = names.display(*key.as_bytes());
+    let lines = restore_lines(&names, &[(key, Err(untrusted))], None, false);
+    assert_eq!(lines[0], "relaunched 0 of 1 pane");
+    assert_eq!(
+        lines[2],
+        format!("  {shown}  review and approve it: phux relaunch {shown} --approve-raw")
+    );
+    let other = OrgError::Refused(Refusal::ExecutionUncertain);
+    assert_eq!(
+        restore_lines(&names, &[(key, Err(other))], None, false).len(),
+        2
+    );
 }

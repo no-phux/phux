@@ -23,6 +23,9 @@ mod design;
 // built on it.
 mod engine;
 
+// Exact local-owner archived-recipe review; separate from remote transports.
+mod archived_relaunch;
+
 // The remote bridge: one `RemoteClient` object over a runtime session.
 mod wire;
 

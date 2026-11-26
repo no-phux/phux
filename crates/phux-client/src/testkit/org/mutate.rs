@@ -18,12 +18,19 @@ impl OrgFixture {
             CommandResult::OkWith(CommandValue::Committed(Box::new(committed)))
         };
         match command {
+            Command::SessionEnsure {
+                operation,
+                name,
+                lifetime,
+                launch,
+                attrs,
+            } => self.ensure_session(*operation, name, *lifetime, launch.as_deref(), attrs),
             Command::SessionCreate {
                 operation,
                 name,
                 lifetime,
                 launch,
-                ..
+                attrs,
             } => {
                 if self.sessions.iter().any(|s| s.name == *name) {
                     return Err(Refusal::NameTaken);
@@ -35,6 +42,9 @@ impl OrgFixture {
                     });
                 }
                 let session = self.session(name, *lifetime);
+                if let Some(record) = self.session_mut(&session) {
+                    record.attrs.clone_from(attrs);
+                }
                 let revision = self
                     .session_ref(&session)
                     .map(|record| record.revision)

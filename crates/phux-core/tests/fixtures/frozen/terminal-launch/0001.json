@@ -1,0 +1,40 @@
+{
+  "argv": [
+    "/bin/sh",
+    "-l"
+  ],
+  "cwd": "/home/u/proj",
+  "env": [
+    [
+      "LANG",
+      "C"
+    ]
+  ],
+  "restore": [
+    1,
+    2,
+    3
+  ],
+  "resume": {
+    "app": "nvim",
+    "token": "session-1"
+  },
+  "notify": "off",
+  "last_cwd": "/home/u/proj",
+  "pane_id": 7,
+  "parent": 3,
+  "program_resume": {
+    "argv": [
+      "nvim",
+      "-S",
+      "/home/u/state/session.vim"
+    ],
+    "cwd": "/home/u/proj",
+    "pid": 74877,
+    "started": 99,
+    "uid": 1000,
+    "time": 1795543200,
+    "tried": true,
+    "trusted": true
+  }
+}

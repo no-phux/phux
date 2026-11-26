@@ -533,7 +533,8 @@ fn live_search_preserves_stale_and_wrong_owner_errors() {
         owner.pin_viewport(&sibling, fresh[0].start),
         Err(EngineError::Engine(_))
     ));
-    let view = owner.create_view(&terminal).unwrap();
+    let source = owner.view_source(&terminal).unwrap();
+    let view = owner.create_view(&source).unwrap();
     let in_view = owner.search_view(view, "needle".into(), true).unwrap();
     assert!(matches!(
         owner.pin_viewport(&terminal, in_view[0].start),

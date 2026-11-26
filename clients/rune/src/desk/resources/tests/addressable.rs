@@ -49,6 +49,24 @@ fn a_local_document_has_a_sidebar_row_a_palette_row_a_cycle_stop_and_a_title() {
 }
 
 #[test]
+fn sidebar_focus_resolves_a_document_through_its_drawn_group_or_own_row() {
+    let records = [
+        record(1, ResourceKind::Terminal),
+        record(2, ResourceKind::AccessibilityTree),
+    ];
+    let (_client, mut rt) = fixture(&records, &doc(split(1, 2)));
+    let key = SessionKey::new([1; 16]);
+    let focus = |d: &Desk| crate::ui::sidebar_focus_target(d, &id(2));
+    assert_eq!(focus(&rt.state), Some((id(1), key)));
+    rt.update(|d, _| d.connection.tabs.by_session.clear());
+    assert_eq!(focus(&rt.state), Some((id(2), key)));
+    rt.update(|d, _| {
+        d.connection.resources.entries.remove(&id(2));
+    });
+    assert_eq!(focus(&rt.state), None, "an unmirrored document has no row");
+}
+
+#[test]
 fn a_document_in_no_known_session_is_named_by_its_record_or_left_out() {
     let records = [
         record(1, ResourceKind::Terminal),

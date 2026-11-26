@@ -106,7 +106,7 @@ or `phux ask`. Every watcher of the pane gets:
 
 While a title question is open, the row's `title` is the `phux-ask` line,
 so a client can read it without waiting. A `phux ask` question sets no
-title and `phux agent answer` cannot answer it.
+title; read it with `phux agent questions @1`. Answer either with:
 
 ```sh
 phux agent answer --id deploy-7 --choice 1 --json @1

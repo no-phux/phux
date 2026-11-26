@@ -70,6 +70,41 @@ pub(super) fn session_create(
     ))
 }
 
+/// The lookup and optional creation share the journal transaction and receipt.
+pub(super) fn session_ensure(
+    tx: &mut Tx<'_>,
+    fresh: &mut dyn FreshKeys,
+    name: &str,
+    lifetime: SessionLifetime,
+    attrs: &Attrs,
+    resource: Option<&NewResource>,
+) -> Result<Out, Refusal> {
+    check_name("name", name)?;
+    if let Some(session) = tx.org.sessions().find(|session| session.name == name) {
+        return Ok(Out {
+            reply: crate::Reply::Ensured {
+                session: session.key,
+                revision: session.revision,
+                created: false,
+            },
+            undo: None,
+        });
+    }
+    let mut out = session_create(tx, fresh, name, lifetime, attrs, resource)?;
+    let crate::Reply::Ok { created, .. } = out.reply else {
+        unreachable!("session creation returns committed keys");
+    };
+    let Some(session) = created.session else {
+        unreachable!("session creation returns a session");
+    };
+    out.reply = crate::Reply::Ensured {
+        session,
+        revision: Revision::FIRST,
+        created: true,
+    };
+    Ok(out)
+}
+
 /// Last writer wins: a label carries no revision check.
 pub(super) fn session_rename(tx: &mut Tx<'_>, key: SessionKey, name: &str) -> Result<Out, Refusal> {
     let current = tx.session(key).ok_or(Refusal::NotFound)?;

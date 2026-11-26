@@ -175,6 +175,7 @@ pub const fn created(applied: &Applied) -> (Option<SessionKey>, Option<ResourceK
         phux_core::Reply::Ok { created, .. } | phux_core::Reply::Accepted { created } => {
             (created.session, created.resource)
         }
+        phux_core::Reply::Ensured { session, .. } => (Some(session), None),
     }
 }
 

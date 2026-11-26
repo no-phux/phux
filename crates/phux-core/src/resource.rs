@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::program_resume::ProgramResume;
+
 use crate::activation::{Activation, ExitPolicy};
 use crate::actor::Actor;
 use crate::ids::ResourceId;
@@ -127,6 +129,20 @@ pub struct TerminalLaunch {
     /// field; a cold-started server gives it back to the pane on relaunch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u32>,
+    /// The local pane id of the pane it was started from (`phux.parent/v1`).
+    /// Not an organization wire field; reinstalled as that key at every
+    /// activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
+    /// The OSC 7577 program-resume record. Not an organization wire field.
+    /// A relaunch runs it only when it is still valid, trusted, and allowlisted.
+    /// The per-pane token is never stored here.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "program_resume_field"
+    )]
+    pub program_resume: Option<Box<ProgramResume>>,
 }
 
 impl TerminalLaunch {
@@ -189,6 +205,14 @@ impl ResumeToken {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.+,/=-".contains(&b))
     }
+}
+
+fn program_resume_field<'de, D>(deserializer: D) -> Result<Option<Box<ProgramResume>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<ProgramResume>::deserialize(deserializer)?;
+    Ok(value.filter(ProgramResume::is_valid).map(Box::new))
 }
 
 /// How an agent conversation binds to its harness.
@@ -353,7 +377,46 @@ impl ResourceDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResumeToken, TerminalLaunch};
+    use super::{ProgramResume, ResumeToken, TerminalLaunch};
+    use crate::program_resume::escape_command;
+
+    #[test]
+    fn a_program_resume_record_is_rechecked_on_load_and_escaped_for_display() {
+        let good = ProgramResume {
+            argv: vec!["nvim".into(), "-S".into(), "session".into()],
+            cwd: Some("/tmp".into()),
+            pid: 4,
+            started: 9,
+            uid: 1000,
+            time: 10,
+            tried: false,
+            trusted: true,
+        };
+        let launch = TerminalLaunch {
+            program_resume: Some(Box::new(good.clone())),
+            ..TerminalLaunch::default()
+        };
+        let text = serde_json::to_string(&launch).unwrap();
+        let back: TerminalLaunch = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.program_resume.as_deref(), Some(&good));
+        let mut bad = back.program_resume.unwrap();
+        bad.argv[0] = "./run.sh".into();
+        let text = serde_json::to_string(&TerminalLaunch {
+            program_resume: Some(bad),
+            ..TerminalLaunch::default()
+        })
+        .unwrap();
+        let back: TerminalLaunch = serde_json::from_str(&text).unwrap();
+        assert!(
+            back.program_resume.is_none(),
+            "a relative program does not load"
+        );
+        assert_eq!(
+            escape_command(&["nvim".into(), "a b".into(), "\u{202e}x".into()]),
+            "nvim 'a b' \\u{202e}x"
+        );
+        assert!(!escape_command(&["\u{202e}".into()]).contains('\u{202e}'));
+    }
 
     #[test]
     fn resume_tokens_are_bounded_plain_and_never_option_shaped() {

@@ -1,9 +1,11 @@
-//! Shared outbound dialer for phux remote transports.
+//! Shared outbound dialer and pure native route planning.
 //!
-//! Consumers and the federation hub establish QUIC and WebSocket connections
-//! the same way: TLS 1.3 with the server's self-signed leaf pinned by SHA-256
-//! fingerprint (or a loopback skip), plus an ADR-0031 bearer token. This crate
-//! stops at the byte stream; framing stays with the callers. The
+//! Native adapters acquire addresses and credentials; [`QuicDial::plan`],
+//! [`WsTarget::credentials`] and [`CertTrust`] decide route/pin/token trust
+//! without DNS, files, prompts or environment access. Routable endpoints need
+//! pinned TLS, with server authority trust kept inside a relayed QUIC session.
+//! Loopback retains its development exception. This crate stops at the byte
+//! stream; framing stays with callers. The
 //! congestion-tracked QUIC send window ([`window`]) every phux writer shares,
 //! and with `provision` the [`cert`] and [`secret_file`] modules, are
 //! `quictun`'s, re-exported so phux names them in one place. With `relay`,
@@ -31,6 +33,32 @@ pub use quic::QuicDial;
 pub use tls::{AuthorityChange, CertTrust, HeldIdentity, TlsClientIdentity};
 pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
+
+/// A native route or credential that cannot safely be dialed.
+///
+/// Contains no token bytes. Platform adapters supply their own diagnostics and
+/// remedies; planning never reads credentials, resolves names, or prompts.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PlanRefusal {
+    /// A routable endpoint has no usable certificate pin.
+    #[error("a routable endpoint needs a certificate pin")]
+    Unpinned,
+    /// A routable WebSocket would expose its session as plaintext.
+    #[error("a routable WebSocket needs wss://")]
+    Plaintext,
+    /// A routable WebSocket has no bearer token.
+    #[error("a routable WebSocket needs a pairing token")]
+    NoToken,
+    /// A bearer token is not hexadecimal.
+    #[error("the pairing token is not valid hex")]
+    BadToken,
+    /// A relay would terminate a session without end-to-end server trust.
+    #[error("a relay route needs the server's certificate authority pin")]
+    UnpinnedRelay,
+    /// Native WebSocket has no end-to-end relay session.
+    #[error("a relay route needs a quic:// endpoint")]
+    RelayRequiresQuic,
+}
 
 /// Errors surfaced while establishing a remote transport.
 #[derive(Debug, thiserror::Error)]

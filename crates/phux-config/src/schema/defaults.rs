@@ -57,9 +57,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "shell-integration")]
     pub shell_integration: bool,
 
-    /// Give panes a stand-in `BROWSER` that prints a link and copies it to
-    /// the attached person's clipboard, for a machine with no screen. Read
-    /// at server start.
+    /// Give panes a stand-in `BROWSER`, and an `xdg-open` where there is
+    /// none, for a machine with no screen: it asks the person typing in the
+    /// pane to open the link on their machine, else prints it and copies it
+    /// to their clipboard (`docs/ssh.md#opening-links`). Read at server
+    /// start.
     #[serde(rename = "browser-shim")]
     pub browser_shim: bool,
 
@@ -141,6 +143,11 @@ pub struct DefaultsCfg {
     #[serde(rename = "window-size")]
     pub window_size: WindowSize,
 
+    /// Whether `phux attach` and a bare `phux` lock their view size, as
+    /// `--lock-size` does: other views no longer resize this client's panes.
+    #[serde(rename = "lock-size")]
+    pub lock_size: bool,
+
     /// Whether the server holds an idle-sleep inhibitor (`caffeinate`,
     /// `systemd-inhibit`) so a working agent is not put to sleep.
     #[serde(rename = "keep-awake")]
@@ -175,6 +182,7 @@ impl Default for DefaultsCfg {
             session_name_template: "${cwd-basename}".to_owned(),
             attach_session: None,
             window_size: WindowSize::default(),
+            lock_size: false,
             keep_awake: KeepAwake::default(),
         }
     }
@@ -311,4 +319,17 @@ pub enum KeepAwake {
     WhileAgentsWork,
     /// For as long as the server runs.
     Always,
+}
+
+impl KeepAwake {
+    /// Global metadata key a client writes to switch the running server's
+    /// mode until it restarts; the value is the mode as a JSON string
+    /// (`"always"`). Unset, the server follows `defaults.keep-awake`.
+    pub const MODE_KEY: &str = "phux.keep-awake.mode/v1";
+
+    /// Global metadata key of the server's keep-awake state, published while
+    /// the mode is not `off`: `{"state": "on" | "idle" | "unavailable",
+    /// "working": N, "mode": "while-agents-work" | "always"}`;
+    /// `unavailable` means the inhibitor is wanted but could not be held.
+    pub const STATUS_KEY: &str = "phux.keep-awake/v1";
 }

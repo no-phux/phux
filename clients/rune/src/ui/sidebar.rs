@@ -1,14 +1,15 @@
 //! The sidebar: one list of the work on the server. Each session's rows are
-//! its tabs, then any terminal no tab holds: one line each, led by a tile
+//! its tabs, then any resource no tab holds: compact rows, led by an identity
 //! for who works there and how it goes, named after the task. What needs
-//! you is counted per session. With the sidebar docked these rows are the
+//! you is counted per session. Local rows are always visible, with no disclosure
+//! gutter; only real tab membership layers an identity. With the sidebar docked these rows are the
 //! tabs, and the title bar has none (`tab-bar = "auto"`). Sessions
-//! of one project sit together under its name, a linked worktree marked
-//! `└`. They sit under the machine this window is on; the other machines
+//! of one project sit together, without repeating its matching session name, a linked worktree marked
+//! by a branch glyph. They sit under this window's machine; other machines
 //! follow, folded, each opening to a glance at its sessions.
 //!
 //! Rows are phux's own (OWN), drawn only from the window's tokens:
-//! the kit's `SidebarRow` has no disclosure on a draggable row, no status
+//! the kit's `SidebarRow` has no inline members on a draggable row, no status
 //! words and no variable pitch. They sit in one source list, as the kit's
 //! `Sidebar` keeps them: a single Tab stop whose arrows move the selection.
 
@@ -17,11 +18,11 @@ use std::collections::HashMap;
 
 use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ids::SessionKey;
-use rune::{Color, El, Key, col, memo, row, text};
+use rune::{Color, El, Key, col, el, memo, row, text};
 
 use super::controls::return_to_terminal_on_click;
 use super::rows::State as Forced;
-use super::{Paint, Tokens, icons, pressable, reveal, tile};
+use super::{Paint, Tokens, reveal, tile};
 use crate::addressable::Addressable;
 use crate::desk::{Desk, Grab};
 use crate::host_color;
@@ -29,11 +30,12 @@ use crate::keys::Shortcut;
 
 mod actions;
 mod items;
+pub(crate) use items::focus_target;
 use items::{Item, given_name, items};
 mod row;
-use row::{Row, pane_row};
+use row::{Member, Row, pane_row};
 mod chrome;
-use chrome::{foot, inbox_button, search};
+use chrome::{awake_button, foot, inbox_button, search};
 mod drag;
 mod hosts;
 use hosts::other_machines;
@@ -55,7 +57,6 @@ struct Header<'a> {
     current: bool,
     counts: Counts,
     count: usize,
-    collapsed: bool,
     /// A satellite session's machine, and its colour so a recolour redraws.
     host: Option<(&'a str, u32)>,
     /// The session's `[[sessions]]` colour.
@@ -66,47 +67,7 @@ struct Header<'a> {
     target: bool,
 }
 
-/// The header's disclosure: pointer only. The list's arrows press what they
-/// reach, so a Tab stop here would fold the session as focus passed;
-/// Left and Right on the header fold it instead.
-fn disclosure(session: &Header, key: SessionKey, t: &Tokens) -> El {
-    let collapsed = session.collapsed;
-    pressable(format!("disclose-session-{}", session.id), t)
-        .size(t.icon.grid, t.space.s6)
-        .center()
-        .radius(t.radius.xs)
-        .focusable(false)
-        .expanded(!collapsed)
-        .label(format!(
-            "{} session {}",
-            if collapsed { "Expand" } else { "Collapse" },
-            session.name
-        ))
-        .help(if collapsed {
-            "Show resources"
-        } else {
-            "Hide resources"
-        })
-        .on_press(move |d: &mut Desk| {
-            if !d.sidebar_collapsed.remove(&key) {
-                d.sidebar_collapsed.insert(key);
-            }
-        })
-        .child(
-            rune::icon(
-                if collapsed {
-                    &icons::CHEVRON_RIGHT
-                } else {
-                    &icons::CHEVRON
-                },
-                t.icon.size.sm,
-            )
-            .color(t.roles.text.dim.paint())
-            .a11y_hidden(),
-        )
-}
-
-fn session_header(session: &Header, t: &Tokens) -> El {
+fn session_heading(session: &Header, t: &Tokens) -> El {
     let key = session.key;
     let label = session.name.to_owned();
     let name = label.clone();
@@ -118,7 +79,6 @@ fn session_header(session: &Header, t: &Tokens) -> El {
     };
     let heading = row()
         .key(format!("select-session-{}", session.id))
-        .grow(1.0)
         .min_w(0.0)
         .h(t.space.row_h)
         .gap(t.space.icon_gap)
@@ -134,14 +94,12 @@ fn session_header(session: &Header, t: &Tokens) -> El {
                 .color(ink.paint())
                 .truncate(),
         );
-    let heading = match key {
+    match key {
         Some(key) => {
-            let collapsed = session.collapsed;
             t.kit
                 .interactive(heading)
                 .focusable(true)
                 .focus_selected(session.current)
-                .expanded(!collapsed)
                 .cursor(rune::Cursor::Grab)
                 .label(format!("Open session {label}"))
                 .help("Drag to reorder session")
@@ -149,41 +107,30 @@ fn session_header(session: &Header, t: &Tokens) -> El {
                     d.show_session(&name);
                     return_to_terminal_on_click(tx);
                 })
-                .on_key(move |d: &mut Desk, event, _| {
-                    // A tree's Left folds and Right unfolds.
-                    let fold = match event.key {
-                        Key::Left => true,
-                        Key::Right => false,
-                        _ => return false,
-                    };
-                    if fold == collapsed {
-                        return false;
-                    }
-                    if fold {
-                        d.sidebar_collapsed.insert(key);
-                    } else {
-                        d.sidebar_collapsed.remove(&key);
-                    }
-                    true
-                })
+                // Local resources are always visible. Consume horizontal keys
+                // here rather than sending them to a terminal behind the list.
+                .on_key(|_: &mut Desk, event, _| matches!(event.key, Key::Left | Key::Right))
                 .on_drag(move |d: &mut Desk, drag, _| d.drag_reorder(Grab::Session(key), drag))
                 .on_double_press(move |d: &mut Desk| d.rename_session(key, &label))
         }
         None => heading.label(session.name.to_owned()),
-    };
+    }
+}
+
+fn session_header(session: &Header, t: &Tokens) -> El {
+    let key = session.key;
     let header = row()
         .key(format!("session-{}", session.id))
         .w_full()
-        .h(t.space.row_h)
-        .px(t.space.icon_gap)
-        .gap(t.space.s1)
+        .min_h(t.space.pointer_min)
+        .mt(t.space.s1)
+        .px(t.space.s1)
+        .gap(t.space.icon_gap)
         .radius(t.radius.md)
         .items_center()
         .hover_group()
-        .children(key.map(|key| disclosure(session, key, t)))
-        .child(heading)
-        // Open, its rows are the count; folded, the count stands for them.
-        .children(session.collapsed.then(|| {
+        .child(session_heading(session, t).grow(1.0))
+        .children((session.count == 0).then(|| {
             text(session.count.to_string())
                 .font(t.ty.caption)
                 .color(t.roles.text.faint.paint())
@@ -231,26 +178,104 @@ fn source_list(t: &Tokens) -> El {
         .px(t.space.s2)
 }
 
+/// A tab's stable lead supplies identity; its remembered target supplies the
+/// press. Keeping that distinction here also keeps both out of the renderer.
+fn item_row(desk: &Desk, item: &Item, name: &str, twin: bool, header: &Header, t: &Tokens) -> El {
+    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
+    let lead = item.lead(|id| desk.activities.agent_name(id).is_some());
+    let id = &lead.id;
+    let presentation = lead.presentation(desk);
+    let detail = (!presentation.detail.is_empty() && presentation.detail != header.name)
+        .then_some(presentation.detail);
+    let target = item
+        .tab
+        .and_then(|tab| desk.tab_focus(tab))
+        .filter(|id| item.members.iter().any(|m| &m.id == *id))
+        .unwrap_or(id);
+    let here = desk.machines.label();
+    let row = Row {
+        id,
+        target,
+        session: &lead.session,
+        name: name.to_owned(),
+        place: twin.then(|| id.to_string()).or(detail),
+        key: header.key,
+        agent: desk.activities.agent_name(id),
+        identity: presentation.identity,
+        mark: tile::loudest(item.members.iter().map(|m| desk.activities.mark(&m.id)))
+            .unwrap_or_else(|| desk.activities.mark(id)),
+        panes: item.members.len(),
+        selected: item.members.iter().any(|m| shown == Some(&m.id)),
+        members: inline_members(desk, item),
+        host: (here, host_color::entry(here).0),
+        color: header.color,
+        state: Forced::Rest,
+    };
+    memo(format!("pane-{id}"), (&row, header, t.version), || {
+        if header.count == 1 && row.panes == 1 {
+            row::single_row(&row, header, t)
+        } else {
+            pane_row(&row, t)
+        }
+    })
+}
+
+fn inline_members(desk: &Desk, item: &Item) -> Vec<Member> {
+    if item.members.len() < 2 {
+        return Vec::new();
+    }
+    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
+    let mut members: Vec<_> = item
+        .members
+        .iter()
+        .map(|m| {
+            let p = m.presentation(desk);
+            Member {
+                id: m.id.clone(),
+                name: p.name,
+                caption: p.caption,
+                selected: shown == Some(&m.id),
+                mark: desk.activities.mark(&m.id),
+            }
+        })
+        .collect();
+    let mut names = HashMap::<String, usize>::new();
+    for member in &members {
+        *names.entry(member.caption.clone()).or_default() += 1;
+    }
+    for member in &mut members {
+        if names[&member.caption] > 1 {
+            member.caption = format!("{} {}", member.caption, member.id);
+        }
+    }
+    members
+}
+
 /// Every session's header and rows (its terminals, then its documents),
 /// rebuilt only where their inputs moved: the view runs for each frame of
-/// terminal output. A project's sessions follow its header, indented.
+/// terminal output. A project's sessions stay together without a second gutter.
 fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
-    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
     let current = desk.selected_session_name();
     // Everything a row reads from the tokens: a theme swapped under the
     // same id (Omarchy) or a contrast change still repaints.
     let version = t.version;
     let all = desk.addressable();
-    let here = desk.machines.label();
-    let host = (here, host_color::entry(here).0);
+    // One pass, not one scan of every resource per session.
+    let mut by_session: HashMap<u32, Vec<&Addressable>> = HashMap::new();
+    for resource in &all {
+        by_session
+            .entry(resource.session_id)
+            .or_default()
+            .push(resource);
+    }
     let counts_in = |id: u32| counts.get(&id).copied().unwrap_or_default();
     let dropping = desk.connection.reorder.target();
     let session_rows = |session: &SessionDescriptor, branch: bool| {
         let target = dropping.is_some() && dropping == session.key.map(Grab::Session);
         let mut out = Vec::new();
-        let rows: Vec<_> = all.iter().filter(|r| r.session_id == session.id).collect();
+        let rows = by_session.get(&session.id).map_or(&[][..], Vec::as_slice);
         let tabs = desk.connection.tabs.by_session.get(&session.id);
-        let items = items(tabs.map_or(&[][..], Vec::as_slice), &rows);
+        let items = items(tabs.map_or(&[][..], Vec::as_slice), rows);
         let color = crate::session_color::of(&session.name);
         let header = Header {
             id: session.id,
@@ -259,56 +284,36 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
             current: current.as_deref() == Some(session.name.as_str()),
             counts: counts_in(session.id),
             count: items.len(),
-            collapsed: session
-                .key
-                .is_some_and(|key| desk.sidebar_collapsed.contains(&key)),
             host: None,
             color,
             branch,
             target,
         };
+        let titled: Vec<(&Item, String)> = items
+            .iter()
+            .map(|item| {
+                let lead = item.lead(|id| desk.activities.agent_name(id).is_some());
+                let named = item.tab.and_then(|tab| given_name(&tab.name));
+                (item, named.unwrap_or_else(|| lead.presentation(desk).name))
+            })
+            .collect();
+        let row_for = |index: usize| {
+            let (item, name) = &titled[index];
+            let twin = titled.iter().filter(|(.., other)| other == name).count() > 1;
+            item_row(desk, item, name, twin, &header, t)
+        };
+        if items.len() == 1 && items[0].members.len() == 1 {
+            out.push(row_for(0));
+            return out;
+        }
         out.push(memo(
             format!("session-{}", session.id),
             (&header, version),
             || session_header(&header, t),
         ));
-        if header.collapsed {
-            return out;
-        }
-        let titled: Vec<(&Item, &Addressable, String)> = items
-            .iter()
-            .map(|item| {
-                let lead = item.lead(|id| desk.activities.agent_name(id).is_some());
-                let named = item.tab.and_then(|tab| given_name(&tab.name));
-                (item, lead, named.unwrap_or_else(|| lead.label.clone()))
-            })
-            .collect();
-        for (item, lead, name) in &titled {
-            let id = &lead.id;
-            let twin = titled.iter().filter(|(.., other)| other == name).count() > 1;
-            let mirror = (!lead.kind.is_terminal()).then(|| lead.mirror.to_owned());
-            let target = item.tab.and_then(|tab| desk.tab_focus(tab)).unwrap_or(id);
-            let row = Row {
-                id,
-                target,
-                session: &lead.session,
-                name: name.clone(),
-                place: twin.then(|| id.to_string()).or(mirror),
-                key: session.key,
-                agent: desk.activities.agent_name(id),
-                kind: desk.activities.agent_kind(id),
-                mark: tile::loudest(item.members.iter().map(|m| desk.activities.mark(&m.id)))
-                    .unwrap_or_else(|| desk.activities.mark(id)),
-                panes: item.members.len(),
-                selected: item.members.iter().any(|m| shown == Some(&m.id)),
-                host,
-                color,
-                state: Forced::Rest,
-            };
-            out.push(memo(format!("pane-{id}"), (&row, version), || {
-                pane_row(&row, t)
-            }));
-        }
+        // Terminal ancestry is not tab membership. No local row waits behind a
+        // disclosure, even if it was formerly hidden by window-only fold state.
+        out.extend((0..items.len()).map(row_for));
         out
     };
     projects::grouped(
@@ -319,6 +324,34 @@ fn session_list(desk: &Desk, counts: &HashMap<u32, Counts>, t: &Tokens) -> El {
         t,
         session_rows,
     )
+}
+
+/// Native controls keep their own band; the machine menu gets a readable row.
+/// Without native leading controls, the original single-row pitch is enough.
+fn header(desk: &Desk, t: &Tokens, inset: f32, leading: f32, waiting: usize) -> El {
+    let native = leading > 0.0;
+    col()
+        .w_full()
+        .children(native.then(|| {
+            el().key("sidebar-native-titlebar")
+                .w_full()
+                .h(inset)
+                .window_drag()
+        }))
+        .child(
+            row()
+                .key("sidebar-titlebar")
+                .w_full()
+                .h(if native { t.space.row_h } else { inset })
+                .px(t.space.s2)
+                .gap(t.space.s1)
+                .items_center()
+                .window_drag()
+                .child(super::machines::switch(desk, t).grow(1.0))
+                .child(search(t))
+                .children(awake_button(desk, t))
+                .child(inbox_button(waiting, t)),
+        )
 }
 
 pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
@@ -342,20 +375,7 @@ pub fn view(desk: &Desk, ink: &Tokens, inset: f32, leading: f32) -> El {
         } else {
             t.roles.layer.sidebar.paint()
         })
-        .child(
-            row()
-                .key("sidebar-titlebar")
-                .w_full()
-                .h(inset)
-                .pl(leading + s.s2)
-                .pr(s.s2)
-                .gap(s.s1)
-                .items_center()
-                .window_drag()
-                .child(super::machines::switch(desk, ink).grow(1.0))
-                .child(search(t))
-                .child(inbox_button(waiting, t)),
-        )
+        .child(header(desk, t, inset, leading, waiting))
         .child(
             drag::region(col()
                 .key("sidebar-scroll")

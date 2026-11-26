@@ -88,10 +88,56 @@ impl ServerState {
         true
     }
 
+    /// Claim (`locked`) or release `client`'s size lock. A claim is stamped
+    /// newer than every earlier one, so the latest claimer holds a Terminal
+    /// two locked views share. False, and nothing changes, for an unattached
+    /// client or a release of no lock.
+    pub fn set_client_size_lock(&mut self, client: ClientId, locked: bool) -> bool {
+        let Some(c) = self.clients.attached.get_mut(&client) else {
+            return false;
+        };
+        if !locked && c.size_lock_seq == 0 {
+            return false;
+        }
+        self.lifecycle.viewport_clock += 1;
+        c.size_lock_seq = if locked {
+            self.lifecycle.viewport_clock
+        } else {
+            0
+        };
+        true
+    }
+
+    /// The view holding `terminal`'s size lock: the newest claim among the
+    /// views of its session that subscribe to it. Only that view's
+    /// `RESIZE_TERMINAL` and viewport size the Terminal while it holds it.
+    #[must_use]
+    pub fn terminal_size_owner(&self, terminal: ResourceId) -> Option<ClientId> {
+        self.terminal_viewport_clients(terminal)
+            .filter(|c| c.size_lock_seq > 0)
+            .max_by_key(|c| c.size_lock_seq)
+            .map(|c| c.id)
+    }
+
+    /// Record the size `client` just set on `terminal` with
+    /// `RESIZE_TERMINAL`, for a later size-lock claim to put back.
+    pub(crate) fn note_explicit_size(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        dims: (u16, u16),
+        cell_px: Option<(u16, u16)>,
+    ) {
+        if let Some(c) = self.clients.attached.get_mut(&client) {
+            c.explicit_sizes.insert(terminal, (dims, cell_px));
+        }
+    }
+
     /// The authoritative `(cols, rows)` for a Terminal from its subscribers'
     /// viewports and the `window-size` policy. `None` under `Manual` or with
     /// no usable viewport; zero dimensions are ignored. `latest` serves the
-    /// `Latest` policy.
+    /// `Latest` policy. A size-locked Terminal takes only its lock holder's
+    /// viewport, and `None` when that view sizes its panes explicitly.
     #[must_use]
     pub fn resolve_terminal_geometry(
         &self,
@@ -100,6 +146,14 @@ impl ServerState {
     ) -> Option<(u16, u16)> {
         use phux_config::WindowSize;
         self.registry().terminal(terminal)?;
+        if self.config.window_size != WindowSize::Manual
+            && let Some(owner) = self.terminal_size_owner(terminal)
+        {
+            return self.clients.attached[&owner]
+                .viewport
+                .filter(|v| v.cols > 0 && v.rows > 0)
+                .map(|v| (v.cols, v.rows));
+        }
         match self.config.window_size {
             WindowSize::Manual => None,
             WindowSize::Latest => latest
@@ -177,7 +231,10 @@ impl ServerState {
             return;
         }
         for terminal in terminals {
-            if !voted && !self.is_stranded_below_usable(terminal) {
+            // A locked Terminal keeps its holder's size.
+            if (!voted && !self.is_stranded_below_usable(terminal))
+                || self.terminal_size_owner(terminal).is_some()
+            {
                 continue;
             }
             let latest = self.latest_terminal_viewport(terminal);

@@ -6,7 +6,7 @@ from unittest.mock import call, patch
 
 import release
 
-from release import STUCK_SECONDS, already_reported, bump, next_version, notes, shippable, stuck_exit, stuck_line
+from release import NEWS_KEPT, STUCK_SECONDS, already_reported, bump, news, next_version, notes, shippable, stuck_exit, stuck_line
 
 SHA = "3bbef2bd820c1c16118c96d0d2e6fa2c216149c6"
 OTHER = "e2f9f3d69e3dd5a45105761c55b23de160dfbef8"
@@ -34,6 +34,14 @@ class ReleaseTest(unittest.TestCase):
     def test_notes_open_with_the_header_preflight_wants(self):
         text = notes("0.1.0-alpha.20", "alpha.19", ["One"])
         self.assertTrue(text.startswith("**Phux Rune 0.1.0-alpha.20**: 1 change since alpha.19."))
+
+    def test_news_puts_the_release_on_top_of_the_bell(self):
+        old = [{"date": "2026-11-01", "title": "Old", "body": "Kept."}] * NEWS_KEPT
+        feed = json.loads(news(json.dumps(old), "0.1.58", "2026-11-26", ["Paint faster (#3010)", "Two"]))
+        self.assertEqual(len(feed), NEWS_KEPT)
+        self.assertEqual(feed[0], {"date": "2026-11-26", "title": "Paint faster", "body": "In Rune 0.1.58."})
+        self.assertEqual(feed[1]["title"], "Two")
+        self.assertEqual(feed[2]["title"], "Old")
 
     def test_bump_rewrites_the_package_and_its_lock_entry_only(self):
         manifest = '[package]\nname = "phux-rune"\nversion = "0.1.0-alpha.19"\n[deps]\nversion = "1"\n'
@@ -166,7 +174,7 @@ class BumpPrTest(unittest.TestCase):
     def test_new_bump_is_created_as_draft_then_armed_without_auto_merge(self):
         with patch.dict(os.environ, RUNE_RELEASE_TAG_ONLY=""):
             with patch("release.open_bump_pr", return_value=None), patch("release.Path") as path:
-                path.return_value.read_text.return_value = "release notes"
+                path.return_value.read_text.return_value = "[]"
                 with patch("release.bump", return_value=("manifest", "lock")), patch("release.sh") as sh:
                     sh.return_value = "fix(rune): paint"
                     self.assertEqual(release.bump_step("0.1.1"), 0)
@@ -187,11 +195,13 @@ class BumpPrTest(unittest.TestCase):
 
     def test_lookup_is_scoped_to_same_repository_open_main_bumps(self):
         own = {**self.pr, "isCrossRepository": False}
-        with patch("release.sh", return_value=json.dumps([own])) as sh:
+        listed = subprocess.CompletedProcess([], 0, json.dumps([own]), "")
+        with patch("release.sh", return_value=listed) as sh:
             self.assertEqual(release.open_bump_pr(), own)
         sh.assert_called_once_with(
             "gh", "pr", "list", "--base", "main", "--head", release.BRANCH, "--state", "open",
             "--json", "number,isDraft,headRefOid,isCrossRepository",
+            check=False,
         )
 
 

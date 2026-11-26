@@ -73,10 +73,8 @@ pub(super) use super::overlay_paint::paint_active_overlay;
 pub(super) use super::session_io::{
     peer_gone, send_attach, send_unless_peer_gone, should_emit_frame_ack,
 };
-pub(super) use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
-pub(super) use super::terminal::{
-    desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
-};
+pub(super) use super::subscriptions::{PeerPresentation, PeerWatch, sync_agent_meta_subscriptions};
+pub(super) use super::terminal::{desired_mouse_capture, sync_hover_tracking, sync_mouse_capture};
 pub(super) use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
     emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px,
@@ -145,29 +143,6 @@ pub(super) enum FrameStep {
     Rebootstrap,
     /// The attach is over; unwind out of the burst.
     Exit(LoopExit),
-}
-
-/// A `sleep_until` future for an armed deadline, or a never-resolving one.
-async fn sleep_until_or_pending(deadline: Option<tokio::time::Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending::<()>().await,
-    }
-}
-
-/// The relative-delay twin of [`sleep_until_or_pending`].
-pub(super) fn sleep_for_or_pending(interval: Option<Duration>) -> impl Future<Output = ()> {
-    // Anchor relative delays when armed, not when select first polls them.
-    let deadline = interval.map(|interval| tokio::time::Instant::now() + interval);
-    sleep_until_or_pending(deadline)
-}
-
-/// Restore the terminal explicitly (Drop wouldn't fire on `exit()`), then
-/// exit with the shell-conventional code for the signal.
-#[allow(clippy::exit, reason = "signal-driven graceful exit; Drop won't run")]
-pub(super) fn exit_on_signal(code: i32) -> ! {
-    terminal_reset_on_signal();
-    std::process::exit(code);
 }
 
 /// Drain every frame already queued so an output burst applies all its writes
@@ -298,6 +273,10 @@ pub(super) struct SessionLoop {
     next_request_id: u32,
     /// Kills in flight for spawned satellite panes whose attach was refused.
     orphan_kills: super::orphans::OrphanKills,
+    /// Whether the server advertised `FORWARD_AGENT`.
+    agent_supported: bool,
+    /// This connection's forwarded ssh-agent; outlives session switches.
+    agent_link: Option<std::sync::Arc<crate::attach::agent_forward::AgentLink>>,
     /// Per-identity review status; survives session switches.
     review: crate::attach::review::ReviewIndex,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
@@ -355,6 +334,8 @@ pub(super) struct SessionLoop {
     rename_notice: Option<String>,
     /// The peer-session caches the roster and window picker read.
     peers: PeerWatch,
+    /// Collapse/order preferences and deferred chrome invalidation.
+    peer_presentation: PeerPresentation,
     /// A one-step cross-session pick, resolved once the layout lands (the
     /// resource even without a persisted layout).
     pick: EntryPick,
@@ -362,6 +343,8 @@ pub(super) struct SessionLoop {
     parser: StdinParser,
     /// OSC 52 reads: grants, prompts, and the host round trip.
     clipboard_reads: crate::attach::clipboard_read::SharedClipboardReads,
+    /// Links panes ask to open here.
+    open_urls: crate::attach::open_url::SharedOpenUrls,
     /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
     stdin: TtyInput,
     /// One read's worth of stdin bytes.
@@ -382,6 +365,8 @@ pub(super) struct SessionLoop {
     /// Bare-ESC deadline, anchored when the parser first went pending so
     /// other arms firing cannot keep restarting it.
     esc_deadline: Option<tokio::time::Instant>,
+    /// The next status-bar repaint; anchored like `esc_deadline`.
+    status_tick_at: Option<tokio::time::Instant>,
     /// Frame-rate governor: bursts inside the previous frame's window apply
     /// but withhold the paint until `paint_deadline` (see [`PaintPacer`]).
     pacer: PaintPacer,
@@ -422,15 +407,6 @@ pub(super) struct SessionLoop {
 }
 
 impl SessionLoop {
-    pub(super) fn set_control_dial(&mut self, dial: crate::attach::Dial) {
-        self.control_dial = Some(Box::new(dial));
-    }
-
-    /// Run background jobs on `jobs` instead of this loop's own facility.
-    pub(super) fn set_jobs(&mut self, jobs: Jobs) {
-        self.jobs = jobs;
-    }
-
     /// Allocate the next L3/command correlation id.
     const fn take_request_id(&mut self) -> u32 {
         let id = self.next_request_id;
@@ -517,6 +493,10 @@ impl SessionLoop {
             bootstrap_outbound: None,
             next_request_id: 1,
             orphan_kills: super::orphans::OrphanKills::default(),
+            agent_supported: negotiated
+                .server_features_ext
+                .contains(phux_protocol::ServerFeatureExt::ForwardAgent),
+            agent_link: None,
             review: crate::attach::review::ReviewIndex::new(),
             pending_directory: None,
             vcs: VcsIndex::default(),
@@ -542,16 +522,10 @@ impl SessionLoop {
             resize_cell_px,
             rename_pending: None,
             rename_notice: None,
-            peers: PeerWatch {
-                sweep_pending: true,
-                remote_hosts: if origin.is_some() {
-                    crate::attach::hosts::last_known()
-                } else {
-                    Vec::new()
-                },
-                origin,
+            peers: PeerWatch::new(origin),
+            peer_presentation: PeerPresentation {
                 collapsed_projects: crate::attach::client_state::collapsed(),
-                ..PeerWatch::default()
+                ..PeerPresentation::default()
             },
             pick: initial_pick,
             parser: StdinParser::new(),
@@ -560,6 +534,7 @@ impl SessionLoop {
                     .server_features_ext
                     .contains(phux_protocol::ServerFeatureExt::ClipboardRead),
             ),
+            open_urls: crate::attach::open_url::SharedOpenUrls::default(),
             stdin: TtyInput::open(),
             stdin_buf: [0u8; 4096],
             input_events: Vec::new(),
@@ -569,6 +544,7 @@ impl SessionLoop {
             sighup: signal(SignalKind::hangup()).map_err(AttachError::Io)?,
             detach_pending: false,
             esc_deadline: None,
+            status_tick_at: None,
             pacer: PaintPacer::default(),
             paint_hold: None,
             painted_view: None,
@@ -596,6 +572,7 @@ impl SessionLoop {
     }
 }
 
+mod agent;
 mod arrangement;
 mod bootstrap;
 mod frames;
@@ -617,3 +594,4 @@ pub(super) use spawns::{parked_spawned_panes, spawned_satellite_panes, unanswere
 mod peers;
 mod project_tag;
 mod step;
+mod wiring;

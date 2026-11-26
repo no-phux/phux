@@ -57,6 +57,18 @@ pub(in crate::attach) fn reanchor_predict_to_pane(
     }
 }
 
+impl PaneSlot {
+    /// Raise the asked flag, dated on a real transition; true then.
+    pub(in crate::attach) fn raise_attention(&mut self) -> bool {
+        let raised = !self.attention;
+        if raised {
+            self.attention = true;
+            self.asked_at = Some(std::time::Instant::now());
+        }
+        raised
+    }
+}
+
 /// Clear a pane's asked flag on user input; true only on a real transition.
 pub(in crate::attach) fn clear_attention_on_input(
     panes: &mut HashMap<ResourceId, PaneSlot>,

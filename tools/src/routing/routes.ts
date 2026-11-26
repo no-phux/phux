@@ -19,12 +19,12 @@ const ZIG: Surface[] = ["native", "web_engine"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  // README, the wire schema and the config editor schemas are Rust inputs.
-  // Other files under docs/spec, including the plugin index schema, are
-  // documentation.
+  // README, the wire schema, the config editor schemas and the plugin index
+  // schema (phux-plugin-index's golden test) are Rust inputs. Other files
+  // under docs/spec are documentation.
   "README.md": ["phux"],
   "docs/spec/wire-schema.json": ["phux"],
-  "docs/spec/{config,plugin}.schema.json": ["phux"],
+  "docs/spec/{config,plugin,plugin-index}.schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   // examples_e2e runs this page's automation example.
@@ -130,11 +130,6 @@ const ROUTES: Record<string, Surface[]> = {
   justfile: [],
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
-  // The plugin index generator, not a plugin. Lint lane only for a
-  // generator-only diff (classify skips the unit pool).
-  // plugin-index.yml runs the generator tests. A phux-config change still
-  // compiles this tree because the rust lane cargo-checks it.
-  "plugins/index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],

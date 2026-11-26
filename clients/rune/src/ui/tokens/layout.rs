@@ -34,6 +34,8 @@ pub(crate) struct Overlay {
     pub(crate) news_w: f32,
     /// The chief's composer field: room for a dictated paragraph.
     pub(crate) chief_field_h: f32,
+    /// The most of the window a held link takes before it scrolls.
+    pub(crate) link_h: f32,
 }
 
 pub(crate) const OVERLAY: Overlay = Overlay {
@@ -53,6 +55,7 @@ pub(crate) const OVERLAY: Overlay = Overlay {
     popup_share: 0.8,
     news_w: 440.0,
     chief_field_h: 96.0,
+    link_h: 160.0,
 };
 
 /// The tallest a sheet grows before its body scrolls.

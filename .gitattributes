@@ -18,6 +18,7 @@ docs/spec/plugin.schema.json linguist-generated=true
 crates/phux-design/tokens/themes.json linguist-generated=true
 crates/phux-design/tokens/derive-vectors.subset.json linguist-generated=true
 clients/rune/ios/Assets/AccentColor.colorset/Contents.json linguist-generated=true
+clients/rune/ios/Widgets/Assets/*.colorset/Contents.json linguist-generated=true
 # Token sources kept whole over the size gate: the theme catalog (upstream
 # terminal palettes) and the closed schema are each read as one table.
 crates/phux-design/tokens/src/themes.json linguist-vendored=true

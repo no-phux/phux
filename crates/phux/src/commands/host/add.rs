@@ -6,8 +6,9 @@ use std::process::ExitCode;
 use super::super::enroll::{self, CertificateStatus, EnrollFailure};
 use super::super::json_err::{self, CliError, codes};
 use super::super::remote::{self};
-use super::super::remote_target::endpoint_host;
+use super::super::remote_target::{endpoint_host, endpoint_port, registration_name};
 use super::super::satellite as satellite_registry;
+use super::super::service;
 
 use super::HostRole;
 use super::add_code::run_add_from_code;
@@ -77,13 +78,15 @@ impl AddMode {
         } else if target.contains("://") {
             let name = match &opts.name {
                 Some(name) => name.clone(),
-                None => endpoint_host(target).ok_or_else(|| {
-                    CliError::new(
-                        codes::REGISTRY,
-                        format!("could not derive a name from {target:?}"),
-                        "pass --name NAME, or `phux host add NAME ENDPOINT`",
-                    )
-                })?,
+                None => endpoint_host(target)
+                    .map(|host| registration_name(opts.role, &host, endpoint_port(target)))
+                    .ok_or_else(|| {
+                        CliError::new(
+                            codes::REGISTRY,
+                            format!("could not derive a name from {target:?}"),
+                            "pass --name NAME, or `phux host add NAME ENDPOINT`",
+                        )
+                    })?,
             };
             Some((name, target.to_owned()))
         } else {
@@ -443,6 +446,22 @@ pub(super) fn add_failure_error(
                  `phux host add {ssh_host}{role_flag}`, or register an ssh-only entry: \
                  `phux host add {ssh_host}{role_flag} --ssh-only`"
             ),
+        ),
+        EnrollFailure::NotListening(detail) => CliError::new(
+            codes::REGISTRY,
+            format!("phux on {ssh_host} accepts no network connections: {detail}"),
+            if detail.contains(service::PORT_TAKEN) {
+                format!(
+                    "pick a free port: `phux host add {ssh_host}{role_flag} --quic-port PORT`, \
+                     or use the machine over ssh alone: `phux attach --ssh {ssh_host}`"
+                )
+            } else {
+                format!(
+                    "update phux there, which keeps its panes: \
+                     `phux host add {ssh_host}{role_flag} --install`, \
+                     or use the machine over ssh alone: `phux attach --ssh {ssh_host}`"
+                )
+            },
         ),
     }
 }

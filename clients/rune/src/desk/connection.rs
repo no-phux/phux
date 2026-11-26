@@ -11,12 +11,13 @@ use std::time::Instant;
 
 use phux_client_core::layout::LayoutNode;
 use phux_client_runtime::control::{PrivateUploadDestination, Status, Topology};
+use phux_client_runtime::publication::Publication;
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 
 use super::{
-    Fitted, Painted, Placement, Shown, SplitPath, copy_mode, events, find, mouse, palette, popup,
-    quick, reorder, resources, screenshot, splits, tabs,
+    Fitted, Painted, Placement, Shown, SplitPath, agent_forward, copy_mode, events, find, mouse,
+    palette, popup, quick, reorder, resources, screenshot, splits, tabs,
 };
 
 pub struct Connection {
@@ -35,10 +36,23 @@ pub struct Connection {
     pub resources: resources::Resources,
     /// The resource requested by the user, and when its opening began.
     pub wanted: Option<(ResourceId, Instant)>,
+    /// HELLO identity qualifying the topology last observed by this window.
+    pub(super) view_server: Option<Vec<u8>>,
+    pub(super) view_epoch: u64,
+    pub(super) view_intents: HashMap<ResourceId, super::view_intent::ViewIntent>,
+    /// Original scope of each asynchronous spawn continuation.
+    pub(super) spawn_servers: HashMap<u32, SpawnOrigin>,
+    pub(super) view_choice: u64,
     /// A session created here: show its terminal once selected.
     pub(super) pending_session: Option<String>,
-    /// A `phux://pane/` link's pane, until the server's panes are known.
-    pub(super) reveal: Option<ResourceId>,
+    pub(super) pending_session_origin: Option<CallbackFence>,
+    /// What a `phux://` link asked to show, until it can be.
+    pub(super) reveal: Option<super::reveal::Reveal>,
+    /// A scoped Fleet transfer retains its original watcher until this
+    /// connection has qualified its own exact presentation source.
+    pub(super) fleet_handoff: Option<super::fleet::Handoff>,
+    /// The ssh-agent this client serves to its server's panes.
+    pub(super) agent: agent_forward::AgentForward,
     /// The connection incarnation the shown view belongs to.
     pub(super) epoch: u64,
     /// A path search on the focused pane's host.
@@ -53,6 +67,12 @@ pub struct Connection {
     pub popup: popup::Popup,
     pub tabs: tabs::Tabs,
     pub reorder: reorder::Reorder,
+    /// The server's keep-awake record; `None` while its mode is `off`.
+    pub keep_awake: Option<super::keep_awake::Awake>,
+    /// The panes this attachment last reported showing (`phux.in-view/v1`).
+    pub(super) in_view: HashSet<ResourceId>,
+    /// This window holds the view size lock; claimed again on each attach.
+    pub size_locked: bool,
     /// A screenshot being taken for a terminal on this client. Replacing the
     /// connection drops it, which cancels the picker and reaps its worker.
     pub(super) capture: Option<screenshot::Capture>,
@@ -87,7 +107,7 @@ pub struct Connection {
     pub(super) pending_splits: HashMap<u32, (Option<SessionKey>, Placement)>,
     pub(super) wheel_pane: Option<ResourceId>,
     pub(super) mouse_capture: Option<(ResourceId, mouse::Press)>,
-    pub(super) mouse_cell: Option<(u16, u16)>,
+    pub(super) mouse_position: Option<mouse::ReportedPosition>,
     pub(super) split_sizes: HashMap<SplitPath, [f32; 2]>,
     pub(super) fetched: HashSet<ArrangementKey>,
     pub(super) gesture: u64,
@@ -117,8 +137,16 @@ impl Default for Connection {
             shown: None,
             resources: resources::Resources::default(),
             wanted: None,
+            view_server: None,
+            view_epoch: 0,
+            view_intents: HashMap::new(),
+            spawn_servers: HashMap::new(),
+            view_choice: 0,
+            pending_session_origin: None,
             pending_session: None,
             reveal: None,
+            fleet_handoff: None,
+            agent: agent_forward::AgentForward::default(),
             epoch: 0,
             paths: None,
             origins: HashMap::new(),
@@ -129,6 +157,9 @@ impl Default for Connection {
             popup: popup::Popup::default(),
             tabs: tabs::Tabs::default(),
             reorder: reorder::Reorder::default(),
+            keep_awake: None,
+            in_view: HashSet::new(),
+            size_locked: false,
             capture: None,
             uploads: Vec::new(),
             pastes: HashSet::new(),
@@ -148,7 +179,7 @@ impl Default for Connection {
             pending_splits: HashMap::new(),
             wheel_pane: None,
             mouse_capture: None,
-            mouse_cell: None,
+            mouse_position: None,
             split_sizes: HashMap::new(),
             fetched: HashSet::new(),
             gesture: 0,
@@ -164,13 +195,97 @@ impl Default for Connection {
 
 /// A queued platform callback may only address its originating runtime
 /// namespace and transport incarnation, even when numeric handles repeat.
+#[derive(Debug)]
 pub(super) struct CallbackFence {
     client: Weak<Client>,
     serial: u64,
     epoch: u64,
+    server: Option<Vec<u8>>,
+}
+
+pub(super) struct SpawnOrigin {
+    pub(super) server: Option<Vec<u8>>,
+    pub(super) epoch: u64,
+    pub(super) choice: u64,
+    owner: Weak<Publication>,
+}
+
+impl SpawnOrigin {
+    pub(super) fn new(client: &Client, server: Option<Vec<u8>>, epoch: u64, choice: u64) -> Self {
+        Self {
+            server,
+            epoch,
+            choice,
+            owner: Arc::downgrade(client.publication()),
+        }
+    }
+
+    pub(super) fn owns_client(&self, client: &Client) -> bool {
+        Weak::ptr_eq(&self.owner, &Arc::downgrade(client.publication()))
+    }
 }
 
 impl Connection {
+    pub(super) fn owns_client(&self, client: &Client) -> bool {
+        self.client
+            .as_deref()
+            .is_some_and(|current| std::ptr::eq(current, client))
+    }
+
+    /// An observed-name lookup is local selection only. Qualify and resolve
+    /// under one lock so an old window cannot subscribe to a replacement host.
+    pub(super) fn select_named_session(&self, client: &Client, name: &str) -> bool {
+        if !self.owns_client(client) {
+            return false;
+        }
+        client.with_control(|control| {
+            if control.status() != Status::Attached
+                || control.connection_epoch() != self.view_epoch
+                || control.server().map(|server| server.id.as_slice())
+                    != self.view_server.as_deref()
+            {
+                return false;
+            }
+            let Some(id) = control
+                .topology()
+                .and_then(|topology| topology.session_named(name))
+                .map(|session| session.id)
+            else {
+                return false;
+            };
+            if control.selected_session() != Some(id) {
+                control.attach_session(phux_protocol::wire::frame::AttachTarget::ById(
+                    phux_protocol::ids::SessionId::new(id),
+                ));
+            }
+            control.selected_session() == Some(id)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_view_sources(
+        &mut self,
+        server: Vec<u8>,
+        sources: &[phux_client_runtime::engine::ViewSource],
+    ) {
+        self.view_server = Some(server.clone());
+        self.receipts.seed_server(server.clone());
+        let client = self.client.as_ref().expect("fixture client");
+        self.epoch = client.connection_epoch();
+        self.view_epoch = self.epoch;
+        for source in sources {
+            self.view_intents.insert(
+                source.terminal_id().clone(),
+                super::view_intent::ViewIntent::from_source(
+                    client,
+                    server.clone(),
+                    self.epoch,
+                    source.clone(),
+                ),
+            );
+        }
+    }
+
     pub(super) fn namespace(&self) -> u64 {
         self.serial
     }
@@ -187,17 +302,39 @@ impl Connection {
         Some(CallbackFence {
             client: Arc::downgrade(client),
             serial: self.serial,
-            epoch: client.connection_epoch(),
+            epoch: self.view_epoch,
+            server: self.view_server.clone(),
         })
     }
 }
 
 impl CallbackFence {
+    pub(super) fn same_namespace(&self, connection: &Connection) -> bool {
+        connection.serial == self.serial
+            && connection
+                .client
+                .as_ref()
+                .is_some_and(|client| Weak::ptr_eq(&self.client, &Arc::downgrade(client)))
+    }
+
+    pub(super) fn permits_view(&self, view: Option<ViewId>) -> bool {
+        self.client.upgrade().is_some_and(|client| {
+            client.with_control(|control| {
+                control.connection_epoch() == self.epoch
+                    && control.server().map(|server| server.id.as_slice()) == self.server.as_deref()
+            }) && view.is_some_and(|view| client.view_generation(view).is_some())
+        })
+    }
+
     pub(super) fn is_current(&self, connection: &Connection) -> bool {
         connection.serial == self.serial
             && connection.client.as_ref().is_some_and(|client| {
                 Weak::ptr_eq(&self.client, &Arc::downgrade(client))
-                    && client.connection_epoch() == self.epoch
+                    && client.with_control(|control| {
+                        control.connection_epoch() == self.epoch
+                            && control.server().map(|server| server.id.as_slice())
+                                == self.server.as_deref()
+                    })
             })
     }
 }

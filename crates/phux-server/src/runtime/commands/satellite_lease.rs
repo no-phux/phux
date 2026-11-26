@@ -20,6 +20,8 @@ pub(super) struct SatelliteLeaseTarget<'a> {
     /// Satellite-local wire terminal id.
     pub(super) terminal: u32,
     pub(in crate::runtime) client_id: ClientId,
+    epoch: Option<u64>,
+    registration: tokio_util::sync::CancellationToken,
 }
 
 impl<'a> SatelliteLeaseTarget<'a> {
@@ -36,7 +38,24 @@ impl<'a> SatelliteLeaseTarget<'a> {
             host,
             terminal: terminal_id.local_id().unwrap_or(0),
             client_id,
+            epoch: state.with(|s| s.federation().satellite_link_epoch(host)),
+            registration: state.with_mut(|s| s.federation_mut().consumer_registration(client_id)),
         }
+    }
+
+    fn is_current(&self) -> bool {
+        !self.registration.is_cancelled()
+            && self.epoch.is_some_and(|epoch| {
+                self.state
+                    .with(|s| s.federation().satellite_link_is_current(self.host, epoch))
+            })
+    }
+
+    fn expired() -> CommandResult {
+        CommandResult::error(
+            ErrorCode::SatelliteUnreachable,
+            "satellite link changed during the request",
+        )
     }
 
     /// The hub consumer currently holding this terminal's input lease.
@@ -45,6 +64,59 @@ impl<'a> SatelliteLeaseTarget<'a> {
             s.federation()
                 .satellite_lease_holder(self.host, self.terminal)
         })
+    }
+}
+
+/// Cancellation clears only this acquire's marker on this exact link.
+struct PendingSatelliteAcquire<'a> {
+    state: &'a SharedState,
+    host: &'a phux_protocol::ids::SatelliteHost,
+    terminal: u32,
+    epoch: Option<u64>,
+    marker: u64,
+    armed: bool,
+}
+
+impl<'a> PendingSatelliteAcquire<'a> {
+    fn new(target: &SatelliteLeaseTarget<'a>) -> Self {
+        let marker = target.state.with_mut(|s| {
+            s.federation_mut().mark_satellite_lease_acquire_pending(
+                target.host.clone(),
+                target.terminal,
+                target.client_id,
+            )
+        });
+        Self {
+            state: target.state,
+            host: target.host,
+            terminal: target.terminal,
+            epoch: target.epoch,
+            marker,
+            armed: true,
+        }
+    }
+
+    const fn settled(&mut self, result: &CommandResult) {
+        self.armed = matches!(result, CommandResult::Error { .. });
+    }
+}
+
+impl Drop for PendingSatelliteAcquire<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.with_mut(|s| {
+                if self
+                    .epoch
+                    .is_some_and(|epoch| s.federation().satellite_link_is_current(self.host, epoch))
+                {
+                    s.federation_mut().clear_satellite_lease_acquire_pending(
+                        self.host,
+                        self.terminal,
+                        self.marker,
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -57,6 +129,9 @@ pub(super) async fn relay_satellite_acquire_input(
     command: &Command,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     if mode == InputMode::Cooperative
         && let Some(holder) = target.holder()
         && holder != target.client_id
@@ -70,12 +145,13 @@ pub(super) async fn relay_satellite_acquire_input(
     // ordered on the link, so a stale Released/Expired from an earlier lease
     // could otherwise clear the entry this acquire installs. The lease mirror
     // clears the mark on the next event for this terminal.
-    target.state.with_mut(|s| {
-        s.federation_mut()
-            .mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
-    });
+    let mut pending = PendingSatelliteAcquire::new(target);
     let result = relay.command(command.clone()).await;
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     settle_satellite_seize(target, &result, out_tx);
+    pending.settled(&result);
     result
 }
 
@@ -87,12 +163,10 @@ fn settle_satellite_seize(
     result: &CommandResult,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
+    if !target.is_current() {
+        return;
+    }
     if matches!(result, CommandResult::Error { .. }) {
-        // A failed acquire installs nothing, so stop ignoring lease events.
-        target.state.with_mut(|s| {
-            s.federation_mut()
-                .clear_satellite_lease_acquire_pending(target.host, target.terminal);
-        });
         return;
     }
     // On success the pending mark stays; the lease mirror clears it. A seize
@@ -164,6 +238,9 @@ pub(super) async fn relay_satellite_attach(
             crate::runtime::apps::NO_TERMINAL_PROFILE,
         );
     }
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     // Narrow before the relay so no input slips through; widen only once the
     // satellite accepted the attach.
     let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
@@ -179,13 +256,11 @@ pub(super) async fn relay_satellite_attach(
         (was_attached, was_viewer, narrowed)
     });
     let seize = role.takes_over();
-    if seize {
-        state.with_mut(|s| {
-            s.federation_mut()
-                .mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
-        });
-    }
+    let mut pending = seize.then(|| PendingSatelliteAcquire::new(target));
     let attached = relay_stream_establishing(ctx, relay, command, &local, kind).await;
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     if matches!(attached, CommandResult::Error { .. }) {
         // A refused first narrowing must not leave a viewer tombstone.
         if role.is_viewer() && !was_viewer && !was_attached {
@@ -197,13 +272,6 @@ pub(super) async fn relay_satellite_attach(
         return attached;
     }
     // The attach stands even if a degraded seize after it is refused.
-    state.with_mut(|s| {
-        s.federation_mut().register_satellite_proxy_attach(
-            target.client_id,
-            target.host.clone(),
-            target.terminal,
-        );
-    });
     let effects = narrowed.unwrap_or_else(|| {
         state.with_mut(|s| s.apply_attach_role(target.client_id, &wire, None, role, was_attached))
     });
@@ -214,7 +282,11 @@ pub(super) async fn relay_satellite_attach(
         release_satellite_lease_for_viewer(target, relay).await;
     }
     if seize {
-        return seize_after_satellite_attach(target, relay, attached, out_tx).await;
+        let result = seize_after_satellite_attach(target, relay, attached, out_tx).await;
+        if let Some(pending) = &mut pending {
+            pending.settled(&result);
+        }
+        return result;
     }
     attached
 }
@@ -296,6 +368,9 @@ pub(super) async fn relay_satellite_release_input(
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
 ) -> CommandResult {
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     if let Some(holder) = target.holder()
         && holder != target.client_id
     {
@@ -304,6 +379,9 @@ pub(super) async fn relay_satellite_release_input(
         return CommandResult::Ok;
     }
     let result = relay.command(command.clone()).await;
+    if !target.is_current() {
+        return SatelliteLeaseTarget::expired();
+    }
     if !matches!(result, CommandResult::Error { .. }) {
         target.state.with_mut(|s| {
             s.federation_mut().release_satellite_lease(

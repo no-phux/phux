@@ -101,3 +101,33 @@ fn toasts_paint_under_a_menu_and_hide_behind_the_inbox() {
     desk.inbox.open = true;
     assert_eq!(desk.toasts_surface(), None, "the footer says it");
 }
+
+#[test]
+fn raw_recipe_review_owns_pointer_and_keyboard_without_becoming_a_blanket_confirmation() {
+    let mut rt = runtime(false);
+    rt.update(|desk, _| {
+        desk.raw_relaunch.document =
+            Some("{\"operation\":\"exact\",\"recipe\":{\"argv\":[\"untrusted\"]}}".into());
+    });
+    rt.frame(0.0);
+    assert_eq!(rt.state.modal(), Some(Modal::RawRelaunch));
+    assert!(Modal::RawRelaunch.takes_pointer());
+    assert!(!Modal::RawRelaunch.allows(Shortcut::Paste));
+    assert!(!Modal::RawRelaunch.allows(Shortcut::ReviewRawRelaunch));
+    assert!(rt.find("raw-relaunch-review").is_some());
+    rt.key(KeyEvent {
+        key: Key::Enter,
+        mods: Mods::default(),
+    });
+    rt.frame(0.1);
+    assert!(
+        rt.state.raw_relaunch.open(),
+        "Return never silently approves an unreviewed operation"
+    );
+    rt.key(KeyEvent {
+        key: Key::Escape,
+        mods: Mods::default(),
+    });
+    rt.frame(0.2);
+    assert!(!rt.state.raw_relaunch.open());
+}

@@ -12,7 +12,7 @@ use crate::commands::{pair, remote};
 /// Register a host from a pasted connect link and return the entry to dial.
 pub(super) fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, String> {
     let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
-    let name = target.registry_name();
+    let name = registered_name(target);
     let new = validated(&name, &link)?;
     // A failure is a warning, as for `host add` over ssh: the host is still
     // registered, though a `paired` server, the only kind with a remote
@@ -48,7 +48,7 @@ pub(crate) fn pair_from_code(
     hardware_key: bool,
 ) -> Result<(RemoteEntry, CertificateStatus), String> {
     let link = pair::parse_connect_link(code).map_err(|err| format!("--code: {err}"))?;
-    let name = target.registry_name();
+    let name = registered_name(target);
     let new = validated(&name, &link)?;
     let identity = redeem_ticket(&name, &link, hardware_key).map_err(|err| {
         format!(
@@ -166,6 +166,15 @@ fn redeem_ticket(
         hardware_key: hardware_key || enroll::is_hardware_key(held.as_deref()),
     };
     enroll::enroll_with_ticket(quic, &pins, ticket, &workload).map(Some)
+}
+
+/// The typed name, or `NAME-PORT` beside another server's `NAME`.
+fn registered_name(target: &RemoteTarget) -> String {
+    super::registration_name(
+        crate::commands::host::HostRole::Remote,
+        &target.registry_name(),
+        target.port,
+    )
 }
 
 /// Read back the entry just registered, so a write that did not round-trip

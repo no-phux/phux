@@ -59,6 +59,14 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
             event: AgentEvent::InputActivity { origin },
             ..
         } => fold_input_activity(ctx, &terminal, origin),
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::OpenUrl { id, url },
+            ..
+        } => FrameOutcome {
+            open_url: Some((terminal, id, url)),
+            ..FrameOutcome::default()
+        },
         // A document, tree, or surface spawned: its kind names a placeholder
         // leaf before its bootstrap; the inventory refresh brings its name.
         FrameKind::Event {
@@ -253,8 +261,7 @@ fn fold_agent_ask<W: crate::attach::RenderSink>(
     };
     // Asks are coalesced server-side; keep early local asks until the layout
     // arrives and forward peers to the foreign cache.
-    let changed = !slot.attention;
-    slot.attention = true;
+    let changed = slot.raise_attention();
     FrameOutcome {
         chrome_dirty: local && changed,
         foreign_attention: (!local).then_some(terminal),

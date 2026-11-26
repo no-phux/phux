@@ -10,7 +10,7 @@ use crate::desk::Desk;
 use crate::inbox;
 use crate::ui::overlay::{EXTENTS, pop};
 use crate::ui::tokens::{Paint, Tier, Tokens};
-use crate::ui::{MOD, PAD};
+use crate::ui::{MOD, terminal_padding};
 
 /// A visible inline question and its text-input ownership.
 pub struct AskCard {
@@ -45,11 +45,12 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Opt
     let ask = inbox::question(pane, &desk.activities).or_else(|| desk.inbox.questions.ask(id))?;
     let phone = desk.phone.is_some();
     let [width, height] = inline_size(area, phone, t)?;
+    let pad = terminal_padding(desk);
     let busy = desk.answering(id);
     let who = desk.activities.agent_name(id).unwrap_or("Agent").to_owned();
     let mut card = col()
         .key(format!("ask-{id}"))
-        .absolute(PAD + area[0] - width - s.s2, PAD + s.s2)
+        .absolute(pad + area[0] - width - s.s2, pad + s.s2)
         .w(width)
         .padding(s.card_inset)
         .gap(s.s2)

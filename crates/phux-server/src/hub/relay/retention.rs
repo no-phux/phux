@@ -3,9 +3,9 @@
 use super::{
     AgentEvent, BootstrapId, DeliveryFailure, ErrorCode, FrameKind, HistoryTombstoneReason,
     MAX_RELAY_CONNECTION_RETAINED_BYTES, MAX_RELAY_CONNECTION_RETAINED_FRAMES,
-    MAX_RELAY_SUBSCRIBER_RETAINED_BYTES, MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES, Outbound,
-    ProxySubscriber, RELAY_RETIREMENT_TIMEOUT, RETAINED_FRAME_OVERHEAD, RelaySession, ResourceId,
-    SatelliteHost, SnapshotGate, StreamId, TombstoneReason, VecDeque, mpsc, trace,
+    MAX_RELAY_SUBSCRIBER_RETAINED_BYTES, MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES, ProxySubscriber,
+    RELAY_RETIREMENT_TIMEOUT, RETAINED_FRAME_OVERHEAD, RelaySession, ResourceId, SatelliteHost,
+    SnapshotGate, StreamId, TombstoneReason, VecDeque, mpsc, trace,
 };
 
 impl RelaySession {
@@ -353,9 +353,9 @@ impl RelaySession {
                 );
                 return true;
             }
-            match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+            match sub.deliver(frame) {
                 Ok(()) => !sub.retire_after_flush,
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Full(())) => {
                     let failure = Self::delivery_failure(sub, host, id, frame);
                     Self::retain_ordered_frame(
                         sub,
@@ -366,7 +366,7 @@ impl RelaySession {
                     );
                     true
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
+                Err(mpsc::error::TrySendError::Closed(())) => false,
             }
         });
         self.retained_bytes = retained_bytes;

@@ -147,11 +147,21 @@ pub(in crate::runtime) fn spawn_activation_report_retry(
                 if token.is_cancelled() {
                     return;
                 }
-                let pending = state.with_mut(|server| {
+                let (pending, idle) = state.with_mut(|server| {
                     server.retry_activation_reports();
-                    server.has_pending_activation_reports()
+                    (
+                        server.has_pending_activation_reports(),
+                        server.self_exit_due(),
+                    )
                 });
                 if !pending {
+                    if idle {
+                        info!(
+                            "lifecycle persistence settled; nothing left running after serving clients"
+                        );
+                        token.cancel();
+                        return;
+                    }
                     delay = Duration::from_millis(20);
                     break;
                 }

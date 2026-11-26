@@ -1,9 +1,9 @@
 //! Host inventory and the serving host.
 
 use super::{
-    AttachError, Command, CommandResult, CommandValue, Connection, FrameKind, HostAnswers, Notice,
-    RepaintAccumulator, Scope, federation_notices, host_answers, host_inventory_overdue,
-    sync_agent_meta_subscriptions, unexplained_unreachable_notices,
+    AttachError, CommandResult, CommandValue, Connection, FrameKind, HostAnswers, Notice,
+    RepaintAccumulator, federation_notices, host_answers, sync_agent_meta_subscriptions,
+    unexplained_unreachable_notices,
 };
 
 pub(super) mod answers;
@@ -54,34 +54,25 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if self.peers.serving_host_attempted {
-            return Ok(());
-        }
-        self.peers.serving_host_attempted = true;
-        let request_id = self.take_request_id();
-        self.peers.serving_host_pending = Some(request_id);
-        super::super::session_io::send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Global,
-                key: phux_protocol::wire::frame::WHOAMI_KEY.to_owned(),
-            },
-        )
-        .await
+        self.peers
+            .request_fact(
+                conn,
+                &mut self.next_request_id,
+                super::super::subscriptions::SidebarFact::ServingHost,
+            )
+            .await
     }
 
     /// Invalid or unsupported identity leaves the honest `this server` label.
     pub(super) fn fold_serving_host(&mut self, value: Option<&[u8]>) {
         use phux_protocol::wire::frame::{WHOAMI_SCHEMA_VERSION, WhoamiRecord};
-        self.peers.serving_host_pending = None;
         self.peers.serving_host = value
             .and_then(|bytes| serde_json::from_slice::<WhoamiRecord>(bytes).ok())
             .filter(|r| r.schema_version == WHOAMI_SCHEMA_VERSION && !r.host.trim().is_empty())
             // The hosts provider's spelling, so the machine header does not
             // flip between `mac.local` and `mac` when its listing lands.
             .map(|r| crate::attach::hosts::short_host_label(&r.host).to_owned());
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
     }
 
     /// Ask for the federation host inventory (one `GET_STATE`). Skipped
@@ -90,22 +81,9 @@ impl super::SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
-        if self.peers.hosts_pending.is_some() {
-            return Ok(());
-        }
-        let request_id = self.take_request_id();
-        self.peers.hosts_pending = Some(request_id);
-        self.peers.hosts_pending_since = Some(std::time::Instant::now());
-        super::super::session_io::send_unless_peer_gone(
-            conn,
-            &FrameKind::Command {
-                request_id,
-                command: Command::GetState {
-                    scope: phux_protocol::wire::frame::StateScope::Server,
-                },
-            },
-        )
-        .await
+        self.peers
+            .request_inventory(conn, &mut self.next_request_id)
+            .await
     }
 
     /// Fold a host-inventory reply. A refusal keeps the previous inventory.
@@ -114,9 +92,9 @@ impl super::SessionLoop {
     pub(super) fn fold_host_inventory(
         &mut self,
         result: &phux_protocol::wire::frame::CommandResult,
+        held: Vec<String>,
         repaint: &mut RepaintAccumulator,
     ) -> HostAnswers {
-        let held = self.end_host_inventory_request();
         let explained_by: &[phux_protocol::wire::info::HostInventory] = match result {
             phux_protocol::wire::frame::CommandResult::OkWith(
                 phux_protocol::wire::frame::CommandValue::State(snapshot),
@@ -133,7 +111,7 @@ impl super::SessionLoop {
                 if self.adopt_snapshot_graph(snapshot) && !self.overlays.is_active() {
                     repaint.raise_full();
                 }
-                self.peers.chrome_dirty = true;
+                self.peer_presentation.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 &self.peers.hosts
             }
@@ -143,14 +121,6 @@ impl super::SessionLoop {
         let surfaced = unexplained_unreachable_notices(held, explained_by);
         self.apply_notices(federation_notices(surfaced), repaint);
         answers
-    }
-
-    /// Close the in-flight host-inventory request and hand back the
-    /// notices held for it.
-    pub(super) fn end_host_inventory_request(&mut self) -> Vec<String> {
-        self.peers.hosts_pending = None;
-        self.peers.hosts_pending_since = None;
-        std::mem::take(&mut self.peers.held_unreachable)
     }
 
     /// Whether a snapshot carries windows or resources not yet adopted
@@ -207,7 +177,7 @@ impl super::SessionLoop {
                         );
                     }
                 }
-                self.peers.chrome_dirty = true;
+                self.peer_presentation.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 self.note_chrome_change(repaint);
             }
@@ -228,15 +198,27 @@ impl super::SessionLoop {
         result: &CommandResult,
         repaint: &mut RepaintAccumulator,
     ) {
-        use phux_client::org::OrgOutcome;
-        let outcome = OrgOutcome::from_result(result);
+        use phux_client_core::org_ops::{OrgOutcome, OrgReplyExpectation};
+        let Some(operation) = self
+            .rename_pending
+            .as_ref()
+            .and_then(|pending| pending.operation)
+        else {
+            self.fail_session_rename("the original rename operation is unavailable", repaint);
+            return;
+        };
+        let outcome = OrgReplyExpectation::Mutation(operation).classify(result);
         let reason = match &outcome {
-            OrgOutcome::Committed(_) | OrgOutcome::Accepted => None,
+            OrgOutcome::Committed(_) => None,
             OrgOutcome::Refused(phux_protocol::wire::frame::Refusal::NotFound) => {
                 Some("the session no longer exists".to_owned())
             }
             OrgOutcome::Refused(refusal) => Some(phux_client::org::refusal_sentence(refusal)),
             OrgOutcome::Error { message, .. } => Some(message.clone()),
+            OrgOutcome::Unknown { reason } => Some(format!(
+                "{reason}; operation {} remains unknown; reconcile before retrying",
+                operation.to_hex(),
+            )),
             _ => Some("the server did not confirm the session rename".to_owned()),
         };
         if let Some(reason) = reason {
@@ -255,7 +237,7 @@ impl super::SessionLoop {
             }
         }
         self.apply_stored_project_tag();
-        self.peers.chrome_dirty = true;
+        self.peer_presentation.chrome_dirty = true;
         self.session_picker_dirty = true;
         self.note_chrome_change(repaint);
     }
@@ -278,12 +260,9 @@ impl super::SessionLoop {
     /// Past [`HOST_INVENTORY_DEADLINE`], free the inventory slot and surface
     /// every notice held for it.
     pub(super) fn expire_overdue_host_inventory(&mut self) {
-        let now = std::time::Instant::now();
-        if !host_inventory_overdue(self.peers.hosts_pending_since, now) {
-            return;
+        if let Some(held) = self.peers.expire_inventory(std::time::Instant::now()) {
+            self.show_notices(federation_notices(held));
         }
-        let held = self.end_host_inventory_request();
-        self.show_notices(federation_notices(held));
     }
 
     /// Inventory and replay command replies share the connection, not projection state.
@@ -349,51 +328,41 @@ impl super::SessionLoop {
         frame: FrameKind,
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
-        match frame {
-            // The reply to our own host-inventory GET_STATE.
-            FrameKind::CommandResult { request_id, result }
-                if self.peers.hosts_pending == Some(request_id) =>
-            {
-                // A satellite this inventory could not list
-                // forgets its strays; one it reached gets their kills.
-                let asked_at = self.peers.hosts_pending_since;
-                let answers = self.fold_host_inventory(&result, repaint);
-                self.replay_returned_satellites(conn, &answers).await?;
-                self.retry_after_inventory(conn, &answers, asked_at).await?;
-                Ok(None)
-            }
-            // Its refusal: keep the old inventory, free the slot, surface every
-            // held notice.
-            FrameKind::Error {
-                request_id: Some(request_id),
-                ..
-            } if self.peers.hosts_pending == Some(request_id) => {
-                let held = self.end_host_inventory_request();
-                self.apply_notices(federation_notices(held), repaint);
-                Ok(None)
-            }
-            // Un-correlated `SatelliteUnreachable` pushes while our inventory is
-            // in flight are held (see `PeerWatch::held_unreachable`).
-            FrameKind::Error {
+        use super::super::subscriptions::InventoryReply;
+        // Grey panes immediately; the inventory owner retains the notice until
+        // its correlated reply, refusal or deadline explains it.
+        if self.peers.inventory_in_flight()
+            && let FrameKind::Error {
                 request_id: None,
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
                 message,
-            } if self.peers.hosts_pending.is_some() => {
-                self.hold_unreachable_during_inventory(message);
+            } = &frame
+            && crate::attach::pane_state::note_satellite_unreachable(
+                &mut self.mirror.panes,
+                message,
+            )
+        {
+            self.peer_presentation.chrome_dirty = true;
+        }
+        match self.peers.take_inventory_reply(frame) {
+            Ok(InventoryReply::Completed {
+                result,
+                asked_at,
+                held,
+            }) => {
+                let answers = self.fold_host_inventory(&result, held, repaint);
+                self.replay_returned_satellites(conn, &answers).await?;
+                self.retry_after_inventory(conn, &answers, Some(asked_at))
+                    .await?;
                 Ok(None)
             }
-            other => Ok(Some(other)),
+            Ok(InventoryReply::Refused(held)) => {
+                self.apply_notices(federation_notices(held), repaint);
+                Ok(None)
+            }
+            Ok(InventoryReply::HeldUnreachable) => Ok(None),
+            Err(frame) => Ok(Some(frame)),
         }
-    }
-
-    /// Grey panes a push says are down, and hold the notice for the inventory.
-    fn hold_unreachable_during_inventory(&mut self, message: String) {
-        // Grey the panes now. The inventory reply still
-        // decides the notice, but the layout slot is already down.
-        if crate::attach::pane_state::note_satellite_unreachable(&mut self.mirror.panes, &message) {
-            self.peers.chrome_dirty = true;
-        }
-        self.peers.held_unreachable.push(message);
     }
 
     /// ADR-0053: the reply to a journal `APPLY_INPUT` attempt.

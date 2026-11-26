@@ -22,7 +22,7 @@ pub(in crate::attach) const PALETTE_LIVE_KEY: &str = "command-palette";
 /// Everything the palette's rows come from: the dispatch context on open,
 /// the session loop on a refresh.
 pub(in crate::attach) struct PaletteSources<'a> {
-    pub keybindings: Option<&'a phux_config::KeybindingsCfg>,
+    pub keybindings: &'a phux_config::KeybindingsCfg,
     pub plugin_actions: &'a [phux_config::plugin::actions::PluginActionEntry],
     pub plugin_panes: &'a [crate::attach::plugin_panes::PluginPaneEntry],
     pub workspace: &'a crate::layout::ArrangementDoc,
@@ -60,7 +60,7 @@ pub(in crate::attach) fn push_action_finder(ActionCall { ctx, panes, .. }: Actio
 pub(in crate::attach) fn palette_rows(src: &PaletteSources<'_>) -> Vec<SelectItem> {
     let recent = palette_recent::load(&palette_recent::default_path());
     let mut commands = crate::attach::action_registry::palette_items(
-        src.keybindings,
+        Some(src.keybindings),
         src.plugin_actions,
         src.plugin_panes,
     );

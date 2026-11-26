@@ -284,6 +284,9 @@ pub fn placeholder(desk: &Desk, p: &Tokens) -> El {
         .then(|| phone::pair_again("placeholder-pair"))
         .into_iter()
         .chain(remedy(&standing, updates))
+        .chain(desk.can_review_raw_relaunch().then(|| {
+            Act::new("Review raw recipe…", "placeholder-review-raw", Desk::review_raw_relaunch).secondary()
+        }))
         // Words under the phone's dial mean it has gone on long enough to
         // act on.
         .chain(phone::slow_dial(desk, &standing).then(retry))

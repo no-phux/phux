@@ -55,7 +55,27 @@ enum NativeControlsContractTests {
         try foreignViews(host, controls)
         try emptyAndDuplicateIDs(host, controls)
         try changedAppearance(host, controls)
-        return ["native-control-stability"]
+        try closedByDyingHost()
+        return ["native-control-stability", "native-control-teardown"]
+    }
+
+    /// `RuneView.close` as its deinit runs it: pairing again replaces the
+    /// surface, and the controls must not read the host it is freeing.
+    private static func closedByDyingHost() throws {
+        @MainActor
+        final class Host: UIView {
+            var controls: NativeControls?
+            isolated deinit { controls?.removeAll() }
+        }
+        weak var button: UIView?
+        autoreleasepool {
+            let host = Host(frame: CGRect(x: 0, y: 0, width: 320, height: 568))
+            let controls = NativeControls(host: host)
+            controls.update(specs(["a"]))
+            button = host.subviews.last
+            host.controls = controls
+        }
+        try require(button == nil, "A freed surface kept its native controls")
     }
 
     private static func ordering(_ host: CountingHost, _ controls: NativeControls) throws {

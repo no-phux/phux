@@ -1,20 +1,17 @@
 //! `phux new --empty`: a session with no terminal yet.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use phux_client::session::CreateEmptyOutcome;
-use phux_protocol::wire::frame::AttachTarget;
+use phux_protocol::wire::frame::{Committed, SessionLifetime};
 
 use crate::commands::server_target::ServerTarget;
 use crate::commands::{
     attach::report_attach_end, attach::run_attach_once, server::ensure_server_unseeded,
 };
 
-use super::create::{
-    reject_duplicate_session_name, report_create_failed, report_create_refused,
-    report_create_session_error, report_session_not_registered, warn_partial_results,
-};
-use super::naming::{choose_session_name, existing_session_names};
+use super::create::{committed_session_error, report_org_create_error};
+use super::naming::resolve_session_name;
 
 /// `phux new --empty [NAME]`: create an empty session, then attach to it. The
 /// TUI renders its empty state, from which a new window starts a terminal.
@@ -28,27 +25,36 @@ pub(super) fn run_new_empty_attached(
     {
         return code;
     }
-    let existing = existing_session_names(rt, target);
-    let name = match choose_session_name(requested, &existing) {
-        Ok(name) => name,
+    let name = resolve_session_name(rt, target, requested);
+    ensure_local_unseeded_server(target, false);
+    let session_target = match rt.block_on(async {
+        let receipt = create_empty_session_via_metadata(target, &name, false).await?;
+        let selected = async {
+            let mut conn = target
+                .connect()
+                .await
+                .map_err(phux_client::org::OrgError::Attach)?;
+            phux_client::org::attach_target_for_receipt(&mut conn, &receipt).await
+        }
+        .await;
+        selected.map_err(|err| {
+            let mut error = committed_session_error(&name, &receipt);
+            let _ = write!(error.message, "; exact attach selection failed: {err}");
+            crate::commands::json_err::emit(false, &error, 1)
+        })
+    }) {
+        Ok(target) => target,
         Err(code) => return code,
     };
-    ensure_local_unseeded_server(target, false);
-    if let Err(code) = rt.block_on(create_empty_session_via_metadata(target, &name, false)) {
-        return code;
-    }
     let dial = target.dial();
     let predict_cfg = super::super::attach::predictive_config_for(&dial);
-    match rt.block_on(run_attach_once(
-        &dial,
-        AttachTarget::ByName(name.clone()),
-        predict_cfg,
-    )) {
+    match rt.block_on(run_attach_once(&dial, session_target, predict_cfg)) {
         Ok(attach_end) => {
             report_attach_end(attach_end);
             ExitCode::SUCCESS
         }
         Err(err) => {
+            warn!("session '{name}' was created; inspect `phux ls` before retrying the attach");
             target.report_attach_failure(&err, &name);
             ExitCode::FAILURE
         }
@@ -64,7 +70,7 @@ pub(super) fn run_new_empty_json(
 ) -> ExitCode {
     ensure_local_unseeded_server(target, true);
     match rt.block_on(create_empty_session_via_metadata(target, name, true)) {
-        Ok(()) => crate::output::json(&empty_session_json(name)),
+        Ok(_) => crate::output::json(&empty_session_json(name)),
         Err(code) => code,
     }
 }
@@ -103,26 +109,18 @@ pub(crate) async fn create_empty_session_via_metadata(
     server: &ServerTarget,
     name: &str,
     json: bool,
-) -> Result<(), ExitCode> {
+) -> Result<Committed, ExitCode> {
     let mut conn = server
         .connect()
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    reject_duplicate_session_name(&mut conn, server, name, json).await?;
-    let mut notices = Vec::new();
-    let result = phux_client::session::create_empty_session(&mut conn, name, &mut notices).await;
-    drop(conn);
-    // Printed before the error is reported, in encounter order: a notice
-    // collected before a later transport failure must not be dropped.
-    warn_partial_results(&notices);
-    let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
-    match outcome {
-        CreateEmptyOutcome::Created => Ok(()),
-        CreateEmptyOutcome::ReadRefused(refusal) => Err(report_create_failed(
-            json,
-            format!("server refused the read-back: {refusal}"),
-        )),
-        CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
-        CreateEmptyOutcome::Refused(refusal) => Err(report_create_refused(json, name, &refusal)),
-    }
+    phux_client::org::create_session(
+        &mut conn,
+        phux_client::org::mint_operation(),
+        name.to_owned(),
+        SessionLifetime::Persistent,
+        None,
+    )
+    .await
+    .map_err(|err| report_org_create_error(server, json, name, err))
 }

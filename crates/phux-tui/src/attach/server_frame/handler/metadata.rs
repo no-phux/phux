@@ -104,7 +104,7 @@ pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
     })
 }
 
-/// The pane's foreground and program-set icon from its
+/// The pane's foreground, program-set icon and background work from its
 /// `phux.pane-occupant/v1` record: they name the window, so a change
 /// repaints the chrome.
 fn apply_occupant<W: crate::attach::RenderSink>(
@@ -112,17 +112,19 @@ fn apply_occupant<W: crate::attach::RenderSink>(
     terminal: &ResourceId,
     value: Option<&[u8]>,
 ) -> FrameOutcome {
-    let (foreground, icon) = value
+    let (foreground, icon, background) = value
         .and_then(parse_pane_occupant)
-        .map_or((None, None), |record| {
-            (Some(record.foreground), record.icon)
+        .map_or((None, None, false), |record| {
+            (Some(record.foreground), record.icon, record.background)
         });
     let Some(slot) = ctx.panes.get_mut(terminal) else {
         return FrameOutcome::default();
     };
-    let changed = slot.foreground != foreground || slot.program_icon != icon;
+    let changed =
+        slot.foreground != foreground || slot.program_icon != icon || slot.background != background;
     slot.foreground = foreground;
     slot.program_icon = icon;
+    slot.background = background;
     FrameOutcome {
         chrome_dirty: changed,
         ..FrameOutcome::default()
@@ -222,15 +224,14 @@ fn apply_asked_flag<W: crate::attach::RenderSink>(
 ) -> FrameOutcome {
     let asked = value == Some(b"1");
     let in_workspace = window_holding_pane(ctx.workspace, &terminal).is_some();
-    let chrome_dirty = if in_workspace
-        && let Some(slot) = ctx.panes.get_mut(&terminal)
-        && slot.attention != asked
-    {
-        slot.attention = asked;
-        true
-    } else {
-        false
-    };
+    let chrome_dirty = in_workspace
+        && ctx.panes.get_mut(&terminal).is_some_and(|slot| {
+            if asked {
+                slot.raise_attention()
+            } else {
+                std::mem::take(&mut slot.attention)
+            }
+        });
     if in_workspace {
         return FrameOutcome {
             chrome_dirty,

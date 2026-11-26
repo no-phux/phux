@@ -20,7 +20,7 @@ use session::{NewRequest, run_new, run_open};
     unused_imports,
     reason = "preserve the crate-facing worktree API after extracting session lifecycle"
 )]
-pub(crate) use session::{TaskSession, create_task_worktree, seed_terminal_of};
+pub(crate) use session::{TaskSession, create_task_worktree};
 
 mod session;
 

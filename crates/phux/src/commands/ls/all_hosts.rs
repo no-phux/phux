@@ -226,13 +226,14 @@ pub(super) fn render_listing(
     depth: &Depth,
     view: StateView,
     agents: &HashMap<ResourceId, AgentRecord>,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
 ) -> ExitCode {
-    let organization = view.organization().cloned();
-    let (snapshot, degradation) = view.into_parts();
     if json {
         // Not stderr: a `--json` consumer's channel is the document.
-        return print_sessions_json(&snapshot, organization.as_ref(), &degradation);
+        return print_sessions_json(&view);
     }
+    let organization = view.organization().cloned();
+    let (snapshot, degradation) = view.into_parts();
     let sources = Sources {
         snapshot: &snapshot,
         organization: organization.as_ref(),
@@ -244,7 +245,7 @@ pub(super) fn render_listing(
         return code;
     }
     if depth.detail {
-        print_sessions(&snapshot, organization.as_ref());
+        print_sessions(&snapshot, organization.as_ref(), resumes);
     } else {
         print_lines(glance_lines(sources));
     }

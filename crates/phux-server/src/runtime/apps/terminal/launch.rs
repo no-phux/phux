@@ -90,6 +90,7 @@ pub(crate) fn seed_pane_command(
         engine_launch::default_shell_command(&shell, login_shell)
     });
     let (term, fixed) = state.with(|s| (s.config().term.clone(), s.config().fixed_cwd.clone()));
+    engine_launch::apply_pane_env(&mut cmd);
     engine_launch::apply_term(&mut cmd, &term);
     engine_launch::apply_spawn_cwd(&mut cmd, fixed.as_deref(), "seed");
     cmd
@@ -109,8 +110,10 @@ pub(crate) fn seed_named_session(
     let (with_pty, scrollback) =
         state.with(|s| (s.config().attach_create_seeds_pty, s.config().scrollback));
     let seed_cmd = with_pty.then(|| named_session_command(state, name, command, cwd, env));
-    super::commands::seed::seed_session(state, name, seed_cmd, scrollback, root_token, None, origin)
-        .map_err(|err| err.to_string())
+    crate::runtime::commands::terminal::seed::seed_session(
+        state, name, seed_cmd, scrollback, root_token, None, origin,
+    )
+    .map_err(|err| err.to_string())
 }
 
 /// A fresh start's pre-seeded session `name`: its pane runs `configured`
@@ -125,33 +128,25 @@ pub(crate) fn seed_initial_session(
 ) -> Result<(), String> {
     let seeded = if with_pty {
         let command = seed_pane_command(state, configured);
-        super::commands::seed::seed_session_with_pty(state, name, command, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_pty(
+            state, name, command, scrollback, root_token,
+        )
     } else {
-        super::commands::seed::seed_session_with_actor(state, name, scrollback, root_token)
+        crate::runtime::commands::terminal::seed::seed_session_with_actor(
+            state, name, scrollback, root_token,
+        )
     };
     seeded.map(|_| ()).map_err(|err| err.to_string())
 }
 
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its last directory (else its cwd), with its environment and
-/// the server's `TERM`. A `relaunch` never repeats an agent's one-shot
-/// task ([`super::resume::is_agent_task`]): it starts the shell instead.
-pub(crate) fn spec_command(
-    s: &ServerState,
-    launch: &phux_core::TerminalLaunch,
-    relaunch: bool,
-) -> LaunchCommand {
+/// the server's `TERM`. Admission chose the exact executable recipe; execution
+/// never substitutes an archived fallback or re-resolves a template.
+pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
     let cwd = launch.relaunch_cwd().map(std::path::Path::to_path_buf);
     let launch = launch.clone();
-    // A program the user allowlisted picks up where it left off; it runs
-    // as the pane's process, like any other recorded argv.
-    let argv = super::resume::argv(s, &launch).unwrap_or_else(|| {
-        if relaunch && super::resume::is_agent_task(&launch.argv) {
-            Vec::new()
-        } else {
-            launch.argv
-        }
-    });
+    let argv = launch.argv;
     let mut cmd = argv_command((!argv.is_empty()).then_some(argv)).unwrap_or_else(|| {
         engine_launch::default_shell_command(s.config().shell.as_str(), s.config().login_shell)
     });
@@ -166,53 +161,4 @@ pub(crate) fn spec_command(
     }
     engine_launch::apply_term(&mut cmd, s.config().term.as_str());
     cmd
-}
-
-/// Execute a Terminal launch only. The host already committed the resource
-/// activation; the existing launch path reports process creation failures.
-pub(crate) fn execute(launch: super::super::ResourceLaunch<'_>) -> Result<(), String> {
-    let super::super::ResourceLaunch {
-        state,
-        resource,
-        spec,
-        root_token,
-    } = launch;
-    let phux_core::LaunchSpec::Terminal(spec) = spec else {
-        return Err("the Terminal app received another kind's launch spec".to_owned());
-    };
-    let (scrollback, cmd) = state.with_mut(|s| {
-        // A later activation of the same record is a relaunch.
-        let relaunch = s
-            .registry()
-            .record(resource)
-            .and_then(|record| record.activation.as_ref())
-            .is_some_and(|activation| activation.id != phux_core::ActivationId::FIRST);
-        let cmd = s
-            .config()
-            .attach_create_seeds_pty
-            .then(|| spec_command(s, spec, relaunch));
-        let wire = s.idspace.intern_resource(resource);
-        super::commands::set_agent_session(s, wire.clone(), spec.restore.clone());
-        super::notify_mode::install(s, &wire, spec);
-        (s.config().scrollback, cmd)
-    });
-    let cmd = cmd.map(|mut cmd| {
-        state.with_mut(|s| {
-            let _ = super::commands::register_pty_command(s, resource, &mut cmd);
-        });
-        cmd
-    });
-    super::commands::launch_pane_actor_with_failure_policy(
-        state,
-        resource,
-        cmd,
-        super::commands::DEFAULT_SPAWN_DIMS,
-        scrollback,
-        root_token,
-        None,
-        crate::runtime::commands::SpawnAttribution::default(),
-        true,
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
 }

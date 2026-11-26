@@ -32,7 +32,10 @@ mod batch;
 mod frames;
 mod resolve;
 
-pub use batch::{BatchTooLarge, validate_apply_input_batch};
+pub use batch::{
+    BatchTooLarge, InputSubmission, UserPasteDelivery, user_paste_delivery,
+    validate_apply_input_batch,
+};
 #[cfg(test)]
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 pub use resolve::operation_id_hex;

@@ -3,6 +3,8 @@ use crate::error::Error;
 use crate::id::{Alias, ObjectiveState, OperationId, RunState};
 use crate::store::{AddObjective, RevisionEdit, StateEdit, Store};
 
+mod storage;
+
 fn open() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::open(&dir.path().join("work-v1.sqlite")).expect("open");

@@ -30,6 +30,7 @@ fn watched_tree(
     crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),
         core,
+        state.with(|s| s.activation_token(core).unwrap()),
         Some(bundle.exit_notify),
         CancellationToken::new(),
         None,

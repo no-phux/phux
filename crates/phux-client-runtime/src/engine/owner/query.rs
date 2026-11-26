@@ -32,6 +32,10 @@ impl Owner {
 
     fn query_common(&self, query: Query) -> Option<Query> {
         match query {
+            #[cfg(all(test, feature = "engine"))]
+            Query::ViewCount(reply) => {
+                let _ = reply.send(self.views.len());
+            }
             Query::HasProjection(id, reply) => {
                 let _ = reply.send(self.has_replica(&id));
             }
@@ -68,11 +72,20 @@ impl Owner {
     #[cfg(feature = "engine")]
     fn query_presentation(&mut self, query: Query) -> Option<Query> {
         match query {
-            Query::SyncOutputDeadline(reply) => {
-                let _ = reply.send(self.sync_output_deadline());
+            Query::PresentationDeadline(reply) => {
+                let deadline = [self.sync_output_deadline(), self.prediction_deadline()]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                let _ = reply.send(deadline);
             }
-            Query::ExpireSyncOutput(now, reply) => {
-                let expired = self.expire_sync_output(now);
+            Query::ExpirePresentation(now, reply) => {
+                let mut expired = self.expire_sync_output(now);
+                for id in self.expire_predictions(now) {
+                    if !expired.contains(&id) {
+                        expired.push(id);
+                    }
+                }
                 let _ = reply.send(expired);
             }
             Query::Scroll(id, scroll, reply) => {
@@ -153,7 +166,7 @@ impl Owner {
             Query::Prompt(id, reply) => {
                 let _ = reply.send(
                     self.terminal(&id)
-                        .map_or(ReplicaPrompt::Unknown, views::replica_prompt),
+                        .map_or(ReplicaPrompt::Unknown, views::prompts::replica_prompt),
                 );
             }
             query => return Some(query),

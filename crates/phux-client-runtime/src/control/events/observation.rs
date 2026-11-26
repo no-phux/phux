@@ -49,6 +49,7 @@ impl Event {
         matches!(
             self,
             Self::TerminalSpawned { .. }
+                | Self::TerminalCreation { .. }
                 | Self::TerminalAttached { .. }
                 | Self::TerminalDetached { .. }
                 | Self::TerminalKilled { .. }

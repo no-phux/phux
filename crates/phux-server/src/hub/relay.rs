@@ -56,6 +56,10 @@ const RELAY_RETIREMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// this catches quiet partitions and satellites that never answer.
 pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Fresh bootstraps the hub asks for one consumer in quick succession (each
+/// four times later than the last) before it fails the subscription.
+const MAX_BOOTSTRAP_ASKS: u32 = 4;
+
 /// Upper bound on one relayed `LIST_DIRECTORY`: the satellite's own 5 s walk
 /// bound plus link time. Shorter than [`RELAY_COMMAND_TIMEOUT`] because a
 /// person is waiting on the picker.
@@ -90,14 +94,52 @@ pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryE
 }
 
 /// Only identity/kind facts and the selected Terminal profile survive between
-/// routing calls; they are cleared at every link incarnation boundary.
-#[derive(Debug, Default)]
+/// routing calls; they are cleared at every link incarnation boundary. The
+/// generation counter is not: it must outlive the link.
+#[derive(Debug)]
 pub(crate) struct RelayCatalog {
+    /// Process-unique negotiated link identity; zero means disconnected.
+    epoch: u64,
     kinds: HashMap<u32, phux_protocol::ids::ResourceKind>,
     /// Each enumerated resource's control class, which the hub judges a
     /// watch by (`docs/authority.md`); learned only from inventory.
     controls: HashMap<u32, Option<phux_protocol::wire::frame::ControlClass>>,
     terminal_profile: Option<BootstrapProfile>,
+    /// [`RelaySession::generations`], for every session of this link.
+    generations: Arc<AtomicU64>,
+}
+
+impl Default for RelayCatalog {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            kinds: HashMap::new(),
+            controls: HashMap::new(),
+            terminal_profile: None,
+            generations: first_generation(),
+        }
+    }
+}
+
+impl RelayCatalog {
+    /// Retire every negotiated fact of the link that ended; the generation
+    /// counter outlives it.
+    fn end_link(&mut self) {
+        let generations = Arc::clone(&self.generations);
+        *self = Self {
+            generations,
+            ..Self::default()
+        };
+    }
+}
+
+/// Where a link's outward generations start: microseconds since the epoch,
+/// so a restarted hub is past every id its predecessor handed out.
+fn first_generation() -> Arc<AtomicU64> {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |since| u64::try_from(since.as_micros()).unwrap_or(1));
+    Arc::new(AtomicU64::new(micros.max(1)))
 }
 
 pub(crate) type ResourceKindCatalog = Arc<Mutex<RelayCatalog>>;
@@ -292,14 +334,28 @@ pub(crate) enum RelayRequest {
     },
 }
 
+/// A queued operation belongs to exactly the connection its producer observed.
+#[derive(Debug)]
+pub(crate) struct QueuedRelayRequest {
+    pub(crate) epoch: u64,
+    pub(crate) owner: Option<CancellationToken>,
+    pub(crate) request: RelayRequest,
+}
+
+#[derive(Debug)]
+pub(crate) struct QueuedUnsubscribe {
+    pub(crate) epoch: u64,
+    pub(crate) unsubscribe: Unsubscribe,
+}
+
 /// Receiving half of one satellite's relay, drained by
 /// [`super::link::run_link`].
 #[derive(Debug)]
 pub(crate) struct RelayMailbox {
     /// Bounded consumer-request mailbox ([`RELAY_MAILBOX`]).
-    pub(crate) requests: mpsc::Receiver<RelayRequest>,
+    pub(crate) requests: mpsc::Receiver<QueuedRelayRequest>,
     /// Unbounded, undroppable subscription teardown (phux-v45.11).
-    pub(crate) unsubscribes: mpsc::UnboundedReceiver<Unsubscribe>,
+    pub(crate) unsubscribes: mpsc::UnboundedReceiver<QueuedUnsubscribe>,
     /// The hub state whose journal re-stamps relayed events (ADR-0123);
     /// `None` forwards the satellite's stamp.
     pub(crate) journal: Option<crate::state::SharedState>,
@@ -346,12 +402,15 @@ fn satellite_gap_as_source_gap(event: &mut AgentEvent) {
 #[derive(Debug, Clone)]
 pub(crate) struct RelayHandle {
     host: SatelliteHost,
-    tx: mpsc::Sender<RelayRequest>,
-    unsub_tx: mpsc::UnboundedSender<Unsubscribe>,
+    tx: mpsc::Sender<QueuedRelayRequest>,
+    unsub_tx: mpsc::UnboundedSender<QueuedUnsubscribe>,
     /// Issue-order token source shared by every handle for this host, so
     /// all of its subscribe/detach operations are totally ordered.
     seq: Arc<AtomicU64>,
     resource_kinds: ResourceKindCatalog,
+    /// Registry lookups pin the observed link, including disconnected zero.
+    epoch: Option<u64>,
+    owner: Option<CancellationToken>,
 }
 
 mod admission;
@@ -365,6 +424,7 @@ mod mirror;
 pub mod relays;
 mod replies;
 mod requests;
+pub mod resume;
 mod retention;
 pub mod routing;
 pub mod state;
@@ -372,8 +432,11 @@ mod stream;
 mod withdrawal;
 
 pub(crate) use relays::*;
+pub(crate) use resume::RelayResume;
 pub(crate) use routing::*;
 pub(crate) use state::*;
+
+use resume::ContentAttach;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]

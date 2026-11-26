@@ -97,6 +97,8 @@ pub struct Negotiated {
     /// The extended features from the trailing `features_ext` word (empty
     /// from a server too old to send it).
     pub features_ext: ServerFeatureExtSet,
+    /// Executing peer's archived launch enforcement; never inferred from a hub.
+    pub features_ext2: phux_protocol::caps::ServerFeatureExt2Set,
     /// Whether the connection is the owner Unix socket.
     pub owner_uds: bool,
 }
@@ -144,7 +146,13 @@ fn judge(
         .gate
         .into_iter()
         .chain(facet.and_then(|spec| spec.gate))
-        .any(|gate| !gate.advertised(negotiated.features, negotiated.features_ext));
+        .any(|gate| {
+            !gate.advertised(
+                negotiated.features,
+                negotiated.features_ext,
+                negotiated.features_ext2,
+            )
+        });
     if unadvertised {
         return Some(Unavailable::FeatureUnadvertised);
     }
@@ -192,15 +200,32 @@ impl ResourceMethods {
 pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMethods, LookupError> {
     let mut conn = Connection::connect(socket).await?;
     let (info, _snapshot, _unreachable) = super::lookup_on(&mut conn, resource).await?;
-    let (features, features_ext) = conn.negotiated_bootstrap().map_or_else(
-        || (ServerFeatureSet::new(), ServerFeatureExtSet::new()),
-        |negotiated| (negotiated.server_features, negotiated.server_features_ext),
+    let (features, features_ext, features_ext2) = conn.negotiated_bootstrap().map_or_else(
+        || {
+            (
+                ServerFeatureSet::new(),
+                ServerFeatureExtSet::new(),
+                phux_protocol::caps::ServerFeatureExt2Set::new(),
+            )
+        },
+        |negotiated| {
+            (
+                negotiated.server_features,
+                negotiated.server_features_ext,
+                if resource.is_local() {
+                    negotiated.server_features_ext2
+                } else {
+                    phux_protocol::caps::ServerFeatureExt2Set::new()
+                },
+            )
+        },
     );
     drop(conn);
     let negotiated = Negotiated {
         features,
         features_ext,
-        owner_uds: true,
+        features_ext2,
+        owner_uds: resource.is_local(),
     };
     Ok(ResourceMethods {
         resource: resource.clone(),
@@ -283,6 +308,7 @@ mod tests {
         let negotiated = Negotiated {
             features: ServerFeatureSet::with(ServerFeature::ALL),
             features_ext: ServerFeatureExtSet::new(),
+            features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
             owner_uds: true,
         };
         let listed = availability(ResourceKind::PixelSurface, negotiated);
@@ -315,6 +341,7 @@ mod tests {
         let everything = Negotiated {
             features: ServerFeatureSet::with(ServerFeature::ALL),
             features_ext: ServerFeatureExtSet::new(),
+            features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
             owner_uds: true,
         };
         assert_eq!(
@@ -340,6 +367,7 @@ mod tests {
         let negotiated = Negotiated {
             features: ServerFeatureSet::with(ServerFeature::ALL),
             features_ext: ServerFeatureExtSet::with(ServerFeatureExt::ALL),
+            features_ext2: phux_protocol::caps::ServerFeatureExt2Set::all(),
             owner_uds: true,
         };
         for kind in [ResourceKind::Terminal, ResourceKind::AgentSession] {

@@ -1,6 +1,6 @@
 use super::metadata_read::protected_key_refusal;
 use super::session_create::{apply_session_keep_empty, handle_session_create_metadata};
-use crate::runtime::apps::terminal::notify_mode;
+use crate::runtime::apps::terminal::{notify_mode, parent};
 use crate::state::{ClientId, Outbound, ServerInterceptedKey, ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, MAX_AGENT_RECORD_BYTES, RESOURCE_AGENT_KEY, Scope};
@@ -106,7 +106,10 @@ fn reject_set_metadata(
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
-    if let Some(reason) = notify_mode::refusal(scope, key, value) {
+    if let Some(reason) = notify_mode::refusal(scope, key, value)
+        .or_else(|| parent::refusal(scope, key, value))
+        .or_else(|| crate::state::unseen::refusal(scope, key, value))
+    {
         warn!(?client_id, request_id, %key, reason, "SET_METADATA: ignoring");
         return true;
     }
@@ -271,8 +274,20 @@ pub(super) fn handle_set_metadata(
                 apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
                 return;
             }
+            phux_protocol::wire::frame::VIEW_SIZE_LOCK_KEY => {
+                crate::runtime::commands::terminal::terminal_input::handle_size_lock(
+                    state, client_id, &value,
+                );
+                return;
+            }
             _ => {}
         }
+    }
+    if key == phux_protocol::wire::frame::RESOURCE_IN_VIEW_KEY {
+        if let Scope::Resource(pane) = scope {
+            state.with_mut(|s| s.set_in_view(client_id, pane, value == b"true"));
+        }
+        return;
     }
     if translate_layout_metadata(state, client_id, request_id, scope, key, &value) {
         return;
@@ -283,6 +298,7 @@ pub(super) fn handle_set_metadata(
     let config_reload =
         key == phux_protocol::wire::frame::CONFIG_RELOAD_KEY && matches!(scope, Scope::Global);
     notify_mode::persist(state, scope, key, Some(&value));
+    parent::persist(state, scope, key, Some(&value));
     store_metadata_value(state, client_id, request_id, scope, key, value);
     // A hub is a doorbell consumer too: it re-reads its own `[[satellites]]`
     //, before any later frame on this connection is handled, so a
@@ -386,6 +402,12 @@ pub(super) fn handle_delete_metadata(
         warn!(?client_id, request_id, %key, reason, "DELETE_METADATA: ignoring");
         return;
     }
+    if let (Scope::Resource(pane), phux_protocol::wire::frame::RESOURCE_UNSEEN_KEY) = (scope, key) {
+        if !reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
+            let _ = state.with_mut(|s| s.note_seen(client_id, pane));
+        }
+        return;
+    }
     let (delivered, hook) = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
@@ -404,6 +426,7 @@ pub(super) fn handle_delete_metadata(
     });
     invalidate_agent_detector(state, scope, key);
     notify_mode::persist(state, scope, key, None);
+    parent::persist(state, scope, key, None);
     if let Some(event) = hook {
         crate::hooks::fire_hook(state, event);
     }

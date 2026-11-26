@@ -158,7 +158,7 @@ impl super::SessionLoop {
             ));
         }
         if changed || !replay.is_empty() {
-            self.peers.chrome_dirty = true;
+            self.peer_presentation.chrome_dirty = true;
         }
         self.attach_discovered_panes(conn, &replay).await
     }
@@ -166,7 +166,7 @@ impl super::SessionLoop {
     /// Arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
     /// is down and no host inventory is already in flight.
     pub(super) fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
-        if self.peers.hosts_pending.is_none()
+        if !self.peers.inventory_in_flight()
             && self.mirror.panes.values().any(|slot| slot.satellite_down)
         {
             self.satellite_probe_at

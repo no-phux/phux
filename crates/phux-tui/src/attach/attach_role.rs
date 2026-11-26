@@ -2,10 +2,10 @@
 //! set once by the CLI and read by every `ATTACH`, so reconnects and switches
 //! keep it.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::wire::frame::RolePolicy;
+use phux_protocol::wire::frame::{FrameKind, RolePolicy, Scope, VIEW_SIZE_LOCK_KEY};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -17,6 +17,41 @@ static ATTACH_ROLE: AtomicU8 = AtomicU8::new(0);
 /// Declare the role every later `ATTACH` from this process carries.
 pub fn set_attach_role(policy: RolePolicy) {
     ATTACH_ROLE.store(policy.to_u8(), Ordering::Relaxed);
+}
+
+/// Validate before committing work without consuming a one-shot takeover.
+pub(super) fn check_attach_role(conn: &Connection) -> Result<(), AttachError> {
+    let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
+    role_field(policy, advertises_roles(conn)).map(|_| ())
+}
+
+/// Whether this process holds the view size lock: `--lock-size`,
+/// `defaults.lock-size`, or the palette's live switch.
+static SIZE_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Declare whether this process holds the view size lock. The server ends
+/// the lock with each attachment, so every later `ATTACH` re-claims it.
+pub fn set_size_lock(locked: bool) {
+    SIZE_LOCK.store(locked, Ordering::Relaxed);
+}
+
+/// Whether this process holds the view size lock.
+pub(super) fn size_locked() -> bool {
+    SIZE_LOCK.load(Ordering::Relaxed)
+}
+
+/// The `SET_METADATA` claiming or releasing the sender's size lock.
+pub(super) fn size_lock_frame(request_id: u32, locked: bool) -> FrameKind {
+    FrameKind::SetMetadata {
+        request_id,
+        scope: Scope::Global,
+        key: VIEW_SIZE_LOCK_KEY.to_owned(),
+        value: if locked {
+            b"true".to_vec()
+        } else {
+            b"false".to_vec()
+        },
+    }
 }
 
 /// The `role_policy` for an `ATTACH` on `conn`: `None` by default (byte

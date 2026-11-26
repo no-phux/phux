@@ -89,7 +89,7 @@ fn on_screen(rt: &rune::Runtime<Desk>, client: &Client) -> Option<String> {
 }
 
 fn type_x(rt: &mut rune::Runtime<Desk>) {
-    rt.update(|desk, _| desk.send_input(|control, id| control.send_text(id, "x")));
+    rt.update(|desk, _| desk.send_input(None, |control, id| control.send_text(id, "x")));
 }
 
 #[test]

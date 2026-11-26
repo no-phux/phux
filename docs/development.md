@@ -161,6 +161,18 @@ worktree. Gate recipes lease the worktree to the session that runs them and
 refuse another live session with exit 3. `just worktree-release` hands one
 on; `PHUX_WORKTREE_TAKEOVER=1` is for a deliberate handoff.
 
+Finished worktrees keep their build output until someone removes them.
+`just worktree-prune` reports what it would reclaim from idle linked
+worktrees: nothing touched for six hours, no live lease, no process inside,
+not locked. `--apply` removes each clean worktree whose work has landed and
+deletes its branch. Landed means its HEAD is in `origin/main`, merging it
+would change nothing, or `gh` finds a merged PR containing it, so a squash
+merge counts whatever the branch was called and whether it was pushed. Every
+other idle worktree loses only its `target` and ignored `node_modules`.
+Dirty worktrees, work that has not landed and detached checkouts are listed
+for you, not removed. `--outputs-only` never removes a worktree, which suits a
+scheduled job; `git worktree lock` opts a worktree out.
+
 ### Running the result
 
 ```sh

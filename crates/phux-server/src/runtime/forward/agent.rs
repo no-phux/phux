@@ -2,21 +2,26 @@
 //! `features_ext.FORWARD_AGENT`; `docs/ssh.md#ssh-agent`).
 //!
 //! The server serves an owner-only `SSH_AUTH_SOCK` but holds no key: list and
-//! sign requests go, as unjournaled `agent_request` events, to the one client
-//! that offered its agent; everything else gets `SSH_AGENT_FAILURE`. The
-//! broker table lives in `ServerState`, so each step is one lock.
+//! sign requests go, as unjournaled `agent_request` events, to the client that
+//! offered its agent last; everything else gets `SSH_AGENT_FAILURE`. The
+//! broker table lives in `ServerState`, so each step is one lock. Each
+//! request names the pane it seems to come from, and one no client answered
+//! becomes that pane's note.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use phux_protocol::forward::{
     AGENT_REQUEST_SECS, MAX_AGENT_MESSAGE_BYTES, SSH_AGENT_FAILURE, agent_answer_type,
     sign_request_key,
 };
-use phux_protocol::wire::frame::{AgentEvent, CommandResult, ErrorCode, FrameKind};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{
+    AgentEvent, CommandResult, ErrorCode, FrameKind, RESOURCE_NOTE_KEY, Scope,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -35,6 +40,9 @@ const MAX_PENDING: usize = 64;
 const MAX_CONNECTIONS: usize = 64;
 /// How long a pane's request waits for the offering client.
 pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(AGENT_REQUEST_SECS);
+/// At most one unanswered-request note per pane this often: a background
+/// `git fetch` must not repeat it every minute.
+const NOTE_GAP: Duration = Duration::from_secs(300);
 
 /// The broker socket for the server listening at `server_socket`: beside
 /// it, in the server's runtime directory.
@@ -46,7 +54,7 @@ fn socket_path_for(server_socket: &Path) -> PathBuf {
     server_socket.with_file_name(name)
 }
 
-/// The client serving its agent, and where its events go.
+/// A client serving its agent, and where its events go.
 #[derive(Debug)]
 struct Offer {
     client: ClientId,
@@ -60,13 +68,16 @@ struct Pending {
     answer: oneshot::Sender<Vec<u8>>,
 }
 
-/// The server's ssh-agent broker: its socket, the current offer, and the
+/// The server's ssh-agent broker: its socket, the clients serving, and the
 /// requests in flight.
 #[derive(Debug, Default)]
 pub(crate) struct Broker {
     socket: Option<PathBuf>,
-    offer: Option<Offer>,
+    /// Oldest first, each connection once: the last one answers.
+    offers: Vec<Offer>,
     pending: HashMap<u64, Pending>,
+    /// When each pane was last told a request went unanswered.
+    noted: HashMap<ResourceId, Instant>,
     /// Never reused within a server process.
     last_id: u64,
 }
@@ -80,32 +91,37 @@ impl Broker {
     }
 
     /// `client` now serves its agent. The newest offer wins: an earlier
-    /// client keeps the requests it was already sent and gets no new one.
+    /// client keeps the requests it was already sent and gets no new one
+    /// until the newer ones leave.
     fn offer(&mut self, client: ClientId, out_tx: mpsc::Sender<Outbound>) {
-        self.offer = Some(Offer { client, out_tx });
+        self.offers.retain(|offer| offer.client != client);
+        self.offers.push(Offer { client, out_tx });
     }
 
-    /// Hand `message` to the offering client; its reply resolves `answer`.
+    /// Hand `message` from `pane` to the newest offering client; its reply
+    /// resolves `answer`.
     fn deliver(
         &mut self,
+        pane: Option<ResourceId>,
         message: Vec<u8>,
         answer: oneshot::Sender<Vec<u8>>,
     ) -> Result<(u64, ClientId), &'static str> {
-        let offer = self.offer.as_ref().ok_or("no client offers an agent")?;
+        self.offers.retain(|offer| !offer.out_tx.is_closed());
+        let offer = self.offers.last().ok_or("no client offers an agent")?;
         if self.pending.len() >= MAX_PENDING {
             return Err("too many requests are waiting");
         }
         self.last_id += 1;
         let id = self.last_id;
         let event = FrameKind::Event {
-            terminal: None,
+            terminal: pane,
             event: AgentEvent::SshAgentRequest { id, message },
             stamp: None,
         };
         offer
             .out_tx
             .try_send(Outbound::Frame(event))
-            .map_err(|_| "the offering client is gone or not keeping up")?;
+            .map_err(|_| "the offering client is not keeping up")?;
         let client = offer.client;
         self.pending.insert(id, Pending { client, answer });
         Ok((id, client))
@@ -127,10 +143,20 @@ impl Broker {
     /// `client`'s connection ended: its offer goes, and every request
     /// waiting on it fails now (dropping `answer` wakes the pane's side).
     fn withdraw(&mut self, client: ClientId) {
-        if self.offer.as_ref().is_some_and(|o| o.client == client) {
-            self.offer = None;
-        }
+        self.offers.retain(|offer| offer.client != client);
         self.pending.retain(|_, waiting| waiting.client != client);
+    }
+
+    /// Whether `pane` is due a note now; records that it got one.
+    fn note_due(&mut self, pane: &ResourceId) -> bool {
+        self.noted.retain(|_, at| at.elapsed() < NOTE_GAP);
+        match self.noted.entry(pane.clone()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(due) => {
+                due.insert(Instant::now());
+                true
+            }
+        }
     }
 }
 
@@ -250,6 +276,7 @@ fn bind(path: &Path) -> Result<UnixListener, crate::ServerError> {
 /// each, in order. A zero or over-long length ends the connection, since
 /// the stream cannot be resynchronized.
 pub(super) async fn serve(state: &SharedState, mut stream: UnixStream, deadline: Duration) {
+    let pane = pane_of(state, &stream);
     loop {
         let Ok(len) = stream.read_u32().await else {
             return;
@@ -262,7 +289,7 @@ pub(super) async fn serve(state: &SharedState, mut stream: UnixStream, deadline:
             if stream.read_exact(&mut message).await.is_err() {
                 return;
             }
-            Some(ask(state, message, deadline).await)
+            Some(ask(state, pane.clone(), message, deadline).await)
         };
         let body = reply.as_deref().unwrap_or(&[SSH_AGENT_FAILURE]);
         let mut framed = u32::try_from(body.len())
@@ -276,6 +303,57 @@ pub(super) async fn serve(state: &SharedState, mut stream: UnixStream, deadline:
     }
 }
 
+/// The pane whose process connected `stream`: the one whose child is an
+/// ancestor of the peer, or leads its session. A hint only: any process of
+/// this user can arrange to look like a pane's.
+fn pane_of(state: &SharedState, stream: &UnixStream) -> Option<ResourceId> {
+    let pid = stream.peer_cred().ok()?.pid()?;
+    let lineage = phux_resource::proc_query::lineage(pid);
+    state.with(|s| {
+        let children: HashMap<i32, _> = s
+            .resources()
+            .resource_ids()
+            .into_iter()
+            // A child (an agent session) is never the pane itself.
+            .filter(|pane| s.resource_parent(*pane).is_none())
+            .filter_map(|pane| {
+                let activation = s.registry().record(pane)?.activation.as_ref()?;
+                let child = activation
+                    .host_proc
+                    .filter(|_| activation.state.is_current())?;
+                Some((child.pid, pane))
+            })
+            .collect();
+        let pane = lineage.iter().find_map(|pid| children.get(pid))?;
+        s.idspace.resource_wire(*pane).cloned()
+    })
+}
+
+/// Tell the clients watching `pane`, as its note, that a request from it
+/// went unanswered and why.
+fn note_unanswered(state: &SharedState, pane: &ResourceId, reason: &str) {
+    let host = nix::unistd::gethostname()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .unwrap_or_default();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let note = serde_json::json!({
+        "level": "info",
+        "title": "ssh key request not answered",
+        "body": format!("A process here on {host} asked for an ssh key, but {reason}."),
+        "at": at,
+    });
+    state.with_mut(|s| {
+        // A connection can outlive its pane.
+        if s.idspace.resource_from_wire(pane).is_some() && s.forward_agent_mut().note_due(pane) {
+            let scope = Scope::Resource(pane.clone());
+            s.metadata_set(&scope, RESOURCE_NOTE_KEY, note.to_string().into_bytes());
+        }
+    });
+}
+
 /// Forgets a request however its wait ends.
 struct Unwait<'a>(&'a SharedState, u64);
 
@@ -287,10 +365,15 @@ impl Drop for Unwait<'_> {
     }
 }
 
-/// The answer to one pane request: the offering client's, when the
+/// The answer to one request from `pane`: the offering client's, when the
 /// request is a list or a sign and the answer is of the matching type
 /// within `deadline`; `SSH_AGENT_FAILURE` otherwise.
-async fn ask(state: &SharedState, message: Vec<u8>, deadline: Duration) -> Vec<u8> {
+async fn ask(
+    state: &SharedState,
+    pane: Option<ResourceId>,
+    message: Vec<u8>,
+    deadline: Duration,
+) -> Vec<u8> {
     let failure = || vec![SSH_AGENT_FAILURE];
     // Add, remove, lock, and every other request stop here.
     let Some(expected) = agent_answer_type(&message) else {
@@ -300,11 +383,18 @@ async fn ask(state: &SharedState, message: Vec<u8>, deadline: Duration) -> Vec<u
     // `ssh-add -L` does.
     let key = sign_request_key(&message).map(fingerprint);
     let (answer, answered) = oneshot::channel();
-    let delivered = state.with_mut(|s| s.forward_agent_mut().deliver(message, answer));
+    let delivered =
+        state.with_mut(|s| s.forward_agent_mut().deliver(pane.clone(), message, answer));
+    let unanswered = |reason| {
+        if let Some(pane) = &pane {
+            note_unanswered(state, pane, reason);
+        }
+        reason
+    };
     let (id, client) = match delivered {
         Ok(delivered) => delivered,
         Err(reason) => {
-            audit_sign(state, None, key, Err(reason), None);
+            audit_sign(state, None, key, Err(unanswered(reason)), None);
             return failure();
         }
     };
@@ -312,8 +402,14 @@ async fn ask(state: &SharedState, message: Vec<u8>, deadline: Duration) -> Vec<u
     let (reply, result) = match tokio::time::timeout(deadline, answered).await {
         Ok(Ok(reply)) if reply.first() == Some(&expected) => (reply, Ok(())),
         Ok(Ok(_)) => (failure(), Err("the offering client refused")),
-        Ok(Err(_)) => (failure(), Err("the offering client disconnected")),
-        Err(_) => (failure(), Err("the offering client did not answer in time")),
+        Ok(Err(_)) => (
+            failure(),
+            Err(unanswered("the offering client disconnected")),
+        ),
+        Err(_) => (
+            failure(),
+            Err(unanswered("the offering client did not answer in time")),
+        ),
     };
     drop(unwait);
     audit_sign(state, Some(client), key, result, Some(id));

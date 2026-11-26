@@ -29,6 +29,12 @@ pub fn negotiated_features(server: &ServerInfo) -> Vec<String> {
         .filter(|(feature, _)| server.features_ext.contains(*feature))
         .map(|(_, name)| name.to_owned()),
     )
+    .chain(
+        server
+            .features_ext2
+            .contains(phux_protocol::caps::ServerFeatureExt2::ArchivedLaunchAdmission)
+            .then(|| "archived-launch-admission".to_owned()),
+    )
     .collect()
 }
 
@@ -52,6 +58,7 @@ mod tests {
             id: Vec::new(),
             features: ServerFeatureSet::new(),
             features_ext: ServerFeatureExtSet::new(),
+            features_ext2: phux_protocol::caps::ServerFeatureExt2Set::new(),
             layers: LayerSet::all(),
             protocol: (0, 9, 0),
             profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,

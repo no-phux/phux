@@ -1,8 +1,8 @@
 # Developing phux on Rune
 
 `--phone` opens the phone form, where the phone app is growing ahead of
-Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and what
-waits on upstream.
+Rune's phone support: [MOBILE.md](./MOBILE.md) lists what works and
+[MOBILE_GAPS.md](./MOBILE_GAPS.md) what waits on upstream.
 
 The [native iOS host](./ios/README.md) renders the same phone view inside
 UIKit using upstream's embedded Metal host, with system input and layout
@@ -49,6 +49,11 @@ without a window:
 cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
+
+On Linux, a headless frame still leaves room at the top left for macOS's
+traffic lights (upstream `headless_chrome` reports their inset on every
+platform); a real Linux window has no such gap, so don't read it as a
+layout bug.
 
 `--tree out.json` writes the element tree, with the accessibility tree that
 screen readers and automation tools see under `"accessibility"`. Every window

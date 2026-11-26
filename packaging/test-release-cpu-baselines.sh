@@ -1,28 +1,12 @@
 #!/usr/bin/env bash
-# Fail when a public native build surface stops selecting its portable CPU floor.
+# Fail when the release builder stops selecting its portable CPU floor. The
+# static half (which surfaces call it) is tools/src/policy/release-cpu-baselines.test.ts.
 set -euo pipefail
 # shellcheck source=dev/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../dev/lib/output.sh"
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-require() {
-  grep -Fq -- "$2" "$1" || {
-    phux_error "release CPU baseline drift: $1 is missing $2"
-    exit 1
-  }
-}
-
-require .github/workflows/build-cli.yml 'bash packaging/build-release-binaries.sh "${{ matrix.target }}"'
-# The mobile xcframework: an explicit Rust floor per Apple target, the engine
-# on baseline, and no inherited RUSTFLAGS reaching a slice.
-require packaging/build-mobile-ffi-xcframework.sh 'target-cpu=apple-a7'
-require packaging/build-mobile-ffi-xcframework.sh 'target-cpu=apple-a12'
-require packaging/build-mobile-ffi-xcframework.sh 'target-cpu=apple-m1'
-require packaging/build-mobile-ffi-xcframework.sh 'LIBGHOSTTY_VT_SYS_CPU=baseline'
-require packaging/build-mobile-ffi-xcframework.sh 'unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS'
-require .github/workflows/ffi-xcframework.yml 'bash packaging/build-mobile-ffi-xcframework.sh --full'
 
 # Run the real builder against a fake cargo in a scratch directory, so the
 # receipt it writes never lands in this checkout's target/.

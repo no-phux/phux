@@ -85,8 +85,17 @@ pub(crate) fn page() -> Page {
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
          ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
+         ├── workload-ca.pem     # workload certificate authority\n\
+         ├── workload-ca.key     # its private key (owner-only, 0600)\n\
+         ├── workload-keys       # client keys the server admits\n\
          ├── workload-org-roots/ # each organization's root certificates (owner-only)\n\
+         ├── org/                # organization store: sessions, panes, and their records\n\
+         │                       # org/v1.scrollback/ keeps `[restore] scrollback` (0700)\n\
+         ├── remotes/            # credentials for each `[[remote]]` host\n\
+         ├── satellites/         # credentials for each `[[satellites]]` host\n\
+         ├── relay-cert.pem, relay-key.pem, relay-tokens  # `phux relay`\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── chats/              # private explicit conversation records and native identity files\n\
          ├── ideas/              # phux idea spool, one file per unsent capture\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
@@ -163,6 +172,21 @@ pub(crate) fn page() -> Page {
            the scope and lifetime the credential it enrolls gets; the \
            first redemption consumes it. It sits beside the \
            workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
+         - `workload-ca.pem` / `workload-ca.key` are the authority that issues \
+           client certificates and the auto-provisioned server leaf; \
+           `workload-keys` is the registry of client keys it admits. \
+           `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY` and \
+           `PHUX_WORKLOAD_KEYS` move them.\n\
+         - `org/` is what the server keeps across a restart. The profile's own \
+           socket uses `org/v1.sqlite3`; any other socket uses \
+           `org/sockets/<escaped socket path>.v1.sqlite3`. SQLite keeps `-wal` \
+           and `-shm` files beside each.\n\
+         - `remotes/` holds, per host, the bearer token `<name>.token` and the \
+           enrolled client identity `<name>.client.<digest>.pem` and `.key`. \
+           `satellites/` holds a hub's `<name>.token` files.\n\
+         - `relay-cert.pem`, `relay-key.pem` and `relay-tokens` (the route-token \
+           store) belong to `phux relay`. They are not profile-scoped: always \
+           `$XDG_STATE_HOME/phux`.\n\
          - `workload-org-roots/` holds `<org>.pem`, the root \
            certificates `phux workload sync-managed` was handed for that \
            organization, mode `0600` in a `0700` directory. A paired \

@@ -36,6 +36,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::Checkout { .. } => "checkout",
         Command::GetPerf { .. } => "get_perf",
         Command::PerfControl { .. } => "perf_control",
+        Command::OpenUrl { .. } => "open_url",
         Command::Transcribe { .. } => "transcribe",
         Command::AppendResourceOutput { .. } => "append_resource_output",
         Command::Mirror { .. } => "mirror",
@@ -175,7 +176,7 @@ async fn route_command(
             resource,
             expected,
         } = &command
-            && let Some(result) = crate::runtime::apps::claim_native_agent_relaunch(
+            && let Some(result) = crate::runtime::commands::native_agent::claim_relaunch(
                 ctx, *operation, resource, *expected,
             )
         {

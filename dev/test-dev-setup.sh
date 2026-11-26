@@ -206,14 +206,39 @@ export SETUP_TEST_ARCHIVE="$scratch/download.tar.xz"
 export SETUP_TEST_DOWNLOADS="$scratch/downloads"
 cat >"$bin/curl" <<'SH'
 #!/bin/sh
-echo download >>"$SETUP_TEST_DOWNLOADS"
+set -eu
+resume=
+output=
 while [ "$#" -gt 0 ]; do
-    if [ "$1" = -o ]; then cp "$SETUP_TEST_ARCHIVE" "$2"; exit; fi
+    case "$1" in
+        -C) resume=$2; shift ;;
+        -o) output=$2; shift ;;
+    esac
     shift
 done
-exit 1
+[ -n "$output" ] || exit 1
+case "${SETUP_TEST_CURL_MODE:-complete}" in
+    complete)
+        echo complete >>"$SETUP_TEST_DOWNLOADS"
+        cp "$SETUP_TEST_ARCHIVE" "$output" ;;
+    resume|no-range)
+        [ "$resume" = - ] || exit 1
+        if [ ! -s "$output" ]; then
+            echo partial >>"$SETUP_TEST_DOWNLOADS"
+            head -c 40 "$SETUP_TEST_ARCHIVE" >"$output"
+            exit 18
+        fi
+        if [ "$SETUP_TEST_CURL_MODE" = no-range ]; then
+            echo refused-range >>"$SETUP_TEST_DOWNLOADS"
+            exit 33
+        fi
+        echo resumed >>"$SETUP_TEST_DOWNLOADS"
+        tail -c +41 "$SETUP_TEST_ARCHIVE" >>"$output" ;;
+esac
 SH
 ln -s "$(command -v cp)" "$bin/cp"
+ln -s "$(command -v tail)" "$bin/tail"
+cp "$bin/npm" "$bin/sleep"
 chmod +x "$bin/curl"
 printf 'corrupt archive' >"$SETUP_TEST_ARCHIVE"
 expect_fail 'checksum' "$repo/dev/install-zig.sh" "$scratch/toolchains"
@@ -239,8 +264,17 @@ cat >"$repo/.config/zig-toolchain.json" <<SH
   }
 }
 SH
-expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
+rm -f "$SETUP_TEST_DOWNLOADS"
+SETUP_TEST_CURL_MODE=resume expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
+[[ "$(cat "$SETUP_TEST_DOWNLOADS")" == $'partial\nresumed' ]]
 grep -Fxq "$scratch/toolchains/zig-aarch64-macos-$ZIG_VERSION" "$scratch/output"
+rm -f "$SETUP_TEST_DOWNLOADS"
+
+# An endpoint that rejects resuming exhausts the bounded retries, cleans the
+# stage and leaves an existing verified installation available for reuse.
+SETUP_TEST_CURL_MODE=no-range expect_fail 'could not download Zig' "$repo/dev/install-zig.sh" "$scratch/no-range"
+[[ "$(cat "$SETUP_TEST_DOWNLOADS")" == $'partial\nrefused-range\nrefused-range\nrefused-range' ]]
+[[ -z "$(find "$scratch/no-range" -mindepth 1 -print)" ]]
 rm -f "$SETUP_TEST_DOWNLOADS"
 expect_pass "$repo/dev/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$SETUP_TEST_DOWNLOADS" ]]

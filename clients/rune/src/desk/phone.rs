@@ -8,9 +8,11 @@ use super::Desk;
 use super::input::Modal;
 use crate::keys::{self, Typed};
 
+pub mod attach;
 pub mod navigation;
 mod refit;
 pub mod spatial;
+pub mod swipe;
 pub mod touch;
 
 /// Points the arrow pad travels per arrow key it sends.
@@ -21,7 +23,6 @@ const PAD_STEP: f32 = 16.0;
 pub enum Latch {
     Ctrl,
     Alt,
-    Shift,
 }
 
 /// A key pressed on the drawn keyboard or the accessory bar.
@@ -49,8 +50,12 @@ pub struct Phone {
     refit: Option<refit::Refit>,
     /// What a native host should play next (a haptic).
     pub feedback: Option<touch::Feedback>,
+    /// A sideways drag between sessions, or the edge-pulled drawer.
+    pub swipe: swipe::Swipe,
     pub ctrl: bool,
     pub alt: bool,
+    /// Shift held for the next key: a hardware or system keyboard's, as it
+    /// combines with a latched ⌃ or ⌥.
     pub shift: bool,
     /// The keyboard's own shift: the next letter is a capital.
     pub capital: bool,
@@ -76,6 +81,7 @@ impl Default for Phone {
             fling: None,
             refit: None,
             feedback: None,
+            swipe: swipe::Swipe::default(),
             ctrl: false,
             alt: false,
             shift: false,
@@ -105,6 +111,19 @@ impl Phone {
         }
     }
 
+    /// Drop a gesture in flight; whether there was one. Its target was read
+    /// from the previous connection's screen.
+    pub(super) fn forget_gesture(&mut self) -> bool {
+        let moving = self.navigation.is_some()
+            || self.fling.is_some()
+            || self.refit.is_some()
+            || self.travel != [0.0; 2]
+            || self.swipe != swipe::Swipe::default();
+        self.reset_navigation();
+        self.swipe = swipe::Swipe::default();
+        moving
+    }
+
     pub(super) fn reset_navigation(&mut self) {
         self.navigation = None;
         self.travel = [0.0; 2];
@@ -116,7 +135,6 @@ impl Phone {
         match latch {
             Latch::Ctrl => self.ctrl,
             Latch::Alt => self.alt,
-            Latch::Shift => self.shift,
         }
     }
 
@@ -273,10 +291,7 @@ impl Desk {
             return;
         };
         self.restart_blink();
-        self.send_input(|control, terminal| match &typed {
-            Typed::Text(text) => control.send_text(terminal, text),
-            Typed::Key(atom) => control.send_key(terminal, atom.clone()),
-        });
+        self.send_typed(&typed);
     }
 
     /// One tap for a control chord worth its own key (⌃C), terminal only.
@@ -298,7 +313,6 @@ impl Desk {
         let held = match latch {
             Latch::Ctrl => &mut phone.ctrl,
             Latch::Alt => &mut phone.alt,
-            Latch::Shift => &mut phone.shift,
         };
         *held = !*held;
     }

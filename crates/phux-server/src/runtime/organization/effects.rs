@@ -3,18 +3,18 @@
 use std::time::Duration;
 
 use phux_core::ids::ResourceId;
-use phux_core::{ActivationId, Effect, ProcIdentity, Refusal, ResourceKey, TerminateMode};
+use phux_core::{Effect, ProcIdentity, Refusal, TerminateMode};
 use phux_protocol::wire::frame::CloseReason;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::reconcile::{ProcessPresence, process_presence};
-use crate::state::{CloseAttribution, ClosePlan, ServerState, SharedState};
+use crate::state::{ActivationToken, CloseAttribution, ClosePlan, ServerState, SharedState};
 
 use super::ORPHAN_GRACE;
 
 /// Run one effect a commit asked for.
-pub(super) fn run_effect(state: &SharedState, effect: Effect, root_token: &CancellationToken) {
+pub(crate) fn run_effect(state: &SharedState, effect: Effect, root_token: &CancellationToken) {
     match effect {
         Effect::Launch {
             resource,
@@ -29,14 +29,13 @@ pub(super) fn run_effect(state: &SharedState, effect: Effect, root_token: &Cance
             mode,
             proc,
         } => {
-            if let Some(proc) = proc {
-                tokio::task::spawn_local(terminate_detached(
-                    state.clone(),
-                    resource,
-                    activation,
-                    mode,
-                    proc,
-                ));
+            let token = state.with(|s| {
+                let id = s.registry().resource_id(&resource)?;
+                let token = s.activation_token(id)?;
+                (token.activation == activation).then_some(token)
+            });
+            if let (Some(proc), Some(token)) = (proc, token) {
+                tokio::task::spawn_local(terminate_detached(state.clone(), token, mode, proc));
             }
         }
     }
@@ -51,69 +50,51 @@ fn launch(
     spec: &phux_core::LaunchSpec,
     root_token: &CancellationToken,
 ) {
-    let Some((id, kind)) = state.with(|s| {
-        let id = s.registry().resource_id(&resource)?;
-        let record = s.org().resource(&resource)?;
-        let current = record.activation.as_ref()?;
-        (current.id == activation && current.state == phux_core::ExecState::Starting)
-            .then_some((id, record.kind))
-    }) else {
+    let Some((id, kind, token)) =
+        state.with(|s| {
+            let id = s.registry().resource_id(&resource)?;
+            let record = s.org().resource(&resource)?;
+            let current = record.activation.as_ref()?;
+            (current.id == activation && current.state == phux_core::ExecState::Starting)
+                .then_some((id, record.kind, s.activation_token(id)?))
+        })
+    else {
         return;
     };
-    let result = match (
-        spec.kind() == kind,
-        crate::runtime::apps::organization_launcher(kind),
-    ) {
-        (true, Some(launch)) => launch(crate::runtime::apps::ResourceLaunch {
-            state,
-            resource: id,
-            spec,
-            root_token,
-        }),
-        (true, None) => Err(format!(
+    let result = match spec {
+        phux_core::LaunchSpec::Terminal(spec) if kind == phux_core::ResourceKind::Terminal => {
+            crate::state::execute_admitted_terminal(state, id, token, spec, root_token)
+        }
+        _ if spec.kind() == kind => Err(format!(
             "this {kind} projection must be opened by its producer"
         )),
-        (false, _) => Err("committed resource kind and launch spec disagree".to_owned()),
+        _ => Err("committed resource kind and launch spec disagree".to_owned()),
     };
     if let Err(error) = result {
-        fail_launch(state, resource, activation);
+        fail_launch(state, token);
         warn!(?resource, ?activation, %error, "launch effect failed");
     }
 }
 
 /// An execution failure settles only the effect that failed. A newer
 /// activation, or a failure already reported by the engine, is untouched.
-fn fail_launch(
-    state: &SharedState,
-    resource: phux_core::ResourceKey,
-    activation: phux_core::ActivationId,
-) {
+pub(super) fn fail_launch(state: &SharedState, token: ActivationToken) {
     state.with_mut(|s| {
-        let still_starting = s
-            .org()
-            .resource(&resource)
-            .and_then(|record| record.activation.as_ref())
-            .is_some_and(|current| {
-                current.id == activation && current.state == phux_core::ExecState::Starting
-            });
-        if !still_starting {
+        // The effect itself failed, so no process started. While stopping
+        // that failure is the stop's doing: record it as interrupted, not as
+        // the program's failure.
+        if s.shutting_down() {
+            s.activation_interrupted(token);
             return;
         }
-        if let Err(refusal) = s.commit_system(phux_core::Op::ActivationEnded {
-            resource,
-            activation,
-            state: phux_core::ExecState::Failed,
-            outcome: phux_core::Outcome::Exit(phux_core::ExitOutcome::UNKNOWN),
-            diagnostic: None,
-        }) {
-            warn!(?resource, ?activation, %refusal, "failed launch outcome was not recorded");
-        }
+        // Retry evidence, never this launch effect or a replacement execution.
+        s.activation_ended(token, phux_core::ExitOutcome::UNKNOWN, true);
     });
 }
 
 /// A live termination's admitted cancellation set. Keep it under the
 /// state lock through persistence and cancellation.
-pub(super) struct LiveTermination {
+pub(crate) struct LiveTermination {
     resource: ResourceId,
     close: ClosePlan,
     mode: TerminateMode,
@@ -121,7 +102,7 @@ pub(super) struct LiveTermination {
 }
 
 impl LiveTermination {
-    pub(super) fn plan(s: &ServerState, effects: &[Effect]) -> Result<Option<Self>, Refusal> {
+    pub(crate) fn plan(s: &ServerState, effects: &[Effect]) -> Result<Option<Self>, Refusal> {
         let [
             Effect::Terminate {
                 resource,
@@ -154,7 +135,7 @@ impl LiveTermination {
         }))
     }
 
-    pub(super) fn start(&self, s: &mut ServerState) {
+    pub(crate) fn start(&self, s: &mut ServerState) {
         if self.mode == TerminateMode::Force {
             kill_group(self.proc, nix::sys::signal::Signal::SIGKILL);
         }
@@ -166,11 +147,22 @@ impl LiveTermination {
 /// Terminate a lost process group after rechecking its OS identity.
 async fn terminate_detached(
     state: SharedState,
-    resource: ResourceKey,
-    activation: ActivationId,
+    token: ActivationToken,
     mode: TerminateMode,
     proc: ProcIdentity,
 ) {
+    let still_owned = || {
+        state.with(|s| {
+            s.activation_matches(token)
+                && s.org()
+                    .resource(&token.resource)
+                    .and_then(|record| record.activation.as_ref())
+                    .is_some_and(|current| current.host_proc == Some(proc))
+        })
+    };
+    if !still_owned() {
+        return;
+    }
     let first = match mode {
         phux_core::TerminateMode::Graceful => nix::sys::signal::Signal::SIGHUP,
         phux_core::TerminateMode::Force => nix::sys::signal::Signal::SIGKILL,
@@ -178,6 +170,9 @@ async fn terminate_detached(
     kill_group(Some(proc), first);
     if mode == TerminateMode::Graceful {
         tokio::time::sleep(ORPHAN_GRACE).await;
+        if !still_owned() {
+            return;
+        }
         kill_group(Some(proc), nix::sys::signal::Signal::SIGKILL);
     }
     let mut presence = process_presence(proc);
@@ -199,12 +194,12 @@ async fn terminate_detached(
     state.with_mut(|s| {
         let same_process = s
             .org()
-            .resource(&resource)
+            .resource(&token.resource)
             .and_then(|record| record.activation.as_ref())
-            .is_some_and(|current| current.id == activation && current.host_proc == Some(proc));
-        if same_process && let Some(id) = s.registry().resource_id(&resource) {
+            .is_some_and(|current| current.host_proc == Some(proc));
+        if same_process {
             // A signal request and a disappearing pid do not reveal a wait status.
-            s.activation_ended(id, phux_core::ExitOutcome::UNKNOWN, false);
+            s.activation_ended(token, phux_core::ExitOutcome::UNKNOWN, false);
         }
     });
 }
@@ -245,7 +240,7 @@ mod tests {
             start_raw: 0,
             boot_id: crate::reconcile::boot_id().unwrap(),
         };
-        let key = state.with_mut(|s| {
+        let token = state.with_mut(|s| {
             let (_, id) = s
                 .create_terminal(
                     TerminalTarget::NewSession {
@@ -257,26 +252,93 @@ mod tests {
                     &Actor::owner(),
                 )
                 .unwrap();
-            s.activation_started(id, Some(gone));
-            s.registry().resource_key(id).unwrap()
+            let token = s.activation_token(id).unwrap();
+            s.activation_started(token, Some(gone));
+            token
         });
-        let activation =
-            || state.with(|s| s.org().resource(&key).unwrap().activation.clone().unwrap());
+        let activation = || {
+            state.with(|s| {
+                s.org()
+                    .resource(&token.resource)
+                    .unwrap()
+                    .activation
+                    .clone()
+                    .unwrap()
+            })
+        };
 
         let first = activation();
         terminate_detached(
             state.clone(),
-            key,
-            first.id.next(),
+            ActivationToken {
+                activation: first.id.next(),
+                ..token
+            },
             TerminateMode::Force,
             gone,
         )
         .await;
         assert_eq!(activation(), first);
 
-        terminate_detached(state.clone(), key, first.id, TerminateMode::Force, gone).await;
+        terminate_detached(state.clone(), token, TerminateMode::Force, gone).await;
         let ended = activation();
         assert_eq!(ended.state, ExecState::Completed);
         assert_eq!(ended.outcome, Some(Outcome::Exit(ExitOutcome::UNKNOWN)));
+    }
+
+    #[test]
+    fn generic_launch_failure_is_retained_and_fenced_before_retry() {
+        let state = SharedState::new();
+        let token = state.with_mut(|s| {
+            let (_, id) = s
+                .create_terminal(
+                    TerminalTarget::NewSession {
+                        name: "failure",
+                        lifetime: SessionLifetime::Persistent,
+                    },
+                    TerminalLaunch::default(),
+                    ExitPolicy::Retain,
+                    &Actor::owner(),
+                )
+                .unwrap();
+            s.activation_token(id).unwrap()
+        });
+        let store = crate::org_store::MemOrgStore::default();
+        let failure = store.fail_commits();
+        failure.store(true, std::sync::atomic::Ordering::Relaxed);
+        state.with_mut(|s| s.set_org_store(Box::new(store)));
+        fail_launch(&state, token);
+        state.with(|s| {
+            assert!(s.activation_persistence_pending(token.resource));
+            assert_eq!(
+                s.org()
+                    .resource(&token.resource)
+                    .unwrap()
+                    .activation
+                    .as_ref()
+                    .unwrap()
+                    .state,
+                ExecState::Starting
+            );
+        });
+        failure.store(false, std::sync::atomic::Ordering::Relaxed);
+        state.with_mut(|s| {
+            s.retry_activation_reports();
+            assert!(!s.has_pending_activation_reports());
+            let record = s.org().resource(&token.resource).unwrap().clone();
+            assert_eq!(record.activation.as_ref().unwrap().state, ExecState::Failed);
+            s.commit(
+                phux_core::Op::ResourceRelaunch {
+                    resource: token.resource,
+                    expected: record.revision,
+                    launch: None,
+                },
+                &Actor::owner(),
+            )
+            .unwrap();
+        });
+        let replacement = state.with(|s| s.org().resource(&token.resource).unwrap().clone());
+        fail_launch(&state, token);
+        state.with(|s| assert_eq!(s.org().resource(&token.resource), Some(&replacement)));
     }
 }

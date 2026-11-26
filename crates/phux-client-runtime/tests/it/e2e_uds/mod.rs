@@ -399,7 +399,7 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_for_status(&client, Status::Attached).await;
         let first = client.connection_epoch();
@@ -414,7 +414,7 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
         .await;
         assert_eq!(lost, ());
 
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         wait_for_status(&client, Status::Attached).await;
         assert!(client.attached_once());
         // The handle outlived the socket, so the epoch is what a consumer
@@ -447,7 +447,7 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_for_status(&client, Status::Attached).await;
         let terminal = spawn_cat(&client).await;
@@ -461,7 +461,7 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
         wait_for_status(&client, Status::Connecting).await;
         let while_down = client.apply_line(&terminal, "while-down");
 
-        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let (shutdown, server) = spawn_durable_server(&socket, tmp.path());
         wait_for_status(&client, Status::Attached).await;
 
         let mut outcomes = std::collections::HashMap::new();
@@ -498,8 +498,8 @@ fn acknowledged_input_across_a_server_restart_always_resolves() {
 
 /// An acknowledged line submitted into a half-open connection resolves
 /// promptly (phux-8u7ii): submitting it probes the link, the silent link is
-/// dropped within the probe timeout instead of the 30-second idle timeout,
-/// and the reconnect replays the line under its original operation id.
+/// dropped within the probe timeout, not the 13 s quiet probe, and the
+/// reconnect replays the line under its original operation id.
 #[test]
 fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
     use phux_client_runtime::control::DeliveryOutcome;
@@ -538,7 +538,7 @@ fn acknowledged_input_into_a_half_open_link_resolves_promptly() {
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_secs(10),
-            "the receipt took {elapsed:?}; the 30-second idle timeout, not a probe, found the dead link"
+            "the receipt took {elapsed:?}; the quiet probe found the dead link"
         );
         assert_eq!(outcome, DeliveryOutcome::Delivered, "{message}");
         wait_for_text(&client, &terminal, "through-the-black-hole").await;
