@@ -58,6 +58,9 @@ impl Desk {
         if let Some(native) = &mut self.native {
             native.paste_requested = false;
             native.attach_requested = false;
+            // A picker may still be loading, but its numeric pane belongs to
+            // the retired runtime. Keep IDs monotonic so late replies stay old.
+            native.attaching.clear();
         }
         // The opener's asynchronous error channel belongs to the window.
         let failed = self.pointer.failed.clone();

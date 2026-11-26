@@ -114,11 +114,12 @@ final class Attachments: NSObject {
         let board = UIPasteboard.general
         guard board.hasImages else { return nil }
         for type in [UTType.png, .jpeg] {
-            if let data = board.data(forPasteboardType: type.identifier), data.count <= maximumBytes {
-                return File(fileExtension: type == .png ? "png" : "jpg", data: data)
+            if let data = board.data(forPasteboardType: type.identifier),
+               let picked = file(data, named: type == .png ? "paste.png" : "paste.jpg") {
+                return picked
             }
         }
-        return board.image?.jpegData(compressionQuality: 0.85).map { File(fileExtension: "jpg", data: $0) }
+        return board.image?.jpegData(compressionQuality: 0.85).flatMap { file($0, named: "paste.jpg") }
     }
 
     /// `data` as an agent can read it: PNG, JPEG, GIF, WebP and anything that

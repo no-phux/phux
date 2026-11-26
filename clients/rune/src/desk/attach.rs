@@ -30,6 +30,12 @@ impl Desk {
     /// Read the clipboard for the terminal on screen now: the reply comes
     /// back later, and the keyboard may have moved on by then.
     pub(super) fn paste_clipboard(&mut self, tx: &mut Tx) {
+        if let Some(native) = &mut self.native {
+            // The host exports one pending native request ID. A new intent
+            // supersedes undrained flags, not already-answerable pickers.
+            native.paste_requested = false;
+            native.attach_requested = false;
+        }
         if self.native.is_none() && self.paste_into_document(tx) {
             return;
         }
@@ -40,12 +46,14 @@ impl Desk {
             return;
         }
         let terminal = terminal.clone();
-        if let Some(native) = &mut self.native {
+        if self.native.is_some() {
             // The system owns a phone's pasteboard and asks its user first;
-            // the host answers through the input bridge's paste.
-            native.paste_requested = true;
-            // A copied image answers as an attachment instead of text.
-            self.begin_attaching();
+            // a copied image answers the request captured for this invocation,
+            // never an older picker left in the answerable queue.
+            let captured = self.pastes_allowed() && self.begin_attaching();
+            if let Some(native) = &mut self.native {
+                native.paste_requested = captured;
+            }
             return;
         }
         let server = self.link.server;
@@ -123,6 +131,17 @@ impl Desk {
             return;
         };
         let transfer = client.put_file(terminal.clone(), extension.to_owned(), data);
+        self.track_upload(terminal, extension, transfer);
+    }
+
+    /// Bookkeeping after an upload was admitted, including native admission
+    /// that checks its destination under the control lock.
+    pub(in crate::desk) fn track_upload(
+        &mut self,
+        terminal: &ResourceId,
+        extension: &str,
+        transfer: u64,
+    ) {
         self.connection
             .uploads
             .push((transfer, terminal.clone(), None));
