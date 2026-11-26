@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.11.1](https://github.com/no-phux/phux/compare/pi-extension-v0.11.0...pi-extension-v0.11.1) (2026-11-26)
+
+
+### Refactors
+
+* dissolve scripts/ into dev, install, packaging and tools ([#2906](https://github.com/no-phux/phux/issues/2906)) ([e128078](https://github.com/no-phux/phux/commit/e1280780a92bb8aae9a543c664be22edb5768cbf))
+
 ## [0.11.0](https://github.com/no-phux/phux/compare/pi-extension-v0.10.1...pi-extension-v0.11.0) (2026-11-24)
 
 
