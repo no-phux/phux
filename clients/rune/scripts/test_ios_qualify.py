@@ -63,6 +63,7 @@ class QualificationTests(unittest.TestCase):
                 qualify.validate_report(report)
         for field, value in (("frames", True), ("frames", 0), ("schema", True),
                              ("connected", 1), ("input_through_native", False),
+                             ("composer_through_native", False),
                              ("marker_seen", False), ("terminal_id", ""), ("surface_at_scale", False),
                              ("session", "other"), ("error", "connection failed")):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
