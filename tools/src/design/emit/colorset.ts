@@ -39,10 +39,10 @@ export function emitColorsets(R: Resolved): { path: string; bytes: string }[] {
       .map((w) => w[0]!.toUpperCase() + w.slice(1))
       .join("")}.colorset/Contents.json`,
     bytes: colorset(
-      h.light.status[state],
-      h.dark.status[state],
-      cm.light.status[state],
-      cm.dark.status[state],
+      h.light.status[state]!,
+      h.dark.status[state]!,
+      cm.light.status[state]!,
+      cm.dark.status[state]!,
     ),
   }));
   return [
