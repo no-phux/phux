@@ -27,6 +27,7 @@ struct InputContext {
     let token: UInt64
     let revision: UInt64
     let kind: String
+    let label: String?
     let text: String
     let anchor: Int
     let focus: Int
@@ -41,6 +42,7 @@ struct InputContext {
               let text = value["text"] as? String, let anchor = value["anchor"] as? Int,
               let focus = value["focus"] as? Int else { return nil }
         self.token = token; self.revision = revision; self.kind = kind; self.text = text
+        label = value["label"] as? String
         self.anchor = anchor; self.focus = focus
         multiline = value["multiline"] as? Bool ?? false
         optionAsMeta = value["option_as_meta"] as? Bool ?? false

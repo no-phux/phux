@@ -19,6 +19,7 @@ pub struct Snapshot {
     pub token: u64,
     pub revision: u64,
     pub kind: &'static str,
+    pub label: Option<&'static str>,
     pub text: String,
     pub anchor: usize,
     pub focus: usize,
@@ -89,12 +90,16 @@ impl Bridge {
     /// Retire only transient composition when the responder's owner changes.
     /// Direct app-model preedit is not tracked by Rune's queued IME hook.
     pub fn reconcile(&mut self, rt: &mut Runtime<Desk>) -> bool {
+        let closed_composer = rt.state.composer_needs_close();
+        if closed_composer {
+            rt.update(|d, _| d.retire_composer());
+        }
         let retired = accessory::retire_unmounted(rt);
         let changed = self.target != target::resolve(rt);
         if changed {
             self.cancel_preedit(rt);
         }
-        retired || changed
+        closed_composer || retired || changed
     }
 
     pub fn cancel_preedit(&self, rt: &mut Runtime<Desk>) {
@@ -146,6 +151,11 @@ impl Bridge {
             token: self.token,
             revision: self.revision,
             kind,
+            label: matches!(
+                &self.target,
+                Some(Target::Field(target::Field::Composer(_), _))
+            )
+            .then_some("Terminal message"),
             text,
             anchor,
             focus,
@@ -298,6 +308,13 @@ fn dismiss(rt: &mut Runtime<Desk>, target: &Target) {
     rt.update(|d, tx| {
         d.connection.preedit = None;
         if let Target::Field(field, _) = target {
+            if matches!(field, target::Field::Composer(_)) {
+                d.close_composer(tx);
+                if let Some(phone) = &mut d.phone {
+                    phone.keyboard = false;
+                }
+                return;
+            }
             field.cancel_composition(d);
             if let Some(edit) = field.edit_mut(d) {
                 edit.focused = false;

@@ -15,6 +15,7 @@ pub(crate) mod native;
 pub enum Page {
     Sessions,
     Actions,
+    Switcher,
 }
 
 /// What a long press on the Sessions page holds: a session or one pane.
@@ -99,7 +100,7 @@ impl Desk {
         self.open_phone_navigation(Page::Actions);
     }
 
-    fn open_phone_navigation(&mut self, page: Page) {
+    pub(super) fn open_phone_navigation(&mut self, page: Page) {
         if self.modal().is_some() {
             return;
         }
@@ -109,6 +110,7 @@ impl Desk {
             phone.release();
             phone.swipe.arrival = None;
             phone.page = Some(page);
+            phone.switcher = None;
             phone.menu = None;
             phone.query.clear();
             phone.query.focused = false;
@@ -119,6 +121,7 @@ impl Desk {
         self.close_phone_menu();
         if let Some(phone) = &mut self.phone {
             phone.page = None;
+            phone.switcher = None;
             phone.menu = None;
             phone.query.clear();
             phone.query.focused = false;
@@ -169,6 +172,9 @@ impl Desk {
         if event.key == Key::Escape {
             self.close_phone_navigation();
             return true;
+        }
+        if self.phone_page() == Some(Page::Switcher) {
+            return self.switcher_key(&event.key);
         }
         false
     }

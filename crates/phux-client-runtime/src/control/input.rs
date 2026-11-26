@@ -130,10 +130,19 @@ impl ControlPlane {
     /// acknowledged path. Returns the correlation [`Event::InputDelivery`]
     /// resolves.
     pub fn apply_line(&mut self, terminal_id: &ResourceId, text: &str) -> u64 {
+        self.apply_line_with_trust(terminal_id, text, PasteTrust::Trusted)
+    }
+
+    pub(super) fn apply_line_with_trust(
+        &mut self,
+        terminal_id: &ResourceId,
+        text: &str,
+        trust: PasteTrust,
+    ) -> u64 {
         if text.len() > MAX_APPLY_INPUT_COMMAND_BODY - APPLY_LINE_OVERHEAD {
             return self.refuse_acknowledged_input("input exceeds the 64 KiB command limit");
         }
-        let events = paste_then_key(text, PasteTrust::Trusted, PhysicalKey::Enter);
+        let events = paste_then_key(text, trust, PhysicalKey::Enter);
         self.begin_acknowledged_input(terminal_id, events)
     }
 

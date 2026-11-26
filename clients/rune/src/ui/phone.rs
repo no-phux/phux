@@ -24,6 +24,7 @@ use crate::desk::phone::Phone;
 
 mod accessory;
 mod bars;
+mod composer;
 mod keyboard;
 pub(super) mod navigation;
 use accessory::accessory;
@@ -98,12 +99,14 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .h_full()
         .pt(top)
         .children((!desk.settings_open).then(|| top_bar(desk, controls)))
+        .children(bars::connection(desk, controls))
         .child(stage)
         .children(
             (!desk.settings_open)
                 .then(|| tab_pills(desk, controls))
                 .flatten(),
-        );
+        )
+        .children(composer::view(desk, controls));
     // Sessions and Actions are lists, not a terminal: no key bar, and their
     // search keyboard's Return is its Done. Settings keeps the bar only for
     // its search's Done.
@@ -311,6 +314,7 @@ fn floating_round(
         dark: p.dark(),
         ink,
         badge,
+        painted: false,
     };
     hosted(desk, placeholder, control)
 }

@@ -251,6 +251,8 @@ class Qualification:
         shutil.copy2(source, self.out / (prefix + source.name))
         report = json.loads((self.out / (prefix + source.name)).read_text())
         validate_report(report, self.transport, resumed)
+        if not resumed and report.get("composer_through_native") is not True:
+            raise ValueError("native terminal composer did not deliver its draft")
         tree = documents / "rune-tree.json"
         shutil.copy2(tree, self.out / (prefix + tree.name))
         marker = MARKER + "_RESUMED" if resumed else MARKER

@@ -52,6 +52,7 @@ const TYPED: [(&str, &str, char); 4] = [
 fn strip(
     phone: &Phone,
     native_field: bool,
+    composer: bool,
     pinned: [Option<El>; 2],
     enter: Option<El>,
     p: &Look,
@@ -90,6 +91,13 @@ fn strip(
     // A field being edited by the system keyboard takes neither chords nor
     // terminal keys.
     if native_field {
+        let strip = if composer {
+            strip
+                .child(send("←", "Left", Key::Left))
+                .child(send("→", "Right", Key::Right))
+        } else {
+            strip
+        };
         return key_rail(strip.children(pinned.into_iter().flatten()), p);
     }
     let interrupt = chip("phone-key-Interrupt".into(), "Control C", "⌃C", false, p)
@@ -197,7 +205,11 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     // Only a native host has photos and files to attach, and only a
     // terminal takes them. It ends the strip beside Paste, so the pinned
     // pair keeps room for Return on the narrowest phone.
-    let clip = (desk.native.is_some() && !native_field && !desk.settings_open).then(|| attach(p));
+    let clip = (desk.native.is_some()
+        && !native_field
+        && !desk.settings_open
+        && desk.composer_owner().is_none())
+    .then(|| attach(p, &icons::PAPERCLIP));
     let (strip_pad, pair_pad) = if scrolling_pad {
         ([clip, Some(pad)], None)
     } else {
@@ -250,7 +262,14 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
         .gap(s.s2)
         .items_center()
         .child(el().pb(s.s2).child(command))
-        .child(strip(phone, native_field, strip_pad, strip_enter, p))
+        .child(strip(
+            phone,
+            native_field,
+            desk.active_composer().is_some(),
+            strip_pad,
+            strip_enter,
+            p,
+        ))
         .child(el().pb(s.s2).child(pair))
 }
 
@@ -258,14 +277,14 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
 /// so the one key a terminal reaches for most never scrolls away. A field
 /// the system keyboard edits has that keyboard's own return instead.
 fn return_key(p: &Look) -> El {
-    let ink = p.roles.accent.on_accent.paint();
+    let ink = p.roles.text.text.paint();
     touchable(
         el().key("phone-key-Enter")
             .min_w(p.round())
             .min_h(p.round())
             .radius(p.radius.full)
             .center()
-            .fill(p.roles.accent.accent.paint()),
+            .fill(p.roles.wash.selected.paint()),
         p,
     )
     .label("Return")
@@ -275,7 +294,7 @@ fn return_key(p: &Look) -> El {
 
 /// The paperclip: the phone's photos, camera and files, for the agent in
 /// this pane. What ⇧⌘O is to a desktop's screenshots.
-fn attach(p: &Look) -> El {
+pub(super) fn attach(p: &Look, icon: &'static rune::Icon) -> El {
     touchable(
         el().key("phone-attach")
             .min_w(p.round())
@@ -286,15 +305,30 @@ fn attach(p: &Look) -> El {
     )
     .label("Attach a photo or file")
     .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Screenshot, tx))
-    .child(glyph(
-        &icons::PAPERCLIP,
-        p.icon.size.lg,
-        p.roles.text.text.paint(),
-    ))
+    .child(glyph(icon, p.icon.size.lg, p.roles.text.text.paint()))
 }
 
 fn keyboard_control(desk: &Desk, native_field: bool, p: &Look) -> El {
     let ink = p.roles.text.text.paint();
+    if desk.active_composer().is_some() {
+        let key = "phone-native-done";
+        let label = "Direct terminal keyboard";
+        let button = touchable(
+            el().key(key)
+                .size(p.round(), p.round())
+                .radius(p.radius.full)
+                .center()
+                .label(label)
+                .on_press_tx(crate::desk::native_input::done)
+                .child(glyph(&icons::KEYBOARD, p.icon.size.lg, ink)),
+            p,
+        );
+        return super::hosted(
+            desk,
+            button,
+            crate::mobile::Control::painted(key, label, true),
+        );
+    }
     if native_field {
         return touchable(
             el().key("phone-native-done")

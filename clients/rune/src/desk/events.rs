@@ -236,8 +236,12 @@ impl Desk {
             Event::InputDelivery {
                 delivery_id,
                 outcome,
+                message,
                 ..
-            } => self.paste_delivered(delivery_id, outcome),
+            } => {
+                self.composer_delivered(delivery_id, outcome, &message)
+                    || self.paste_delivered(delivery_id, outcome)
+            }
             // A new foreground renames the pane in the sidebar.
             Event::StatusChanged(_)
             | Event::TopologyChanged
@@ -257,7 +261,8 @@ impl Desk {
     fn apply_document_subscription(&mut self, client: &Client, event: Event) -> bool {
         match event {
             Event::CommandResult { request_id, result } => {
-                self.document_input_result(request_id, &result)
+                self.session_preview_result(request_id, &result)
+                    || self.document_input_result(request_id, &result)
                     || self.document_subscription_result(client, request_id, result)
             }
             Event::TopologySnapshot { snapshot, .. } => {

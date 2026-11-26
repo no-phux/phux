@@ -43,6 +43,7 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
             dark: p.dark(),
             ink,
             badge: None,
+            painted: false,
         };
         super::super::hosted(desk, footer, control)
     } else {

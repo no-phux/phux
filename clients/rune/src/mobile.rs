@@ -75,6 +75,26 @@ pub(crate) struct Control {
     pub ink: rune::Color,
     /// A dot on its upper trailing shoulder (the bell's unread news).
     pub badge: Option<rune::Color>,
+    /// The surface paints this control; UIKit hosts its touch and AX target.
+    pub painted: bool,
+}
+
+impl Control {
+    pub(crate) fn painted(key: &str, label: &str, enabled: bool) -> Self {
+        Self {
+            key: key.to_owned(),
+            label: label.to_owned(),
+            title: None,
+            subtitle: None,
+            leading: false,
+            symbol: "",
+            enabled,
+            dark: false,
+            ink: rune::Color::TRANSPARENT,
+            badge: None,
+            painted: true,
+        }
+    }
 }
 
 impl Platform {

@@ -19,7 +19,13 @@ fn native() -> (std::sync::Arc<Client>, Runtime<Desk>) {
 }
 
 fn shown(rt: &Runtime<Desk>) -> Vec<Value> {
-    crate::mobile::controls(rt).as_array().unwrap().clone()
+    crate::mobile::controls(rt)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|control| control["painted"] != true)
+        .cloned()
+        .collect()
 }
 
 fn ids(rt: &Runtime<Desk>) -> Vec<String> {

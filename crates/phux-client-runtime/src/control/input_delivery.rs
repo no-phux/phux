@@ -3,11 +3,20 @@
 
 use super::{
     ControlPlane, DeliveryOutcome, ErrorCode, Event, INPUT_RETRY_HORIZON, InputEvent, Instant,
-    ReplayDisposition, ReplayReport, ResourceId, mint_input_operation_id,
+    PasteTrust, ReplayDisposition, ReplayReport, ResourceId, mint_input_operation_id,
 };
 use phux_client_core::input_replay::operation_id_hex;
 
 impl ControlPlane {
+    /// Submit an editor draft and Enter as one batch. The server rejects
+    /// unsafe paste before writing either event.
+    pub fn apply_composed_line(&mut self, terminal_id: &ResourceId, text: &str) -> u64 {
+        if !self.input_ready(terminal_id) {
+            return self.refuse_acknowledged_input("the terminal is not ready for input");
+        }
+        self.apply_line_with_trust(terminal_id, text, PasteTrust::Untrusted)
+    }
+
     /// Whether the terminal is fenced behind an acknowledged input whose
     /// delivery is unknown.
     #[must_use]

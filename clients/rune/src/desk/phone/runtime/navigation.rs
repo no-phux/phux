@@ -13,6 +13,7 @@ mod render;
 mod review;
 mod search;
 mod swipe;
+mod switcher;
 mod wheel;
 
 fn inventory(rt: &mut Runtime<Desk>) {
@@ -103,9 +104,9 @@ fn top_buttons_have_distinct_destinations_and_never_type_into_the_terminal() {
     assert!(rt.find("phone-session-1").is_some());
     tap(&mut rt, "phone-navigation-close", 0.3);
     tap(&mut rt, "phone-place", 0.5);
-    assert!(rt.state.phone_picker_visible());
+    assert_eq!(rt.state.phone_page(), Some(Page::Switcher));
     assert!(!rt.state.palette_open);
-    tap(&mut rt, "phone-picker-close", 0.7);
+    tap(&mut rt, "phone-switcher-close", 0.7);
     tap(&mut rt, "phone-more", 0.9);
     assert_eq!(rt.state.phone_page(), Some(Page::Actions));
     assert!(!rt.state.palette_open);
