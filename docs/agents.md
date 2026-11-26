@@ -148,6 +148,9 @@ phux agent answer --id Q7 --choice 2 %reviewer
   PTY pane they are advisory; an [ACP session](./acp.md#answering-a-permission-question)
   returns exact structured callbacks.
 
+On iPhone, [use Hex with the Action Button](../integrations/hex-ios/README.md)
+to dictate to a dedicated agent on your tailnet.
+
 Start agents with `phux launch` (`--list` shows integrations; a fresh install
 has only the built-in `opencode` and `fx` profiles until
 `phux config distro use starter`), or in an existing
