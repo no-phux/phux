@@ -7,6 +7,7 @@ mod input;
 mod motion;
 mod picker;
 mod refit;
+mod swipe;
 mod touch;
 mod touch_ownership;
 mod viewport;

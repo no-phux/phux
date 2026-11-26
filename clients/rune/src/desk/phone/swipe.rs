@@ -1,8 +1,10 @@
-//! A sideways finger on the terminal: it pages to the neighbouring session,
-//! or, landing at the left edge, pulls the Sessions drawer in over a blur.
-//! Both follow the finger one to one, resist where there is nowhere to go,
-//! tick a haptic detent where lifting commits, and take a quick flick for a
-//! long drag, as a phone's pager and its edge drawers do.
+//! A sideways finger on the terminal: it pages to the neighbouring tab, and
+//! past a session's last (or first) tab over to the next session, or,
+//! landing at the left edge, pulls Sessions in over a blur. Paging follows
+//! the finger one to one; crossing into another session is heavier, giving
+//! less and asking for more travel with a firmer detent, so it is chosen
+//! rather than slid into. Nowhere to go resists like a rubber band. A quick
+//! flick does for a long drag, as a phone's pager and its edge drawers do.
 
 use super::super::Desk;
 use super::touch::Feedback;
@@ -12,7 +14,12 @@ use super::touch::Feedback;
 pub const EDGE: f32 = 24.0;
 /// How much of the stage a drag crosses to commit when lifted slowly.
 pub const PAGE_COMMIT: f32 = 0.33;
-const PULL_COMMIT: f32 = 0.3;
+/// How much of the stage a drag crosses to step over into another session.
+pub const SESSION_COMMIT: f32 = 0.5;
+/// How much of the finger's travel the page takes while crossing into
+/// another session: the weight that tells it apart from a tab.
+pub const SESSION_GIVE: f32 = 0.6;
+pub const PULL_COMMIT: f32 = 0.3;
 /// A lift at least this fast (points a second) along the drag commits it.
 const FLICK: f32 = 450.0;
 /// A flick still travels this far, so a nudge never pages.
@@ -36,9 +43,29 @@ pub struct Swipe {
     /// Which way the last committed page went: the incoming session
     /// slides in from the opposite side. -1 forward, 1 back.
     pub arrival: Option<f32>,
-    /// The session paged away from, parked off the stage until the next
-    /// one shows, and when: a switch that never lands brings it back.
+    /// The page paged away from ([`Desk::page_key`]), parked off the stage
+    /// until the next one shows, and when: a switch that never lands brings
+    /// it back.
     pub leaving: Option<(String, f64)>,
+}
+
+/// Where a sideways drag goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Beside {
+    /// This session's tab at this index.
+    Tab(usize),
+    /// Past this session's last or first tab, the next session over.
+    Session(String),
+}
+
+impl Beside {
+    /// The share of the stage a slow drag crosses to commit.
+    const fn commit(&self) -> f32 {
+        match self {
+            Self::Tab(_) => PAGE_COMMIT,
+            Self::Session(_) => SESSION_COMMIT,
+        }
+    }
 }
 
 /// Sideways travel and its speed, sampled on the app clock.
@@ -85,10 +112,11 @@ impl Across {
         }
     }
 
-    /// A slow drag past `fraction` of `w`, or a flick along it.
-    fn commits(&self, dx: f32, w: f32, fraction: f32, clock: f64) -> bool {
+    /// A slow drag past `fraction` of `w`, or a flick along it at least
+    /// `flick_min` points long.
+    fn commits(&self, dx: f32, w: f32, fraction: f32, flick_min: f32, clock: f64) -> bool {
         let v = self.velocity(clock);
-        let flicked = v.abs() >= FLICK && v.signum() == dx.signum() && dx.abs() >= FLICK_MIN;
+        let flicked = v.abs() >= FLICK && v.signum() == dx.signum() && dx.abs() >= flick_min;
         // A flick back against the drag cancels it, however far it went.
         let reversed = v.abs() >= FLICK && v.signum() != dx.signum();
         flicked || (dx.abs() >= w * fraction && !reversed)
@@ -133,20 +161,51 @@ impl Desk {
             .is_some_and(|phone| phone.swipe.pull.is_some())
     }
 
-    /// The session a sideways drag of `dx` would page to.
-    pub fn page_target(&self, dx: f32) -> Option<String> {
+    /// The tab `step` places from the active one in this session.
+    fn tab_beside(&self, step: isize) -> Option<usize> {
+        let tabs = &self.connection.tabs.list;
+        let at = tabs.iter().position(|t| t.active)?;
+        let next = at.checked_add_signed(step)?;
+        (next < tabs.len()).then_some(next)
+    }
+
+    /// Where a sideways drag of `dx` would page to: the tab beside, else
+    /// the session beside.
+    pub fn page_target(&self, dx: f32) -> Option<Beside> {
         if dx == 0.0 {
             return None;
         }
-        self.session_beside(step_of(dx))
+        let step = step_of(dx);
+        (self.tab_beside(step).map(Beside::Tab))
+            .or_else(|| self.session_beside(step).map(Beside::Session))
+    }
+
+    /// What the stage's page is: its session and tab, so a page to either
+    /// slides the old one off as the new one comes in.
+    pub fn page_key(&self) -> String {
+        let session = self.selected_session_name().unwrap_or_default();
+        let tab = self.connection.tabs.list.iter().position(|t| t.active);
+        let tab = tab.map(|at| self.connection.tabs.list[at].id);
+        let tab: String = tab.map_or_else(String::new, |id| {
+            id.iter().map(|b| format!("{b:02x}")).collect()
+        });
+        format!("{session}/{tab}")
     }
 
     /// The finger's sideways travel since it landed, paging.
     pub(super) fn page_move(&mut self, dx: f32) {
         let w = self.stage_w();
-        let next = self.page_target(dx).is_some();
-        let shown = if next { dx.clamp(-w, w) } else { rubber(dx, w) };
-        let past = next && dx.abs() >= w * PAGE_COMMIT;
+        let next = self.page_target(dx);
+        let shown = match &next {
+            Some(Beside::Tab(_)) => dx.clamp(-w, w),
+            Some(Beside::Session(_)) => (dx * SESSION_GIVE).clamp(-w, w),
+            None => rubber(dx, w),
+        };
+        let past = next.as_ref().is_some_and(|n| dx.abs() >= w * n.commit());
+        let detent = match next {
+            Some(Beside::Session(_)) => Feedback::Threshold,
+            _ => Feedback::Detent,
+        };
         let Some(phone) = self.phone.as_mut() else {
             return;
         };
@@ -155,7 +214,7 @@ impl Desk {
         phone.swipe.arrival = None;
         phone.swipe.leaving = None;
         if let Some(touch) = phone.touch.as_mut() {
-            tick(&mut touch.across.past, past, &mut phone.feedback);
+            tick(&mut touch.across.past, past, detent, &mut phone.feedback);
         }
     }
 
@@ -169,33 +228,42 @@ impl Desk {
         };
         phone.swipe.pull = Some(pulled);
         if let Some(touch) = phone.touch.as_mut() {
-            tick(&mut touch.across.past, past, &mut phone.feedback);
+            let detent = Feedback::Detent;
+            tick(&mut touch.across.past, past, detent, &mut phone.feedback);
         }
     }
 
-    /// Lift while paging: on to the neighbour, or back where it was.
+    /// Lift while paging: on to the neighbour, or back where it was. A
+    /// flick into another session must still have crossed a tab's worth.
     pub(super) fn page_release(&mut self, across: &Across) {
         let dx = across.dx;
         let w = self.stage_w();
-        let next = self
-            .page_target(dx)
-            .filter(|_| across.commits(dx, w, PAGE_COMMIT, self.clock));
+        let next = self.page_target(dx).filter(|next| {
+            let flick_min = match next {
+                Beside::Tab(_) => FLICK_MIN,
+                Beside::Session(_) => w * PAGE_COMMIT,
+            };
+            across.commits(dx, w, next.commit(), flick_min, self.clock)
+        });
         self.settle_swipe();
         let Some(next) = next else { return };
-        let leaving = self.selected_session_name();
+        let leaving = self.page_key();
         let clock = self.clock;
         if let Some(phone) = self.phone.as_mut() {
             phone.swipe.arrival = Some(dx.signum());
-            phone.swipe.leaving = leaving.map(|name| (name, clock));
+            phone.swipe.leaving = Some((leaving, clock));
         }
-        self.show_session(&next);
+        match next {
+            Beside::Tab(at) => self.select_tab(at),
+            Beside::Session(name) => self.show_session(&name),
+        }
     }
 
-    /// A paged-away session still selected after [`LANDING`] did not
-    /// switch: bring it back rather than leave the stage empty.
+    /// A paged-away page still shown after [`LANDING`] did not switch:
+    /// bring it back rather than leave the stage empty.
     pub(in crate::desk) fn land_swipe(&mut self, tx: &mut rune::Tx) -> bool {
         let clock = self.clock;
-        let selected = self.selected_session_name();
+        let selected = Some(self.page_key());
         let Some(phone) = self.phone.as_mut() else {
             return false;
         };
@@ -219,8 +287,8 @@ impl Desk {
 
     /// Lift while pulling: the drawer opens, or slides back out.
     pub(super) fn pull_release(&mut self, across: &Across) {
-        let open =
-            across.commits(across.dx, self.stage_w(), PULL_COMMIT, self.clock) && across.dx > 0.0;
+        let (w, clock) = (self.stage_w(), self.clock);
+        let open = across.commits(across.dx, w, PULL_COMMIT, FLICK_MIN, clock) && across.dx > 0.0;
         self.settle_swipe();
         if open {
             self.open_phone_sessions();
@@ -237,10 +305,10 @@ impl Desk {
     }
 }
 
-/// Play the detent as the drag crosses into committing, not back out.
-fn tick(past: &mut bool, now: bool, feedback: &mut Option<Feedback>) {
+/// Play `detent` as the drag crosses into committing, not back out.
+fn tick(past: &mut bool, now: bool, detent: Feedback, feedback: &mut Option<Feedback>) {
     if now && !*past {
-        *feedback = Some(Feedback::Detent);
+        *feedback = Some(detent);
     }
     *past = now;
 }
@@ -264,19 +332,19 @@ mod tests {
     fn a_slow_drag_commits_past_its_fraction_and_a_flick_short_of_it() {
         let mut across = Across::new(0.0);
         across.sample(-140.0, 1.0);
-        assert!(across.commits(-140.0, 400.0, PAGE_COMMIT, 1.0));
-        assert!(!across.commits(-100.0, 400.0, PAGE_COMMIT, 2.0));
+        assert!(across.commits(-140.0, 400.0, PAGE_COMMIT, FLICK_MIN, 1.0));
+        assert!(!across.commits(-100.0, 400.0, PAGE_COMMIT, FLICK_MIN, 2.0));
         let mut flick = Across::new(0.0);
         flick.sample(-30.0, 0.016);
         flick.sample(-60.0, 0.032);
-        assert!(flick.commits(-60.0, 400.0, PAGE_COMMIT, 0.04));
+        assert!(flick.commits(-60.0, 400.0, PAGE_COMMIT, FLICK_MIN, 0.04));
         assert!(
-            !flick.commits(-60.0, 400.0, PAGE_COMMIT, 0.5),
+            !flick.commits(-60.0, 400.0, PAGE_COMMIT, FLICK_MIN, 0.5),
             "a rest throws nothing"
         );
         flick.sample(-60.0, 0.5);
         assert!(
-            !flick.commits(-60.0, 400.0, PAGE_COMMIT, 0.5),
+            !flick.commits(-60.0, 400.0, PAGE_COMMIT, FLICK_MIN, 0.5),
             "nor the lift's last still step after it"
         );
         let mut back = Across::new(0.0);
@@ -284,7 +352,7 @@ mod tests {
         back.sample(-170.0, 0.516);
         back.sample(-140.0, 0.532);
         assert!(
-            !back.commits(-140.0, 400.0, PAGE_COMMIT, 0.54),
+            !back.commits(-140.0, 400.0, PAGE_COMMIT, FLICK_MIN, 0.54),
             "a flick back cancels"
         );
     }
@@ -292,10 +360,10 @@ mod tests {
     #[test]
     fn the_detent_ticks_once_on_the_way_in() {
         let (mut past, mut feedback) = (false, None);
-        tick(&mut past, true, &mut feedback);
+        tick(&mut past, true, Feedback::Detent, &mut feedback);
         assert_eq!(feedback.take(), Some(Feedback::Detent));
-        tick(&mut past, true, &mut feedback);
-        tick(&mut past, false, &mut feedback);
+        tick(&mut past, true, Feedback::Detent, &mut feedback);
+        tick(&mut past, false, Feedback::Detent, &mut feedback);
         assert_eq!(feedback, None);
     }
 }

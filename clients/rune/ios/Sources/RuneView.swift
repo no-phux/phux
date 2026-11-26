@@ -275,6 +275,7 @@ final class RuneView: UIView {
         case "hold": UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         case "copied": UINotificationFeedbackGenerator().notificationOccurred(.success)
         case "detent": UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case "threshold": UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
         default: break
         }
         attached = requests["attached"] as? Bool ?? false

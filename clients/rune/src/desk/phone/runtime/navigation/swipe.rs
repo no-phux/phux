@@ -1,5 +1,6 @@
-//! A sideways thumb on the terminal: it pages between sessions and, from the
-//! left edge, pulls the Sessions drawer in. Driven through real touches.
+//! A sideways thumb on the terminal: it pages between tabs, steps over into
+//! the next session past the last, and, from the left edge, pulls Sessions
+//! in. Driven through real touches.
 
 use super::*;
 use crate::desk::phone::touch::Feedback;
@@ -54,7 +55,7 @@ fn swipe(rt: &Runtime<Desk>) -> &crate::desk::phone::swipe::Swipe {
 }
 
 #[test]
-fn a_sideways_thumb_pages_to_the_next_session_and_names_it_on_the_way() {
+fn past_the_last_tab_a_heavier_pull_steps_over_into_the_next_session() {
     let (client, mut rt) = scene();
     let first = rt.state.selected_session_name().unwrap();
     let next = rt
@@ -67,25 +68,37 @@ fn a_sideways_thumb_pages_to_the_next_session_and_names_it_on_the_way() {
     rt.touch(9, Moved, x - 60.0, y, 1.016);
     tick(&mut rt, 1.016);
     assert!(swipe(&rt).paging);
-    assert_eq!(swipe(&rt).page, -60.0, "the page follows the finger");
     assert!(
-        rt.find("phone-session-peek").is_some(),
-        "names where it goes"
+        (swipe(&rt).page + 36.0).abs() < 0.01,
+        "{}: another session gives less than the finger travels",
+        swipe(&rt).page
     );
-    rt.touch(9, Moved, x - 200.0, y, 1.032);
+    assert!(
+        rt.find("phone-page-peek").is_some(),
+        "names where it goes, quietly"
+    );
+    assert!(rt.find("phone-session-peek").is_none(), "no big pill");
+    rt.touch(9, Moved, x - 150.0, y, 1.032);
     tick(&mut rt, 1.032);
     assert_eq!(
-        rt.state.phone.as_mut().unwrap().feedback.take(),
-        Some(Feedback::Detent),
-        "a detent where lifting commits"
+        rt.state.phone.as_ref().unwrap().feedback,
+        None,
+        "a tab's distance is not enough to leave the session"
     );
-    rt.touch(9, Ended, x - 200.0, y, 1.3);
+    rt.touch(9, Moved, x - 240.0, y, 1.048);
+    tick(&mut rt, 1.048);
+    assert_eq!(
+        rt.state.phone.as_mut().unwrap().feedback.take(),
+        Some(Feedback::Threshold),
+        "a firmer detent where lifting crosses over"
+    );
+    rt.touch(9, Ended, x - 240.0, y, 1.3);
     tick(&mut rt, 1.3);
     assert_eq!(rt.state.selected_session_name().as_deref(), Some(&*next));
     assert_ne!(first, next);
     assert!(!swipe(&rt).paging);
     assert_eq!(swipe(&rt).arrival, Some(-1.0));
-    assert!(rt.find("phone-session-peek").is_none());
+    assert!(rt.find("phone-page-peek").is_none());
     no_terminal_input(&client);
 }
 
@@ -97,8 +110,11 @@ fn a_short_slow_drag_springs_home_and_a_flick_pages() {
     drag(&mut rt, at, &[-30.0, -60.0, -90.0], 0.5);
     assert_eq!(rt.state.selected_session_name(), Some(first.clone()));
     assert_eq!(swipe(&rt).page, 0.0);
-    // The same distance thrown pages.
+    // Thrown, it is still too short to leave the session.
     drag(&mut rt, at, &[-30.0, -60.0, -90.0], 0.0);
+    assert_eq!(rt.state.selected_session_name(), Some(first.clone()));
+    // A throw a tab's length crosses over.
+    drag(&mut rt, at, &[-50.0, -100.0, -150.0], 0.0);
     assert_ne!(rt.state.selected_session_name(), Some(first));
     no_terminal_input(&client);
 }
@@ -139,15 +155,24 @@ fn the_left_edge_pulls_the_sessions_drawer_in_over_the_terminal() {
     tick(&mut rt, 1.016);
     assert_eq!(swipe(&rt).pull, Some(60.0));
     assert!(!swipe(&rt).paging, "the edge pulls, it does not page");
-    let drawer = crate::ui::element(&rt, "phone-navigation-page");
-    assert!(drawer.inert, "a drawer in the finger's hand takes no taps");
+    let list = crate::ui::element(&rt, "phone-navigation-page");
+    assert!(list.inert, "a drawer in the finger's hand takes no taps");
+    let shown = 60.0 / rt.viewport.0;
     assert!(
-        (drawer.rect[0] - (60.0 - rt.viewport.0)).abs() < 0.5,
-        "{drawer:?} follows the finger"
+        list.rect[0] < -1.0 && list.rect[0] > -80.0,
+        "{list:?} drifts in behind the finger, a short way"
     );
+    // The terminal frosts over in place as the finger pulls: the glass
+    // never slides, it thickens.
+    let frost = crate::ui::element(&rt, "phone-drawer-frost");
+    assert_eq!(frost.rect[0], 0.0, "{frost:?} stays put");
+    assert!(list.opacity < shown, "{list:?} sharpens after the glass");
+    let thin = frost.fill.a;
     assert_eq!(rt.state.phone_page(), None, "not open until lifted");
     rt.touch(9, Moved, 204.0, y, 1.032);
     tick(&mut rt, 1.032);
+    let thick = crate::ui::element(&rt, "phone-drawer-frost").fill.a;
+    assert!(thin > 0.0 && thin < thick, "{thin} thickens to {thick}");
     assert_eq!(
         rt.state.phone.as_mut().unwrap().feedback.take(),
         Some(Feedback::Detent)
@@ -226,17 +251,17 @@ fn a_reconnect_retires_page_and_drawer_touches_but_a_new_finger_still_works() {
 #[test]
 fn a_failed_page_landing_rebuilds_the_idle_stage_from_the_poll_alone() {
     let (_client, mut rt) = scene();
-    let first = rt.state.selected_session_name().unwrap();
     let since = rt.clock;
     rt.update(|d, tx| {
         d.clock = since;
+        let key = d.page_key();
         let phone = d.phone.as_mut().unwrap();
         phone.swipe.arrival = Some(-1.0);
-        phone.swipe.leaving = Some((first.clone(), since));
+        phone.swipe.leaving = Some((key, since));
         tx.instant();
     });
     rt.frame(0.0);
-    let key = format!("phone-session-page-{first}");
+    let key = format!("phone-page-{}", rt.state.page_key());
     let stage = crate::ui::element(&rt, "phone-spatial-stage").rect;
     assert!(crate::ui::element(&rt, &key).rect[0] < stage[0] - 100.0);
     // This is the shared poll result Desk::poll consumes. No rt.update,
@@ -283,4 +308,28 @@ fn return_is_pinned_beside_the_keyboard_and_sends_enter() {
         [phux_protocol::input::key::PhysicalKey::Enter],
         "one Return"
     );
+}
+
+#[test]
+fn closing_sessions_fades_the_frost_and_the_list_without_flattening_the_glass() {
+    let (_client, mut rt) = scene();
+    let (_, y) = middle(&rt);
+    drag(&mut rt, (4.0, y), &[60.0, 140.0, 220.0], 1.0);
+    tick(&mut rt, 3.0);
+    assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
+    assert_eq!(crate::ui::glass_panels(&rt), 1, "open: one full glass");
+    rt.update(|d, _| d.close_phone_navigation());
+    tick(&mut rt, 3.05);
+    for e in rt.elements() {
+        if let Some(k @ ("phone-drawer" | "phone-drawer-frost" | "phone-navigation-page")) =
+            e.key.as_deref()
+        {
+            eprintln!(
+                "{k}: exiting {} opacity {} rect {:?}",
+                e.exiting, e.opacity, e.rect
+            );
+        }
+    }
+    tick(&mut rt, 4.0);
+    assert!(rt.find("phone-drawer-frost").is_none(), "gone once settled");
 }

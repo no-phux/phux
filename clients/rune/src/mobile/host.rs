@@ -28,6 +28,7 @@ pub fn take_requests(rt: &mut rune::Runtime<State>) -> Value {
         Feedback::Hold => "hold",
         Feedback::Copied => "copied",
         Feedback::Detent => "detent",
+        Feedback::Threshold => "threshold",
     });
     let attached = state.connection.status == phux_client_runtime::control::Status::Attached;
     let native = state.native.as_mut();

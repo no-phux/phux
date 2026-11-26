@@ -37,7 +37,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
     } else {
         content
     };
-    let session = desk.selected_session_name().unwrap_or_default();
+    let key = desk.page_key();
     // Only this viewport is measured and clipped. The toolbar is a sibling,
     // so neither terminal rows nor the camera can extend behind its controls.
     let viewport = el()
@@ -49,7 +49,7 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
         .clip_rounded(0.0)
         .on_layout(|d: &mut Desk, r| d.phone_stage_laid_out([r[2], r[3]]))
         .children(peek(desk, phone, &page))
-        .child(pager(phone, &session, content, &page));
+        .child(pager(phone, &key, content, &page));
     // The toolbar sits on the terminal's ground, so it takes that ground's
     // tokens, as the phone's other controls do.
     let mut stage = area.key("phone-spatial-shell").child(
@@ -167,12 +167,13 @@ fn canvas(
     canvas
 }
 
-/// One session's page of the stage. A sideways finger carries it one to one;
-/// lifted, it springs home, or slides off as the next session slides in
-/// from the other side, parked off the stage until that session shows.
-fn pager(phone: &Phone, session: &str, content: El, p: &Look) -> El {
+/// One tab's page of the stage ([`Desk::page_key`]). A sideways finger
+/// carries it; lifted, it springs home, or slides off as the next tab or
+/// session slides in from the other side, parked off the stage until that
+/// one shows.
+fn pager(phone: &Phone, key: &str, content: El, p: &Look) -> El {
     let swipe = &phone.swipe;
-    let leaving = (swipe.leaving.as_ref()).is_some_and(|(name, _)| name == session);
+    let leaving = (swipe.leaving.as_ref()).is_some_and(|(name, _)| name == key);
     let x = if leaving {
         swipe.arrival.unwrap_or(0.0) * phone.stage[0]
     } else if swipe.paging {
@@ -181,7 +182,7 @@ fn pager(phone: &Phone, session: &str, content: El, p: &Look) -> El {
         0.0
     };
     let page = el()
-        .key(format!("phone-session-page-{session}"))
+        .key(format!("phone-page-{key}"))
         .cover()
         .offset(x, 0.0)
         .offset_motion(if swipe.paging {
@@ -210,45 +211,72 @@ fn pager(phone: &Phone, session: &str, content: El, p: &Look) -> El {
     )
 }
 
-/// Under the sliding page, in the strip it uncovers: the session a lift
-/// goes to, lit once lifting commits. Nothing at either end, where the
-/// page only gives.
+/// Under the sliding page, in the strip it uncovers: quietly, where a
+/// lift goes, in the page's own type rather than a button. A tab is named
+/// as the strip names it; another session carries its name over a "Next"
+/// or "Previous session" line, lit once lifting commits. Nothing at
+/// either end, where the page only gives.
 fn peek(desk: &Desk, phone: &Phone, p: &Look) -> Option<El> {
+    use crate::desk::phone::swipe::Beside;
     let swipe = &phone.swipe;
     if !swipe.paging {
         return None;
     }
-    let name = desk.page_target(swipe.page)?;
+    let next = desk.page_target(swipe.page)?;
     let w = phone.stage[0];
-    let progress =
-        (swipe.page.abs() / (w * crate::desk::phone::swipe::PAGE_COMMIT).max(1.0)).min(1.0);
     let forward = swipe.page < 0.0;
-    let (fill, ink) = if progress >= 1.0 {
-        (
-            p.roles.accent.accent.paint(),
-            p.roles.accent.on_accent.paint(),
-        )
-    } else {
-        (p.roles.layer.raised.paint(), p.roles.text.text.paint())
+    let (name, over, commit) = match &next {
+        Beside::Tab(at) => {
+            let tab = desk.connection.tabs.list.get(*at)?;
+            let commit = crate::desk::phone::swipe::PAGE_COMMIT;
+            (desk.tab_label(tab), None, commit)
+        }
+        Beside::Session(name) => {
+            let over = if forward {
+                "Next session"
+            } else {
+                "Previous session"
+            };
+            let commit = crate::desk::phone::swipe::SESSION_COMMIT;
+            (name.clone(), Some(over), commit)
+        }
     };
-    let words = if forward {
-        format!("{name}  ›")
+    // The page shows less than the finger travels into another session, so
+    // the cue reads the finger's own share of the way to committing.
+    let travel = match next {
+        Beside::Tab(_) => swipe.page.abs(),
+        Beside::Session(_) => swipe.page.abs() / crate::desk::phone::swipe::SESSION_GIVE,
+    };
+    let lit = travel >= w * commit;
+    let ink = if lit {
+        p.roles.text.text.paint()
     } else {
-        format!("‹  {name}")
+        p.roles.text.dim.paint()
     };
     let gap = swipe.page.abs().min(w);
-    let pill = el()
-        .key("phone-session-peek")
-        .min_h(p.space.touch_min)
+    let words = if forward {
+        format!("{name} ›")
+    } else {
+        format!("‹ {name}")
+    };
+    let cue = col()
+        .key("phone-page-peek")
         .max_w((gap - 2.0 * p.space.s3).max(0.0))
-        .px(p.space.s4)
-        .radius(p.radius.full)
-        .continuous_corners()
-        .center()
-        .fill(fill)
-        .motion(p.motion.control.enter)
-        .opacity(progress)
-        .child(text(words).font(p.ty.label.medium()).color(ink).truncate());
+        .gap(p.space.s1)
+        .items_center()
+        .opacity((travel / (w * commit).max(1.0)).min(1.0))
+        .children(over.map(|over| {
+            text(over)
+                .font(p.ty.caption.medium())
+                .color(p.roles.text.dim.paint())
+                .truncate()
+        }))
+        .child(
+            text(words)
+                .font(p.ty.label.semibold())
+                .color(ink)
+                .truncate(),
+        );
     // The uncovered strip reads as the layer under the page.
     let lane = row()
         .absolute(if forward { w - gap } else { 0.0 }, 0.0)
@@ -258,7 +286,7 @@ fn peek(desk: &Desk, phone: &Phone, p: &Look) -> Option<El> {
         .fill(p.roles.layer.sidebar.paint())
         .inert()
         .a11y_hidden();
-    Some(lane.child(p.elevate(pill, Tier::Floating)))
+    Some(lane.child(cue))
 }
 
 /// A touch control: the touch target's height, its words in the label
