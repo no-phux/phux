@@ -314,7 +314,7 @@ fn a_satellite_swarm_collapses_like_this_host() {
     );
     assert_eq!(lines.len(), 5 + super::glance_rows::GLANCE_ROWS);
 
-    let detail = session_lines(&snapshot, None);
+    let detail = session_lines(&snapshot, None, &std::collections::BTreeMap::new());
     assert_eq!(detail.len(), 2 + 1 + 500 + 500 + 1, "-l keeps every line");
 }
 
@@ -363,7 +363,10 @@ fn unjoined_satellite_terminals_glance_as_one_line_per_host() {
             "edge terminals: needs you (1 failed), 299 running"
         ]
     );
-    assert_eq!(session_lines(&snapshot, None).len(), 301);
+    assert_eq!(
+        session_lines(&snapshot, None, &std::collections::BTreeMap::new()).len(),
+        301
+    );
 }
 
 /// The session view lists each terminal, exceptions first: an agent

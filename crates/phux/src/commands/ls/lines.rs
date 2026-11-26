@@ -22,6 +22,7 @@ pub(crate) const LOCAL_HOST_LABEL: &str = "This host";
 pub(super) fn local_session_lines(
     snapshot: &SessionSnapshot,
     organization: Option<&OrgInventory>,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
 ) -> Vec<String> {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -35,8 +36,37 @@ pub(super) fn local_session_lines(
             .map(|(record, names)| names.display(*record.key.as_bytes()));
         lines.push(with_key(format_row(&row), key.as_deref()));
         lines.extend(agent_session_lines(snapshot, session));
+        lines.extend(resume_lines(organization, session, resumes));
     }
     lines
+}
+
+/// Escaped OSC 7577 commands for panes in `session`.
+fn resume_lines(
+    organization: Option<&OrgInventory>,
+    session: &SessionInfo,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
+) -> Vec<String> {
+    let Some(inventory) = organization else {
+        return Vec::new();
+    };
+    let Some(record) = inventory.session_by_live(session.id) else {
+        return Vec::new();
+    };
+    let names = phux_client::org::KeyNames::of_inventory(inventory);
+    inventory
+        .resources
+        .iter()
+        .filter(|resource| resource.session == record.key)
+        .filter_map(|resource| {
+            let line = resumes.get(&resource.key.to_string())?;
+            Some(format!(
+                "  {}  {}",
+                names.display(*resource.key.as_bytes()),
+                line.display()
+            ))
+        })
+        .collect()
 }
 
 /// `line` with `key`, when there is one, after two spaces.

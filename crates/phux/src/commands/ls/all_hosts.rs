@@ -226,6 +226,7 @@ pub(super) fn render_listing(
     depth: &Depth,
     view: StateView,
     agents: &HashMap<ResourceId, AgentRecord>,
+    resumes: &std::collections::BTreeMap<String, crate::commands::program_resume::ResumeLine>,
 ) -> ExitCode {
     if json {
         // Not stderr: a `--json` consumer's channel is the document.
@@ -244,7 +245,7 @@ pub(super) fn render_listing(
         return code;
     }
     if depth.detail {
-        print_sessions(&snapshot, organization.as_ref());
+        print_sessions(&snapshot, organization.as_ref(), resumes);
     } else {
         print_lines(glance_lines(sources));
     }

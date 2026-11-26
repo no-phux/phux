@@ -24,6 +24,7 @@ pub mod keys;
 #[allow(clippy::large_enum_variant, reason = "see above")]
 pub mod org;
 pub mod process;
+pub mod program_resume;
 pub mod project_identity;
 pub mod registry;
 pub mod resource;
@@ -56,6 +57,7 @@ pub use org::{
     Receipt, RecordRef, RevisionPin, Transition, Undo,
 };
 pub use process::{ExitOutcome, TerminalProcessState};
+pub use program_resume::{ProgramResume, ProgramResumeUpdate, escape_command};
 pub use registry::{Committed, Registry};
 pub use resource::{
     AgentFacet, AgentLaunch, LaunchSpec, Provenance, Resource, ResourceDescriptor, ResourceKind,

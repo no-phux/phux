@@ -6921,13 +6921,15 @@ relaunch ^KEY --approve-raw`, which prints the exact recipe for an interactive
 yes. With `SESSION`, only that session's panes. Prints one summary line plus one
 line per pane that was refused (`-v`: every pane).
 
-Usage: phux restore [-v --verbose] [--json] [SESSION]
+Usage: phux restore [FLAGS] [SESSION]
 
 Arguments:
   [SESSION]  Only this session's panes.
 
 Flags:
   -v, --verbose        Print one line per pane, not a summary.
+      --dry-run        Print what each pane would run, including an escaped OSC
+                       7577 command, and change nothing.
       --json           Emit a schema-versioned JSON result or error.
   -h, --help           Print help
 

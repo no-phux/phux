@@ -65,6 +65,7 @@ fn creation_issues_handles_and_seeds_facets_from_the_launch_spec() {
                 last_cwd: None,
                 pane_id: None,
                 parent: None,
+                program_resume: None,
             })),
             ..shell()
         },

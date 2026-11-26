@@ -180,6 +180,8 @@ fn apply_handoff(pane: &mut PaneBlob, h: &ProcessHandoff) {
     pane.master_fd = h.master_fd.as_ref().map(AsRawFd::as_raw_fd);
     pane.vt_replay_bytes.clone_from(&h.vt_replay_bytes);
     pane.scrollback_bytes.clone_from(&h.scrollback_bytes);
+    pane.program_resume_token
+        .clone_from(&h.program_resume_token);
 }
 
 /// One pane rebuilt around its inherited state, ready to register.
@@ -448,8 +450,12 @@ fn wired(
             (None, None) => phux_terminal_api::EngineSource::Replay(pane_seed(p)),
             _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
         };
-        let reports =
+        let mut reports =
             crate::runtime::commands::terminal::spawn::engine_reports(&state, core, keeper.clone());
+        reports.program_resume_token = p
+            .program_resume_token
+            .as_ref()
+            .map(|token| token.as_str().to_owned());
         let engine = engine.as_ref().ok_or_else(|| {
             RebuildError::Actor(Box::new(phux_terminal_api::TerminalActorError::Refused(
                 "no Terminal engine supplied".into(),
@@ -476,6 +482,7 @@ fn wired(
                 bundle.agent_state,
                 bundle.program_status,
                 bundle.resume,
+                bundle.program_resume,
                 bundle.program_note,
             ),
         })

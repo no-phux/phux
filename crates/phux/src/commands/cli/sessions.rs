@@ -297,6 +297,9 @@ pub(crate) struct RestoreArgs {
     /// Print one line per pane, not a summary.
     #[usage(short = 'v', long)]
     pub(crate) verbose: bool,
+    /// Print what each pane would run, including an escaped OSC 7577 command, and change nothing.
+    #[usage(long)]
+    pub(crate) dry_run: bool,
     /// Emit a schema-versioned JSON result or error.
     #[usage(long)]
     pub(crate) json: bool,

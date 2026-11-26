@@ -115,7 +115,9 @@ Rune skips Release Please. Every two hours `rune-auto-release.yml` opens a
 draft patch bump when feat, fix or perf commits touched `clients/rune`, marks
 it ready once, and arms auto-merge through the same `pr-ready-ci` gate; then
 it tags the merged bump once `ci-green` passes
-(`clients/rune/scripts/release.py`).
+(`clients/rune/scripts/release.py`). The bump also puts each of those
+changes on top of `clients/rune/news.json`, the notes behind the bell's
+What's new panel; edit a title there in the bump PR to polish it.
 `RUNE_AUTO_RELEASE=false` stops it; merge your own bump to ship hand-written
 notes. Clients read only `X.Y.Z` and `X.Y.Z-alpha.N` versions.
 
@@ -123,7 +125,8 @@ By hand:
 
 1. On a branch, set `version` in `clients/rune/Cargo.toml`, run
    `cargo update --workspace` in `clients/rune`, and rewrite
-   `clients/rune/RELEASE_NOTES.md`, starting `**Phux Rune VERSION**`. Merge it.
+   `clients/rune/RELEASE_NOTES.md`, starting `**Phux Rune VERSION**`, and add
+   the bell's notes to the top of `clients/rune/news.json`. Merge it.
 2. Once `bun tools/main.ts ci-green <sha>` passes, push `rune-vVERSION`.
 3. `rune-client.yml` refuses a tag that clients cannot read, disagrees with
    `Cargo.toml` or the notes, or fails `ci-green`; a refused tag costs its

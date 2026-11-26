@@ -133,7 +133,7 @@ completion SHOULD report `done` or `error` first.
 | `app` | `[A-Za-z0-9_.+-]{1,32}` | Stable program id such as `cargo`. Invalid is absent. A record without `app` inherits its nearest ancestor's when read. |
 | `title` | base64 UTF-8 | Short label; the active record's is the pane's agent name. Empty is absent. |
 | `msg` | base64 UTF-8 | One line of status. Shown, never interpreted. Empty is absent. |
-| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | phux extension; see [Resume](#resume). |
+| `resume` | `[A-Za-z0-9_.+,/=-]{1,256}`, not starting with `-` | phux extension; see [Resume (legacy)](#resume-legacy). |
 
 ### Limits
 
@@ -189,10 +189,15 @@ shows every record. They are server-owned, client-unwritable metadata:
 "kind", "progress", "app", "title", "msg"}`, absent keys omitted, `app`
 resolved.
 
-### Resume
+### Resume (legacy)
 
-`resume` is a phux extension: an opaque token that lets `phux restore`
-relaunch the pane with a command the user configured for that `app`:
+`resume` is a legacy phux extension of OSC 7501. A foreground-job check
+ignores the shell, a background job, and a grandchild, and OSC 133 `A` does
+not clear a stored token. `cat`, `ssh`, or `less` can still plant one while
+that program is the foreground job, and an empty `resume=` from the shell
+can still withdraw it. Prefer [OSC 7577](#program-resume-osc-7577). `resume`
+is an opaque token that lets `phux restore` relaunch the pane with a command
+the user configured for that `app`:
 
 ```sh
 printf '\033]7501;state=working:app=notes:resume=%s\033\\' "$id" > /dev/tty
@@ -249,8 +254,9 @@ pane can send one; records describe the pane, not a process.
   pane shell, or when the pane's own process is that program (no shell).
   The shell in the foreground, a background job, and a grandchild are
   ignored, and OSC 133 `A` does not clear a stored token. cat, ssh, and
-  less can still set it while they are the foreground job, until OSC 7577
-  support lands. A `[[restore.program]]` command MUST treat the token as
+  less can still set it while they are the foreground job. When
+  `program-resume` is on, a trusted OSC 7577 record is what a relaunch runs
+  instead. A `[[restore.program]]` command MUST treat the token as
   untrusted (it may hold `/` and `..`): look it up among things it created,
   never open it as a path or evaluate it as code (`sh -c`). phux guarantees
   only its shape.
@@ -273,3 +279,52 @@ printf '\033]7501;state=clear\033\\'              # every record
 - **OSC 133 `A`** ends `working` and `blocked` records.
 - **OSC 0 and 2** set the pane title; OSC 7501 `title` labels a record
   without touching it.
+
+## Program resume (OSC 7577)
+
+OSC 7577 is how a program reports the command that should bring it back after
+a crash, `phux kill --server`, or a reboot. It does not replace a hot upgrade:
+`phux upgrade` keeps the process. The report is a hint. phux stores it and
+runs it only when every check below passes.
+
+A report is `OSC 7577 ;` pairs `ST`. The body ends with `mac=`, a SHA-256 of
+the bytes before that key, a colon, and the pane's `OSC7577_TOKEN`. phux checks
+the MAC and `time` (within 60 seconds of its clock, and not earlier than the
+last report it accepted for that pid) before it decodes anything else. A
+failure there is ignored. A report that passes both and then breaks the
+grammar is rejected, and that owner's record is removed.
+
+phux sets `OSC7577_TOKEN` in the environment of the pane's first process when
+`program-resume` is on, and nowhere else: not in metadata, `--json`, or logs.
+Each pane mints its own token, and a new one each time that pane starts. The
+token is carried across `phux upgrade` so a later report still verifies.
+
+phux stores a record when the MAC, the time, and the grammar pass. The record
+is trusted only when the reporter is a same-uid direct child of the pane's
+shell. Any other parent is stored as untrusted. A record is cleared
+only by `clear=1` or when its owning process exits. OSC 133 `A`, RIS, DECSTR,
+and the alternate screen do not clear it.
+
+```toml
+[restore]
+program-resume = true
+
+[[restore.trust]]
+command = "nvim"
+```
+
+`program-resume` is off by default. `[[restore.trust]]` has no built-in rules.
+A record runs only when it is trusted, its first argument is listed, its
+working directory still exists, it has not already been tried, and phux is not
+running as root. The command is the reported argv with no shell, as the same
+user. An untrusted record or a missing directory starts a shell instead.
+`tried` is saved before the command starts, so a crash during resume does not
+retry it. An agent integration's own resume is first, then a trusted OSC 7577
+record, then a legacy `resume=` entry, then the shell.
+
+`phux ls -l` and `phux restore --dry-run` show the command with controls and
+bidirectional overrides escaped.
+
+One correction to the spec's advice on command execution: phux passes the
+reported argv directly, with no shell and without running shell startup files.
+That is what keeps an argument such as `$(reboot)` as text.

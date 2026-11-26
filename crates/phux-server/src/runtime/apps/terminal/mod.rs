@@ -18,6 +18,7 @@ pub(crate) mod launch;
 pub(crate) mod notify_mode;
 pub(crate) mod parent;
 pub(crate) mod program_note;
+pub(crate) mod program_resume;
 pub(crate) mod program_status;
 pub(crate) mod resume;
 pub(crate) mod scrollback;

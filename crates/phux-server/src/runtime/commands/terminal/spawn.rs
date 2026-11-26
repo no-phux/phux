@@ -75,6 +75,10 @@ pub(crate) fn register_pty_command(
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
     let wire = s.idspace.intern_resource(terminal);
     phux_terminal_api::launch::apply_terminal_id(cmd, &wire);
+    if s.config().restore.program_resume && rustix::process::geteuid().as_raw() != 0 {
+        let token = phux_terminal_api::launch::mint_program_resume_token();
+        phux_terminal_api::launch::apply_program_resume_token(cmd, &token);
+    }
     phux_terminal_api::launch::apply_server_socket(cmd, s.config().server_socket_path());
     // Only with `[forward] agent = true`: otherwise the pane keeps whatever
     // agent the server's environment names.
@@ -138,7 +142,7 @@ pub(crate) fn launch_pane_actor_with_failure_policy(
 ) -> Result<phux_protocol::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
-    let reports = engine_reports(state, terminal, scrollback::keeper(state));
+    let reports = resume_reports(state, terminal, cmd.as_ref(), scrollback::keeper(state));
     let seed = scrollback::seed(state, terminal, rows);
     // A spawn racing shutdown would start a child the engine drain may
     // already have passed; refuse it before anything forks.
@@ -186,10 +190,18 @@ pub(crate) fn launch_pane_actor_with_failure_policy(
         agent_state,
         program_status,
         resume,
+        program_resume,
         program_note,
         ..
     } = bundle;
-    let wiring = PaneWiring::new(events, agent_state, program_status, resume, program_note);
+    let wiring = PaneWiring::new(
+        events,
+        agent_state,
+        program_status,
+        resume,
+        program_resume,
+        program_note,
+    );
     let wire_terminal_id = state.with_mut(|s| {
         if !s.activation_matches(activation) {
             return Err(phux_terminal_api::actor::TerminalActorError::Refused(
@@ -240,12 +252,39 @@ pub(crate) struct PaneWiring {
         tokio::sync::watch::Receiver<Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>>,
     /// The OSC 7501 `resume=` token, for the pane's launch record.
     resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
+    /// OSC 7577 record changes.
+    program_resume: tokio::sync::mpsc::UnboundedReceiver<phux_core::ProgramResumeUpdate>,
     /// OSC 9 / OSC 777, for `notifications.from-programs`.
     program_note: ProgramNoteRx,
 }
 
 type ProgramNoteRx =
     tokio::sync::watch::Receiver<Option<phux_terminal_api::agent_detect::ProgramNote>>;
+
+fn resume_reports(
+    state: &SharedState,
+    terminal: phux_core::ids::ResourceId,
+    cmd: Option<&phux_terminal_api::launch::LaunchCommand>,
+    keeper: Option<std::sync::Arc<scrollback::Keeper>>,
+) -> phux_terminal_api::EngineReports {
+    let mut reports = engine_reports(state, terminal, keeper);
+    reports.program_resume_token = cmd.and_then(|command| {
+        command
+            .get_env(phux_terminal_api::launch::OSC7577_TOKEN)
+            .map(|value| value.to_string_lossy().into_owned())
+    });
+    reports.program_resume_clock = state.with(|server| {
+        let launch = server.registry().record(terminal)?.launch.as_ref()?;
+        let phux_core::LaunchSpec::Terminal(launch) = launch else {
+            return None;
+        };
+        launch
+            .program_resume
+            .as_deref()
+            .map(|record| (record.pid, record.time))
+    });
+    reports
+}
 
 pub(crate) fn engine_reports(
     state: &SharedState,
@@ -257,6 +296,8 @@ pub(crate) fn engine_reports(
         agent_capacity: AGENT_STATE_SINK_CAPACITY,
         live_session: Some(live_session_probe(state, terminal)),
         keep_scrollback: keeper.map(|keeper| keeper.ask(state, terminal)),
+        program_resume_token: None,
+        program_resume_clock: None,
     }
 }
 
@@ -270,6 +311,7 @@ impl PaneWiring {
             Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>,
         >,
         resume: tokio::sync::watch::Receiver<Option<phux_core::ResumeToken>>,
+        program_resume: tokio::sync::mpsc::UnboundedReceiver<phux_core::ProgramResumeUpdate>,
         program_note: ProgramNoteRx,
     ) -> Self {
         Self {
@@ -277,6 +319,7 @@ impl PaneWiring {
             agent_state,
             program_status,
             resume,
+            program_resume,
             program_note,
         }
     }
@@ -299,6 +342,11 @@ impl PaneWiring {
             state.clone(),
             wire.clone(),
             self.resume,
+        );
+        crate::runtime::apps::terminal::program_resume::spawn_drain(
+            state.clone(),
+            wire.clone(),
+            self.program_resume,
         );
         crate::runtime::apps::terminal::program_note::spawn_drain(
             state.clone(),
@@ -335,6 +383,7 @@ pub(crate) fn launch_of(
         last_cwd: None,
         pane_id: None,
         parent: None,
+        program_resume: None,
     }
 }
 

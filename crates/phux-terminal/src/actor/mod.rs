@@ -56,6 +56,7 @@ mod pane_scope;
 mod park;
 mod process;
 mod process_facet;
+mod program_resume;
 pub mod program_status;
 #[cfg(any(test, feature = "test-support"))]
 mod pty_fixture;
@@ -205,6 +206,8 @@ pub struct TerminalActor {
     program_status_sink: Option<watch::Sender<Vec<program_status::Record>>>,
     /// The OSC 7501 `resume=` token, kept out of the records above.
     resume: resume::Resume,
+    /// OSC 7577 program resume. The token stays in this scanner, never in a record.
+    program_resume: program_resume::ProgramResumeScan,
     /// The OSC 1337 `phux_icon` scan, and a change from it the agent-state
     /// sink has not taken yet.
     icon: osc_scan::IconScan,

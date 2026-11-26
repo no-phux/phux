@@ -51,17 +51,26 @@ fn agent(dir: &tempfile::TempDir) -> (PathBuf, Arc<Mutex<Vec<u8>>>) {
     let record = Arc::clone(&seen);
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
+            // A client that hits its deadline drops the socket. That is a
+            // closed connection, not a dead agent: keep serving the next one.
             let mut len = [0; 4];
-            stream.read_exact(&mut len).unwrap();
-            let mut message = vec![0; usize::try_from(u32::from_be_bytes(len)).unwrap()];
-            stream.read_exact(&mut message).unwrap();
+            if stream.read_exact(&mut len).is_err() {
+                continue;
+            }
+            let Ok(n) = usize::try_from(u32::from_be_bytes(len)) else {
+                continue;
+            };
+            let mut message = vec![0; n];
+            if message.is_empty() || stream.read_exact(&mut message).is_err() {
+                continue;
+            }
             record.lock().unwrap().push(message[0]);
             let answer = match message[0] {
                 11 => listing(),
                 13 => SIGNATURE.to_vec(),
                 _ => FAILURE.to_vec(),
             };
-            stream.write_all(&string(&answer)).unwrap();
+            let _ = stream.write_all(&string(&answer));
         }
     });
     (path, seen)
