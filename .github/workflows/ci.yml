@@ -314,8 +314,12 @@ jobs:
       # change that only breaks under it fails here instead of at release.
       - run: npm install --global npm@12.2.1
       # Only just from the pinned nixpkgs; Node, npm and Bun stay the ones above.
+      # Build it and call it by path: under `nix shell` the image's
+      # /usr/local/bin/node (22) wins over setup-node's 26.
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - run: nix shell --inputs-from . nixpkgs#just -c just agent-integrations-check
+      - run: |
+          just="$(nix build --no-link --print-out-paths --inputs-from . "nixpkgs#just^out")/bin/just"
+          "$just" agent-integrations-check
 
   # `just web-check` still runs both. The cache action saves only from main.
   web-vt:
