@@ -57,7 +57,7 @@ class VisualRunner(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1801)
+        self.assertEqual(len(manifest["cases"]), 1825)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
         self.assertEqual(len(list((out / "logs").glob("*.log"))), 27)

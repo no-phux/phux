@@ -78,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1801)
+        self.assertEqual(len(manifest["cases"]), 1825)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                            {"inbox": 404, "settings": 298, "navigation": 1098, "resources": 1})
+                            {"inbox": 404, "settings": 298, "navigation": 1122, "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])
@@ -135,7 +135,7 @@ class VisualReview(unittest.TestCase):
     def test_session_search_matrix_keeps_matching_and_no_match_at_both_text_sizes(self):
         self.inventory.stop()
         cases = review.required_inventory()
-        for state in ("matching", "no-match", "long", "blurred"):
+        for state in ("matching", "no-match", "long", "blurred", "bottom"):
             for theme in ("dark", "light"):
                 for text in ("standard", "ax5"):
                     for width, height, native in (

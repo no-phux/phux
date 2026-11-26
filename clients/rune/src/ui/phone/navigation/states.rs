@@ -10,20 +10,9 @@ pub(super) fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
     if desk.connection.topology.is_none() {
         return loading(desk, p);
     }
-    let query = query.trim();
-    let (icon, title, detail) = if query.is_empty() {
-        (
-            &icons::PROMPT,
-            "No sessions yet".to_owned(),
-            "Start one with New session below.",
-        )
-    } else {
-        (
-            &icons::SEARCH,
-            format!("No matches for “{query}”"),
-            "Search looks through session, pane, agent and folder names.",
-        )
-    };
+    if !query.trim().is_empty() {
+        return no_matches(p);
+    }
     let s = &p.space;
     col()
         .key("phone-session-empty")
@@ -34,13 +23,13 @@ pub(super) fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
         .gap(s.s2)
         .child(
             el().size(s.s12, s.s12).center().mb(s.s2).child(
-                rune::icon(icon, p.icon.size.lg)
+                rune::icon(&icons::PROMPT, p.icon.size.lg)
                     .color(p.roles.text.dim.paint())
                     .a11y_hidden(),
             ),
         )
         .child(
-            text(title)
+            text("No sessions yet")
                 .font(p.ty.lead.semibold())
                 .color(p.roles.text.text.paint())
                 .role("heading")
@@ -48,10 +37,34 @@ pub(super) fn empty_state(desk: &Desk, query: &str, p: &Look) -> El {
                 .wrap_anywhere(),
         )
         .child(
-            text(detail)
+            text("Start one with New session below.")
                 .font(p.ty.body)
                 .color(p.roles.text.dim.paint())
                 .align(rune::Align::Center)
+                .wrap(),
+        )
+}
+
+/// The query already lives in the editor. Keep recovery feedback near it,
+/// without repeating a potentially unbounded name as a second large heading.
+fn no_matches(p: &Look) -> El {
+    col()
+        .key("phone-session-empty")
+        .w_full()
+        .px(p.space.s3)
+        .py(p.space.s4)
+        .gap(p.space.s2)
+        .child(
+            text("No matches")
+                .font(p.ty.lead.semibold())
+                .color(p.roles.text.text.paint())
+                .role("heading")
+                .wrap(),
+        )
+        .child(
+            text("Try another name or clear your search.")
+                .font(p.ty.body)
+                .color(p.roles.text.dim.paint())
                 .wrap(),
         )
 }

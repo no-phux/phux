@@ -6,6 +6,7 @@ use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 mod canvas;
+mod feedback;
 mod layout;
 mod organize;
 mod render;
