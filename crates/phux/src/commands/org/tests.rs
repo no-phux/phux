@@ -1,5 +1,6 @@
 use phux_protocol::ids::KEY_MIN_PREFIX;
 
+use super::restore_report::restore_lines;
 use super::*;
 
 /// A key prints as its shortest prefix no other listed key shares, at
