@@ -212,7 +212,10 @@ impl Desk {
         let Some(reveal) = self.connection.reveal.take() else {
             return false;
         };
-        if let Some(machine) = &self.machines.current {
+        // A phone's links come from its own cards, about its one computer.
+        if self.native.is_none()
+            && let Some(machine) = &self.machines.current
+        {
             let why = format!(
                 "This window is on {machine}; phux links name this machine's panes, sessions, \
                  tabs and folders."
@@ -257,7 +260,10 @@ impl Desk {
             window.open();
         }
         match step {
-            Step::Pane(pane, session) => self.show_revealed(pane, &session, intent),
+            Step::Pane(pane, session) => {
+                self.close_phone_navigation();
+                self.show_revealed(pane, &session, intent);
+            }
             Step::Session(name) => self.show_session(&name),
             Step::Folder(path) => self.terminal_at_folder(path),
             Step::Wait(_) => {}

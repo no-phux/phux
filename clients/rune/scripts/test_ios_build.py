@@ -85,6 +85,30 @@ class BuildTests(unittest.TestCase):
                 build.simulator_entitlements(Path(temporary), "dev.phux.mobile").read_bytes())
         self.assertEqual(entitlements["application-identifier"], "PHUXSIMDEV.dev.phux.mobile")
 
+    def test_widgets_need_an_app_group_both_bundles_name(self):
+        plain = build.bundle_plist(build.preview_identity("1.0.0"), False, [])
+        self.assertNotIn("NSSupportsLiveActivities", plain)
+        self.assertNotIn("PhuxAppGroup", plain)
+        identity = {**build.preview_identity("1.0.0"), "bundle_id": "dev.phux.mobile",
+                    "app_group": "group.dev.phux.mobile"}
+        info = build.bundle_plist(identity, False, [])
+        self.assertIs(info["NSSupportsLiveActivities"], True)
+        widgets = load("widgets")
+        extension = widgets.extension_plist(identity, False, build.MIN_IOS)
+        self.assertEqual(extension["PhuxAppGroup"], info["PhuxAppGroup"])
+        # The store refuses an extension outside its app's identifier or version.
+        self.assertEqual(extension["CFBundleIdentifier"], "dev.phux.mobile.agentstatus")
+        for key in ("CFBundleShortVersionString", "CFBundleVersion", "MinimumOSVersion"):
+            self.assertEqual(extension[key], info[key])
+        with tempfile.TemporaryDirectory() as temporary:
+            entitlements = plistlib.loads(build.simulator_entitlements(
+                Path(temporary), "dev.phux.mobile.agentstatus", "group.dev.phux.mobile").read_bytes())
+        self.assertEqual(entitlements["com.apple.security.application-groups"], ["group.dev.phux.mobile"])
+        self.assertEqual(build.app_group("group.dev.phux.mobile"), "group.dev.phux.mobile")
+        for bad in ("dev.phux.mobile", "group.", "group"):
+            with self.assertRaises(build.argparse.ArgumentTypeError):
+                build.app_group(bad)
+
     def test_identity_arguments_reject_malformed_values(self):
         for parse, value in ((build.bundle_id, "nodots"), (build.bundle_id, "a..b"),
                              (build.url_scheme, "Phux"), (build.url_scheme, "1phux"),

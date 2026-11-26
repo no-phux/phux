@@ -60,7 +60,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         root?.setSceneActive(true)
     }
-    func sceneWillResignActive(_ scene: UIScene) { root?.setSceneActive(false) }
+    func sceneWillResignActive(_ scene: UIScene) {
+        AgentCard.shared.leave(connected: root?.surface?.attached == true)
+        root?.setSceneActive(false)
+    }
     func sceneDidEnterBackground(_ scene: UIScene) { root?.surface?.setActive(false) }
     func sceneDidDisconnect(_ scene: UIScene) { root?.surface?.close() }
 }
@@ -71,6 +74,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
     private let probe = QualificationProbe(arguments:ProcessInfo.processInfo.arguments)
     private var started = false
     private var pendingLink: String?
+    private var pendingCard: String?
     private var qualificationTask: Task<Void,Never>?
     /// What the surface's edges show; UIKit continues it under the status
     /// bar and home indicator so the terminal is not framed by system chrome.
@@ -173,7 +177,18 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? [])
             .flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] })
 
+    /// A tapped card, widget or Dynamic Island. The system hands the app
+    /// its own links whichever schemes the bundle declares.
+    private static func isCardLink(_ url: URL) -> Bool {
+        url.scheme == "phux" && ["inbox", "pane"].contains(url.host() ?? "")
+    }
+
     func importPairing(_ url: URL) {
+        if Self.isCardLink(url) {
+            guard started else { pendingCard = url.absoluteString; return }
+            surface?.openLink(url.absoluteString)
+            return
+        }
         guard let scheme = url.scheme, Self.pairingSchemes.contains(scheme) else { return }
         guard started else { pendingLink = url.absoluteString; return }
         connection(link: url.absoluteString)
@@ -216,6 +231,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
         let form = OnboardingController(values: try? HostSettings.load())
         form.closed = { [weak self] in self?.setupClosed() }
         form.connected = { [weak self] configuration in
+            AgentCard.shared.forget()
             EarlierHosts.notice = nil // Its own pairing replaced what that described.
             self?.dismiss(animated:true) { self?.open(configuration) }
         }
@@ -270,6 +286,7 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             surface.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor),
             surface.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor)])
         self.surface = surface
+        if let link = pendingCard { pendingCard = nil; surface.openLink(link) }
         showNotice()
     }
 

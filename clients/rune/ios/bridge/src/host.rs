@@ -347,6 +347,17 @@ pub unsafe extern "C" fn phux_rune_ios_press(pointer: *mut c_void, id: *const c_
     })
 }
 
+/// A tapped card, widget or Dynamic Island: true when the link was one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_open_link(pointer: *mut c_void, url: *const c_char) -> bool {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        Ok(mobile::open_link(host.layer.runtime_mut(), unsafe {
+            text(url)?
+        }))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_paste(pointer: *mut c_void, pasted: *const c_char) {
     attempt(|| {
