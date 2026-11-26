@@ -202,7 +202,12 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
         .flex_wrap()
         .role("radiogroup")
         .label(format!("Colour for {name}"));
-    let side = s.pointer_min;
+    // A scaled swatch must fit inside its own touch target, not its neighbours'.
+    let side = if desk.phone.is_some() {
+        reach(true, t).max(t.icon.size.md + s.s2)
+    } else {
+        s.pointer_min
+    };
     for (i, (id, hex)) in PALETTE.iter().enumerate() {
         let held = name.to_owned();
         let on = picked && *hex == rgb;
@@ -234,6 +239,7 @@ fn picker(name: &str, desk: &Desk, t: &Tokens) -> Option<El> {
     let held = name.to_owned();
     let auto = pressable(format!("machine-swatch-{name}-auto"), t)
         .px(s.s2)
+        .min_w(side)
         .min_h(side)
         .radius(t.radius.full)
         .items_center()

@@ -6,6 +6,8 @@ use rune::{Env, Runtime};
 use crate::desk::Desk;
 use crate::machines::LOCAL;
 
+mod colour;
+
 fn sheet(dark: bool) -> Runtime<Desk> {
     let mut desk = crate::test_support::window();
     desk.machines.open = true;
