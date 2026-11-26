@@ -75,6 +75,29 @@ impl TerminalActor {
         self.resume.subscribe()
     }
 
+    /// Subscribe to OSC 7577 record changes before starting this actor.
+    pub fn subscribe_program_resume(
+        &mut self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<phux_core::ProgramResumeUpdate> {
+        self.program_resume.subscribe()
+    }
+
+    pub(crate) fn set_program_resume_token(&mut self, token: String) {
+        self.program_resume.set_token(token);
+    }
+
+    pub(crate) fn seed_program_resume_clock(&mut self, pid: u32, time: u64) {
+        self.program_resume.seed_clock(pid, time);
+    }
+
+    pub(super) fn observe_program_resume(&mut self, bytes: &[u8]) {
+        let trusted = self.process.reporter_trusted();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        self.program_resume.observe(bytes, now, trusted);
+    }
+
     /// Subscribe to OSC 9 / OSC 777 notifications before starting this
     /// actor. Only live output reports; an upgrade seed's replay does not.
     pub fn subscribe_program_note(
@@ -274,6 +297,7 @@ impl TerminalActor {
     #[cfg(test)]
     pub(super) fn feed_for_test(&mut self, chunk: &[u8]) {
         self.resume.observe(chunk);
+        self.observe_program_resume(chunk);
         self.observe_icon(chunk);
         self.vt_write_for_test(chunk);
         self.source_events();

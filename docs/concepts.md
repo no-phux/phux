@@ -128,21 +128,32 @@ phux rm @4         # forget it instead
 ```
 
 `phux restore` never replays an agent's one-shot task, and never types into
-a program. It starts your default shell, enabled agent integrations and
-`[[restore.program]]` resumes. Any other saved command is refused, and
-nothing runs, until you review its exact recipe and type yes:
-`phux relaunch ^KEY --approve-raw`, with the key `phux restore` prints
-([why](./organization.md#restore-and-executable-authority)). To restore automatically, and to resume other programs that
-report a resume token ([Resume](./program-protocol.md#resume)):
+a program. It starts your default shell, enabled agent integrations, a
+trusted OSC 7577 resume, and legacy `[[restore.program]]` resumes. Any other
+saved command is refused, and nothing runs, until you review its exact recipe
+and type yes: `phux relaunch ^KEY --approve-raw`, with the key `phux restore`
+prints ([why](./organization.md#restore-and-executable-authority)). To restore
+automatically, and to resume programs that report
+[OSC 7577](./program-protocol.md#program-resume-osc-7577) (or, for older
+programs, a legacy resume token):
 
 ```toml
 [restore]
 on-start = true
+program-resume = true
+
+[[restore.trust]]
+command = "nvim"
 
 [[restore.program]]
 app = "nvim"
 command = ["nvim", "-S", "${PHUX_RESUME_TOKEN}"]
 ```
+
+`program-resume` is off unless you turn it on. `[[restore.trust]]` lists the
+programs a verified OSC 7577 report may start; nothing is listed for you.
+`phux restore --dry-run` prints each escaped command before anything runs.
+The legacy `[[restore.program]]` entry is only for OSC 7501 `resume=`.
 
 `phux service install` runs the server under launchd or systemd (with
 linger on Linux), so it starts at login and after a reboot.

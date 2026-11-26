@@ -251,6 +251,47 @@ fn finish(
     }
 }
 
+/// `phux restore --dry-run`: the escaped command each pane would run, or a shell.
+fn render_dry_run(
+    names: &KeyNames,
+    targets: &[ResourceKey],
+    resumes: &std::collections::BTreeMap<String, super::program_resume::ResumeLine>,
+    json: bool,
+) -> ExitCode {
+    let rows: Vec<(String, String)> = targets
+        .iter()
+        .map(|key| {
+            let name = names.display(*key.as_bytes());
+            let action = resumes.get(&key.to_string()).map_or_else(
+                || "shell".to_owned(),
+                super::program_resume::ResumeLine::display,
+            );
+            (name, action)
+        })
+        .collect();
+    if json {
+        let entries: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(key, action)| serde_json::json!({ "key": key, "action": action }))
+            .collect();
+        return crate::output::json(&serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "dry_run": true,
+            "restored": entries,
+        }));
+    }
+    if rows.is_empty() {
+        outln!("Nothing to restore: no pane was ended by a server restart.");
+        return ExitCode::SUCCESS;
+    }
+    let panes = if rows.len() == 1 { "pane" } else { "panes" };
+    outln!("would relaunch {} {panes}", rows.len());
+    for (key, action) in &rows {
+        outln!("  {key}  {action}");
+    }
+    ExitCode::SUCCESS
+}
+
 /// What `phux restore` relaunches ([`OrgInventory::restorable`]).
 fn restore_targets(inventory: &OrgInventory, session: Option<&SessionKey>) -> Vec<ResourceKey> {
     inventory
@@ -268,6 +309,7 @@ fn restore_targets(inventory: &OrgInventory, session: Option<&SessionKey>) -> Ve
 pub(crate) fn run_restore(
     session: Option<&str>,
     verbose: bool,
+    dry_run: bool,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -291,8 +333,18 @@ pub(crate) fn run_restore(
                 }
             },
         };
+        let targets = restore_targets(&inventory, key.as_ref());
+        if dry_run {
+            let resumes = super::program_resume::fetch(conn).await;
+            return render_dry_run(
+                &KeyNames::of_inventory(&inventory),
+                &targets,
+                &resumes,
+                json,
+            );
+        }
         let mut results = Vec::new();
-        for target in restore_targets(&inventory, key.as_ref()) {
+        for target in targets {
             let result = org::relaunch(conn, target).await;
             results.push((target, result));
         }

@@ -148,6 +148,26 @@ raw hash bytes. A failed write never fails a command; `phux doctor` warns
 and `phux perf` counts `audit.write_failures`. A second server on the same
 state directory runs without a log rather than fork the chain.
 
+## Program resume
+
+Off unless `[restore] program-resume` is true. A program that knows the
+pane's `OSC7577_TOKEN` can report a command. phux checks a SHA-256 of the
+report and that token, a 60-second window, and that the reporting process is
+a same-uid direct child of the pane's shell. Text from `cat`, `tail -f`,
+`ssh`, or `less` does not know the token, so a planted report is ignored.
+
+The token is only in the first process's environment and, across
+`phux upgrade`, in the upgrade handoff. It is not metadata, `--json`, or a
+log line. The command itself is stored with the pane and shown, escaped, by
+`phux ls -l` and `phux restore --dry-run`. Treat that command like a shell
+startup file: it can name files you had open.
+
+Nothing runs unless `[[restore.trust]]` lists the program. There are no
+built-in entries. phux never resumes one when it is running as root. A record
+that is untrusted, or whose directory is gone, starts a shell. A resume that
+was already tried is not tried again. The legacy OSC 7501 `resume=` token is
+still unauthenticated; new programs should use OSC 7577.
+
 ## Kept scrollback
 
 Off by default. With [`[restore] scrollback`](./concepts.md#kept-scrollback)

@@ -242,6 +242,118 @@ fn terminal_resume_uses_current_enabled_program_never_archived_argv_or_environme
     });
 }
 
+fn resume_record(trusted: bool, cwd: Option<&str>, tried: bool) -> phux_core::ProgramResume {
+    phux_core::ProgramResume {
+        argv: vec!["nvim".into(), "-S".into(), "/tmp/session.vim".into()],
+        cwd: cwd.map(std::path::PathBuf::from),
+        pid: 74877,
+        started: 1,
+        uid: rustix::process::geteuid().as_raw(),
+        time: 1_795_543_200,
+        tried,
+        trusted,
+    }
+}
+
+fn admit(state: &SharedState, launch: &phux_core::TerminalLaunch) -> Result<Vec<String>, ()> {
+    state.with(|server| {
+        terminal_recipe(server, launch)
+            .map(|spec| match spec {
+                LaunchSpec::Terminal(launch) => launch.argv,
+                other => panic!("{other:?}"),
+            })
+            .map_err(|_| ())
+    })
+}
+
+#[test]
+fn program_resume_runs_after_an_agent_and_before_a_7501_token_without_a_shell() {
+    let state = SharedState::new();
+    let uid = rustix::process::geteuid().as_raw();
+    state.with_mut(|server| {
+        server.config_mut().restore.program_resume = true;
+        server.config_mut().restore.trust = vec![phux_config::RestoreTrust {
+            command: "nvim".into(),
+        }];
+        server.config_mut().restore.program = vec![phux_config::RestoreProgram {
+            app: "notes".into(),
+            command: vec!["notes".into(), phux_config::RESUME_TOKEN_PLACEHOLDER.into()],
+        }];
+    });
+    let trusted = phux_core::TerminalLaunch {
+        program_resume: Some(Box::new(resume_record(true, Some("/"), false))),
+        resume: phux_core::ResumeToken::new("notes", "legacy"),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &trusted).expect("trusted"),
+        ["nvim", "-S", "/tmp/session.vim"],
+        "a trusted record is argv, not a shell, and it beats OSC 7501"
+    );
+    state.with(|server| {
+        let LaunchSpec::Terminal(admitted) = terminal_recipe(server, &trusted).unwrap() else {
+            panic!("terminal");
+        };
+        assert!(admitted.program_resume.unwrap().tried);
+        assert!(admitted.env.is_empty());
+    });
+    let untrusted = phux_core::TerminalLaunch {
+        program_resume: Some(Box::new(resume_record(false, Some("/"), false))),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &untrusted).expect("shell"),
+        Vec::<String>::new()
+    );
+    let missing = phux_core::TerminalLaunch {
+        program_resume: Some(Box::new(resume_record(
+            true,
+            Some("/no/such/phux-resume-dir"),
+            false,
+        ))),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &missing).expect("missing cwd is a shell"),
+        Vec::<String>::new()
+    );
+    let tried = phux_core::TerminalLaunch {
+        argv: vec!["nvim".into(), "-S".into(), "/tmp/session.vim".into()],
+        program_resume: Some(Box::new(resume_record(true, Some("/"), true))),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &tried).expect("no retry"),
+        Vec::<String>::new()
+    );
+    state.with(|server| {
+        assert!(
+            super::program_resume_launch(server, &trusted, 0).is_none(),
+            "root does not resume"
+        );
+        let mut other = trusted.program_resume.clone().unwrap().as_ref().clone();
+        other.uid = uid.wrapping_add(1);
+        let mut changed = trusted.clone();
+        changed.program_resume = Some(Box::new(other));
+        assert!(super::program_resume_launch(server, &changed, uid).is_none());
+    });
+    let legacy = phux_core::TerminalLaunch {
+        program_resume: Some(Box::new(resume_record(false, Some("/"), false))),
+        resume: phux_core::ResumeToken::new("notes", "legacy"),
+        ..phux_core::TerminalLaunch::default()
+    };
+    assert_eq!(
+        admit(&state, &legacy).expect("7501 after an untrusted record"),
+        ["notes", "legacy"]
+    );
+    let mut agent = trusted;
+    agent.restore = Some(b"{}".to_vec());
+    assert!(
+        admit(&state, &agent).is_err(),
+        "agent provenance is decided before a 7577 record"
+    );
+}
+
 #[test]
 fn an_agent_principal_cannot_approve_even_when_it_arrives_on_an_owner_socket() {
     let (ctx, resource, revision) = setup();

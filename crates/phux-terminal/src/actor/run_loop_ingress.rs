@@ -140,6 +140,7 @@ impl TerminalActor {
         // intervals read the clock again on the way out and fold that probe
         // into `pty.vt_apply`.
         self.resume.observe(payload);
+        self.observe_program_resume(payload);
         self.observe_icon(payload);
         let started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);

@@ -3496,6 +3496,7 @@ name = "phux-terminal-api"
 version = "0.169.0"
 dependencies = [
  "bytes",
+ "getrandom 0.4.3",
  "phux-agent-rules",
  "phux-agent-session",
  "phux-config-core",

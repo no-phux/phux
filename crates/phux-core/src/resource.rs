@@ -5,6 +5,7 @@
 //! record carries organization and execution facts; the descriptor carries
 //! live, kind-specific facets keyed by the in-memory [`ResourceId`] handle.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -132,6 +133,15 @@ pub struct TerminalLaunch {
     /// activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<u32>,
+    /// The OSC 7577 program-resume record. Not an organization wire field.
+    /// A relaunch runs it only when it is still valid, trusted, and allowlisted.
+    /// The per-pane token is never stored here.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "program_resume_field"
+    )]
+    pub program_resume: Option<Box<ProgramResume>>,
 }
 
 impl TerminalLaunch {
@@ -194,6 +204,142 @@ impl ResumeToken {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.+,/=-".contains(&b))
     }
+}
+
+fn program_resume_field<'de, D>(deserializer: D) -> Result<Option<Box<ProgramResume>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<ProgramResume>::deserialize(deserializer)?;
+    Ok(value.filter(ProgramResume::is_valid).map(Box::new))
+}
+
+/// What an accepted OSC 7577 report asked a later cold start to run.
+///
+/// The per-pane `OSC7577_TOKEN` is not part of this record. A stored value is
+/// checked again by [`ProgramResume::is_valid`] on load: the store is a file
+/// someone can edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramResume {
+    /// The resume command. The first element is a bare name or an absolute path.
+    pub argv: Vec<String>,
+    /// Working directory from the report, or the owner's directory when the
+    /// report omitted `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Owning process from the report's `pid`.
+    pub pid: u32,
+    /// The owner's start time in a platform unit, so a reused pid is not this process.
+    pub started: u64,
+    /// User the owner ran as when the report was accepted.
+    pub uid: u32,
+    /// Unix seconds of the last report accepted for [`Self::pid`].
+    pub time: u64,
+    /// Set before the resume command is launched, so a crash does not retry it.
+    #[serde(default)]
+    pub tried: bool,
+    /// The reporter was a same-uid direct child of the pane's shell.
+    pub trusted: bool,
+}
+
+impl ProgramResume {
+    /// Whether a stored record still matches the grammar a report had to pass.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.pid >= 1
+            && self.time >= 1
+            && valid_argv(&self.argv)
+            && self.cwd.as_deref().is_none_or(valid_cwd)
+    }
+
+    /// The command as text a person can read: controls and bidi overrides are escaped.
+    #[must_use]
+    pub fn escaped_command(&self) -> String {
+        escape_command(&self.argv)
+    }
+}
+
+fn valid_argv(argv: &[String]) -> bool {
+    let Some((program, rest)) = argv.split_first() else {
+        return false;
+    };
+    valid_program(program) && rest.iter().all(|arg| !has_control(arg))
+}
+
+fn valid_program(program: &str) -> bool {
+    if program.is_empty() || has_control(program) {
+        return false;
+    }
+    if program.starts_with('/') {
+        return program.len() > 1;
+    }
+    !program.starts_with('-') && !program.contains('/')
+}
+
+fn valid_cwd(cwd: &std::path::Path) -> bool {
+    let Some(text) = cwd.to_str() else {
+        return false;
+    };
+    text.starts_with('/') && !has_control(text)
+}
+
+fn has_control(text: &str) -> bool {
+    text.chars().any(is_control_char)
+}
+
+const fn is_control_char(ch: char) -> bool {
+    matches!(ch, '\u{0000}'..='\u{001F}' | '\u{007F}' | '\u{0080}'..='\u{009F}')
+}
+
+const fn is_bidi(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Join `argv` for display. Each element stays one argument; nothing is evaluated.
+#[must_use]
+pub fn escape_command(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| escape_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn escape_arg(arg: &str) -> String {
+    let mut body = String::new();
+    for ch in arg.chars() {
+        match ch {
+            '\\' => body.push_str("\\\\"),
+            '\'' => body.push_str("'\\''"),
+            ch if is_control_char(ch) || is_bidi(ch) => {
+                let _ = write!(body, "\\u{{{:x}}}", u32::from(ch));
+            }
+            ch => body.push(ch),
+        }
+    }
+    if body.is_empty() || body.contains([' ', '\t']) {
+        format!("'{body}'")
+    } else {
+        body
+    }
+}
+
+/// A change to a pane's OSC 7577 record. The token is never included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramResumeUpdate {
+    /// Replace the record.
+    Put(ProgramResume),
+    /// Remove the record when it belongs to `pid`.
+    Clear {
+        /// The owner whose record goes away.
+        pid: u32,
+    },
 }
 
 /// How an agent conversation binds to its harness.
@@ -358,7 +504,45 @@ impl ResourceDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResumeToken, TerminalLaunch};
+    use super::{ProgramResume, ResumeToken, TerminalLaunch, escape_command};
+
+    #[test]
+    fn a_program_resume_record_is_rechecked_on_load_and_escaped_for_display() {
+        let good = ProgramResume {
+            argv: vec!["nvim".into(), "-S".into(), "session".into()],
+            cwd: Some("/tmp".into()),
+            pid: 4,
+            started: 9,
+            uid: 1000,
+            time: 10,
+            tried: false,
+            trusted: true,
+        };
+        let launch = TerminalLaunch {
+            program_resume: Some(Box::new(good.clone())),
+            ..TerminalLaunch::default()
+        };
+        let text = serde_json::to_string(&launch).unwrap();
+        let back: TerminalLaunch = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.program_resume.as_deref(), Some(&good));
+        let mut bad = back.program_resume.unwrap();
+        bad.argv[0] = "./run.sh".into();
+        let text = serde_json::to_string(&TerminalLaunch {
+            program_resume: Some(bad),
+            ..TerminalLaunch::default()
+        })
+        .unwrap();
+        let back: TerminalLaunch = serde_json::from_str(&text).unwrap();
+        assert!(
+            back.program_resume.is_none(),
+            "a relative program does not load"
+        );
+        assert_eq!(
+            escape_command(&["nvim".into(), "a b".into(), "\u{202e}x".into()]),
+            "nvim 'a b' \\u{202e}x"
+        );
+        assert!(!escape_command(&["\u{202e}".into()]).contains('\u{202e}'));
+    }
 
     #[test]
     fn resume_tokens_are_bounded_plain_and_never_option_shaped() {

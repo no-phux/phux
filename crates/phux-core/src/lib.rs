@@ -58,8 +58,8 @@ pub use org::{
 pub use process::{ExitOutcome, TerminalProcessState};
 pub use registry::{Committed, Registry};
 pub use resource::{
-    AgentFacet, AgentLaunch, LaunchSpec, Provenance, Resource, ResourceDescriptor, ResourceKind,
-    ResumeToken, TerminalLaunch,
+    AgentFacet, AgentLaunch, LaunchSpec, ProgramResume, ProgramResumeUpdate, Provenance, Resource,
+    ResourceDescriptor, ResourceKind, ResumeToken, TerminalLaunch, escape_command,
 };
 pub use screen::{CursorState, SCHEMA_VERSION, ScreenState};
 pub use session::{Attrs, Session};
