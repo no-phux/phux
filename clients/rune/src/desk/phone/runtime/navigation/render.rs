@@ -34,6 +34,18 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
                 size,
                 &format!("inventory-{appearance}"),
             );
+            tap(&mut rt, "phone-session-1", 0.1);
+            settle_for_snapshot(&mut rt);
+            assert!(rt.find("phone-session-pane-@1").is_none());
+            paint(
+                &gpu,
+                &mut renderer,
+                &mut rt,
+                size,
+                &format!("folded-{appearance}"),
+            );
+            tap(&mut rt, "phone-session-1", 0.3);
+            settle_for_snapshot(&mut rt);
             rt.update(|_, tx| {
                 tx.scroll_to("phone-session-list", 0.0, 130.0);
                 tx.instant();
@@ -46,7 +58,7 @@ fn session_browser_renders_realistic_dark_light_and_search_states() {
                 size,
                 &format!("scrolled-{appearance}"),
             );
-            tap(&mut rt, "phone-session-query", 0.1);
+            tap(&mut rt, "phone-session-query", 0.5);
             rt.update(|d, _| {
                 d.phone.as_mut().unwrap().query.replace_text("review");
             });
@@ -209,46 +221,6 @@ fn touch_targets(node: &serde_json::Value, name: &str) {
 }
 
 #[test]
-fn the_floating_session_dock_blurs_actual_list_pixels_not_just_a_tint() {
-    let gpu = rune::render::Gpu::headless();
-    let (_, mut rt) = fixture();
-    detailed_inventory(&mut rt);
-    rt.set_viewport((320.0, 568.0), 1.0);
-    rt.update(|d, tx| {
-        d.open_phone_sessions();
-        tx.instant();
-    });
-    settle_for_snapshot(&mut rt);
-    rt.update(|_, tx| {
-        tx.scroll_to("phone-session-list", 0.0, 130.0);
-        tx.instant();
-    });
-    settle_for_snapshot(&mut rt);
-    let blurs = rt
-        .instances
-        .iter()
-        .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
-        .count();
-    assert_eq!(blurs, 1, "only the floating dock needs a blur pass");
-    let mut renderer = app_renderer(&gpu);
-    let frosted = paint(&gpu, &mut renderer, &mut rt, (320, 568), "dock-frosted");
-    rt.instances
-        .retain(|i| i.params[1] != rune::render::KIND_BACKDROP_BLUR);
-    let tinted = paint(&gpu, &mut renderer, &mut rt, (320, 568), "dock-tint-only");
-    let [x, y, w, h] = rt.presented("phone-session-new").unwrap().0;
-    let changed = (y.ceil() as usize..(y + h).floor() as usize).any(|row| {
-        (x.ceil() as usize..(x + w).floor() as usize).any(|column| {
-            let at = (row * 320 + column) * 4;
-            frosted[at..at + 3] != tinted[at..at + 3]
-        })
-    });
-    assert!(
-        changed,
-        "GPU blur must change the inventory pixels beneath the dock"
-    );
-}
-
-#[test]
 fn phone_navigation_native_render_frames() {
     let gpu = rune::render::Gpu::headless();
     for size in [(393, 852), (320, 568)] {
@@ -375,8 +347,7 @@ fn the_phone_paints_the_design_fixture() {
                 .iter()
                 .filter(|i| i.params[1] == rune::render::KIND_BACKDROP_BLUR)
                 .count();
-            // The drawer is the one blur, where glass may draw; the dock
-            // over it is opaque, and at large text an inline action.
+            // The drawer is the one blur in the desktop-hosted phone.
             let glass = matches!(mode, "standard" | "largest-text");
             assert_eq!(blurs, usize::from(glass), "{name}: the drawer's glass");
             paint(

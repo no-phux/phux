@@ -1,16 +1,14 @@
-//! The Sessions page's floating New session dock: native Liquid Glass on
-//! the iOS host, an opaque raised control elsewhere, floating over the
-//! drawer's own glass.
+//! The Sessions page's New session action: native Liquid Glass on the iOS
+//! host and an opaque raised control elsewhere.
 
 use rune::{Color, El, text};
 
 use super::{Desk, Look, control};
 use crate::ui::icons;
-use crate::ui::tokens::{Paint, Tier, Voice};
+use crate::ui::tokens::{Paint, Voice};
 
 /// New session, or Open or create `name` while a search names one; inert
-/// until a connection can run it. At large text sizes it is an opaque
-/// action at the end of the list, not glass floating over its text.
+/// until a connection can run it. At large text sizes it scrolls with the list.
 pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &Look) -> El {
     let create = if name.is_empty() {
         "New session".to_owned()
@@ -47,7 +45,9 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
         };
         super::super::hosted(desk, footer, control)
     } else {
-        floating(labelled(footer, title, ink, p), p)
+        labelled(footer, title, ink, p)
+            .continuous_corners()
+            .fill(p.roles.layer.raised.paint())
     };
     if desk.connection.client.is_some() {
         footer
@@ -76,13 +76,4 @@ fn labelled(footer: El, title: &str, ink: Color, p: &Look) -> El {
                 .shrink()
                 .a11y_hidden(),
         )
-}
-
-/// The session dock over the scrolling list. The drawer behind it is the
-/// phone's one backdrop blur, so Rune's dock is the raised layer on the
-/// floating tier; the native host draws it as the system's Liquid Glass
-/// instead ([`footer`]).
-fn floating(e: El, p: &Look) -> El {
-    let e = e.continuous_corners().fill(p.roles.layer.raised.paint());
-    p.elevate(e, Tier::Floating)
 }

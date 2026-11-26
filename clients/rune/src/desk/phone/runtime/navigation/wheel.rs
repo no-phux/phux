@@ -1,4 +1,4 @@
-//! Wheel hit ancestry through the real floating Sessions dock.
+//! The Sessions list and footer own separate hit regions.
 use super::*;
 
 use crate::ui::element;
@@ -16,7 +16,7 @@ fn first_row_y(rt: &Runtime<Desk>) -> f32 {
 }
 
 #[test]
-fn the_floating_session_dock_does_not_wheel_the_list_behind_it() {
+fn the_session_footer_does_not_scroll_the_list() {
     let (client, mut rt) = fixture();
     detailed_inventory(&mut rt);
     rt.set_viewport((320.0, 568.0), 2.0);
@@ -30,17 +30,11 @@ fn the_floating_session_dock_does_not_wheel_the_list_behind_it() {
     let list = element(&rt, "phone-session-list").rect;
     let dock = element(&rt, "phone-session-new").rect;
     let dock_at = (dock[0] + dock[2] / 2.0, dock[1] + dock[3] / 2.0);
-    assert!(
-        dock_at.0 > list[0]
-            && dock_at.0 < list[0] + list[2]
-            && dock_at.1 > list[1]
-            && dock_at.1 < list[1] + list[3],
-        "the interactive sibling really overlaps the scroll viewport: {dock:?} vs {list:?}"
-    );
+    assert!(dock[1] >= list[1] + list[3], "{dock:?} vs {list:?}");
     let first = first_row_y(&rt);
     let _ = client.take_outbound();
 
-    // A fresh vertical wheel hits the dock, not its overlapping sibling.
+    // A fresh vertical wheel hits the footer.
     // No app on_wheel handler intercepts this: Rune must use hit ancestry.
     rt.wheel_xy(dock_at.0, dock_at.1, 0.0, -40.0);
     rt.frame(0.0);
@@ -52,7 +46,7 @@ fn the_floating_session_dock_does_not_wheel_the_list_behind_it() {
     rt.frame(0.0);
     near(first_row_y(&rt), first);
 
-    // The uncovered list remains scrollable; this also proves the fixture
+    // The list remains scrollable; this also proves the fixture
     // overflows and would move if the dock wheel leaked through.
     let list_at = (list[0] + list[2] / 2.0, list[1] + 20.0);
     assert!(list_at.1 + 10.0 < dock[1]);

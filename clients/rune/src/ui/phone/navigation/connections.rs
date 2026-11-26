@@ -37,9 +37,7 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
         .radius(p.radius.full)
         .fill(p.status.state(state).tone.ink)
         .a11y_hidden();
-    let chevron = rune::icon(&icons::CHEVRON_RIGHT, p.icon.size.md)
-        .color(dim)
-        .a11y_hidden();
+    let slot = p.icon.grid * p.type_scale;
     let destination = control("phone-session-connections", &label, p, |d, tx| {
         d.phone_action(Shortcut::Machines, tx)
     })
@@ -91,14 +89,15 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
         );
     }
     destination
-        .child(mark)
+        .pr(p.space.s3 + p.space.s1)
+        .child(el().size(slot, slot).center().child(mark))
         .child(
             col()
                 .grow(1.0)
                 .min_w(0.0)
-                .gap(p.space.s1)
+                .gap(p.space.s0_5)
                 .child(title)
                 .child(detail),
         )
-        .child(chevron)
+        .child(super::section::chevron(true, p))
 }

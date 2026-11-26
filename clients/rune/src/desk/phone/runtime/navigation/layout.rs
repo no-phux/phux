@@ -47,7 +47,7 @@ fn long_names_and_attention_fit_without_displacing_the_pane_column() {
 }
 
 #[test]
-fn search_chrome_stays_fixed_and_the_last_row_clears_the_glass_dock() {
+fn search_chrome_stays_fixed_and_the_last_row_clears_the_footer() {
     let (_, mut rt) = fixture();
     let session = SessionId::new(1);
     set_inventory(
@@ -98,7 +98,7 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_glass_dock() {
 }
 
 #[test]
-fn a_matching_pane_fits_whole_above_the_dock_with_the_search_keyboard_open() {
+fn a_matching_pane_fits_whole_above_the_footer_with_the_search_keyboard_open() {
     let (_, mut rt) = fixture();
     detailed_inventory(&mut rt);
     rt.set_viewport((320.0, 568.0), 2.0);
@@ -117,7 +117,10 @@ fn a_matching_pane_fits_whole_above_the_dock_with_the_search_keyboard_open() {
     let list = element(&rt, "phone-session-list").rect;
     let dock = element(&rt, "phone-session-new").rect;
     let pane = element(&rt, "phone-session-pane-@2");
-    assert!(pane.visible[3] >= 60.0, "{pane:?}");
+    assert!(
+        pane.rect[3] >= 44.0 && pane.visible[3] >= pane.rect[3] - 0.5,
+        "{pane:?}"
+    );
     assert!(
         pane.rect[1] >= list[1] && pane.rect[1] + pane.rect[3] <= dock[1],
         "{pane:?} vs {dock:?}"
@@ -139,10 +142,8 @@ fn editing_a_filter_resets_the_old_scroll_offset_to_the_first_result() {
     settle(&mut rt);
     let list = element(&rt, "phone-session-list").rect;
     let first = element(&rt, "phone-session-1").rect;
-    // The list's top inset (clear of the edge fade), and nothing of the
-    // old offset.
-    let space = phux_design::tokens::SPACE;
-    let inset = space.s2 + space.s1;
+    // The list's top inset, and nothing of the old offset.
+    let inset = phux_design::tokens::SPACE.s2;
     assert!(
         first[1] >= list[1] && first[1] - list[1] < inset + 1.0,
         "{first:?} vs {list:?}"

@@ -2,7 +2,7 @@
 //! as the status ladder draws it (colour, mark and word together).
 use rune::{El, col, el, text};
 
-use super::{Desk, Look, control, nested, row_h};
+use super::{Desk, Look, control, nested};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Held;
@@ -34,6 +34,10 @@ impl Place {
             Self::Session | Self::Elsewhere => "phone-session",
         }
     }
+}
+
+pub(super) fn identity_width(p: &Look) -> f32 {
+    p.space.s5 + p.space.s1
 }
 
 pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p: &Look) -> El {
@@ -77,9 +81,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
         },
     )
     .w_full()
-    .min_h(row_h(p))
     .gap(s.s2)
-    .pl(s.s3)
     .radius(nested(p))
     .focus_selected(current)
     .on_secondary_press_local(move |d: &mut Desk, event, tx| {
@@ -90,13 +92,13 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
     .items_start()
     .py(s.s2)
     .children([
-        el().h(p.ty.body.line_px())
+        el().size(identity_width(p), p.ty.body.line_px())
             .center()
             .child(crate::ui::tile::tile(&presentation.identity, mark, 1, p.roles.layer.raised.paint(), p)),
         col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(s.s1)
+            .gap(s.s0_5)
             .child(
                 text(presentation.name)
                     .key(format!("{}-title-{}", place.key(), resource.id))
@@ -115,9 +117,10 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
                     .a11y_hidden()
             })),
         // The check grows with the row's text, as the search magnifier does.
-        el().size(p.icon.grid * p.type_scale, p.icon.grid * p.type_scale)
+        el().size(p.icon.grid * p.type_scale, p.ty.body.line_px())
+            .center()
             .children(current.then(|| {
-                rune::icon(&icons::CHECK, p.icon.grid * p.type_scale)
+                rune::icon(&icons::CHECK, p.icon.size.md * p.type_scale)
                     .color(p.roles.accent.accent_text.paint())
                     .a11y_hidden()
             })),

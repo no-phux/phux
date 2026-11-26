@@ -3,10 +3,9 @@
 use crate::ui::tokens::Voice;
 use rune::{El, col, row, text};
 
-use super::section::{self, Tally, band_heading, session_section};
+use super::section::{self, Tally, band_heading, chevron, session_section};
 use super::{Desk, Look, control, empty_state, other_hosts, resource};
 use crate::addressable::Addressable;
-use crate::ui::icons;
 use crate::ui::tokens::Paint;
 
 /// Every query word may match a different inventory field; never screen text.
@@ -49,8 +48,7 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
     let searching = !query.trim().is_empty();
     let all = desk.addressable();
     let current = desk.selected_session_name();
-    // Leave room for an outside keyboard ring without restoring card insets.
-    let mut list = col().w_full().px(p.space.s1).gap(p.space.s5);
+    let mut list = col().w_full().gap(p.space.s5);
     if !searching {
         list = list.children(needs_you(desk, &all, p));
     }
@@ -150,8 +148,10 @@ fn quiet_band(desk: &Desk, quiet: &[Quiet<'_>], shown: bool, p: &Look) -> El {
     );
     let header = control("phone-quiet", &label, p, |d, _| d.toggle_phone_quiet())
         .w_full()
-        .px(s.s1)
+        .px(s.s3 + s.s1)
+        .py(s.s1)
         .gap(s.s2)
+        .expanded(shown)
         .child(
             col()
                 .grow(1.0)
@@ -185,18 +185,7 @@ fn quiet_band(desk: &Desk, quiet: &[Quiet<'_>], shown: bool, p: &Look) -> El {
                         .a11y_hidden()
                 })),
         )
-        .child(
-            rune::icon(
-                if shown {
-                    &icons::CHEVRON
-                } else {
-                    &icons::CHEVRON_RIGHT
-                },
-                p.icon.grid * p.type_scale,
-            )
-            .color(dim)
-            .a11y_hidden(),
-        );
+        .child(chevron(!shown, p));
     let mut band = col()
         .key("phone-quiet-band")
         .w_full()

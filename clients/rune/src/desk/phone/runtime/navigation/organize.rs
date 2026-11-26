@@ -8,11 +8,11 @@ use crate::desk::phone::touch::Feedback;
 mod native;
 
 /// A finger held still past the long press, then lifted, on a row scrolled
-/// clear of the search field and the floating dock.
+/// clear of the scroller's edges.
 pub(super) fn hold(rt: &mut Runtime<Desk>, key: &str, at: f64) {
     let row = crate::ui::element(rt, key).rect;
     let list = crate::ui::element(rt, "phone-session-list").rect;
-    if row[1] < list[1] || row[1] + row[3] > list[1] + list[3] - 80.0 {
+    if row[1] < list[1] || row[1] + row[3] > list[1] + list[3] {
         // Measure from the top, then bring the row up under the search field.
         rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 0.0));
         settle(rt);
@@ -78,7 +78,7 @@ fn needs_you_leads_and_quiet_sessions_fold_under_their_names() {
     );
     // "notes" has no panes and nothing moving: it folds into Quiet.
     assert!(rt.find("phone-session-section-3").is_none());
-    // The scroll tail lets the last band clear the floating dock.
+    // The last band stays above the footer.
     rt.update(|_, tx| tx.scroll_to_instant("phone-session-list", 0.0, 100_000.0));
     settle(&mut rt);
     assert!(
@@ -103,17 +103,31 @@ fn needs_you_leads_and_quiet_sessions_fold_under_their_names() {
 }
 
 #[test]
-fn a_session_folds_to_its_header_and_its_chevron_unfolds_it() {
+fn the_full_session_header_discloses_panes_without_opening_the_session() {
     let (client, mut rt) = fixture();
     detailed_inventory(&mut rt);
     open(&mut rt);
     let _ = client.take_outbound();
     assert!(rt.find("phone-session-pane-@3").is_some());
-    tap(&mut rt, "phone-session-fold-1", 0.1);
+    let header = crate::ui::element(&rt, "phone-session-1");
+    assert_eq!(header.expanded, Some(true));
+    // Hit the title near the leading edge, well away from the chevron.
+    let x = header.rect[0] + 20.0;
+    let y = header.rect[1] + header.rect[3] / 2.0;
+    rt.touch(1, TouchPhase::Started, x, y, 0.1);
+    rt.touch(1, TouchPhase::Ended, x, y, 0.15);
+    settle(&mut rt);
     assert!(rt.find("phone-session-pane-@3").is_none(), "folded");
     assert!(rt.find("phone-session-1").is_some(), "header stays");
     assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
-    tap(&mut rt, "phone-session-fold-1", 0.3);
+    assert_eq!(
+        crate::ui::element(&rt, "phone-session-1").expanded,
+        Some(false)
+    );
+    rt.update(|_, tx| tx.focus("phone-session-1", true));
+    settle(&mut rt);
+    rt.key(crate::keys::plain(Key::Text(" ".into())));
+    settle(&mut rt);
     assert!(rt.find("phone-session-pane-@3").is_some(), "unfolded");
     let sent: Vec<_> = client
         .take_outbound()
@@ -305,13 +319,17 @@ fn a_search_offers_no_fold_and_shows_folded_sessions_whole() {
     });
     settle(&mut rt);
     assert!(rt.find("phone-session-pane-@3").is_some(), "matches show");
-    assert!(
-        rt.find("phone-session-fold-1").is_none(),
-        "no fold to offer"
-    );
+    assert_eq!(crate::ui::element(&rt, "phone-session-1").expanded, None);
     hold(&mut rt, "phone-session-1", 0.1);
     assert!(rt.find("phone-menu-Open").is_some());
     assert!(rt.find("phone-menu-Fold").is_none());
+    rt.key(crate::keys::plain(Key::Escape));
+    rt.update(|d, tx| {
+        d.phone.as_mut().unwrap().query.clear();
+        d.phone_search_edited(tx);
+    });
+    settle(&mut rt);
+    assert!(rt.find("phone-session-pane-@3").is_none(), "fold restored");
 }
 
 #[test]

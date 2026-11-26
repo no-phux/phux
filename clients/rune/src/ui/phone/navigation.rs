@@ -2,8 +2,7 @@
 //! commands. Ordinary chrome stays fixed; large text scrolls the whole body.
 //!
 //! Sessions share one canvas: session names anchor indented pane lists.
-//! Actions retain grouped cards. Both use touch-height rows and the
-//! session dock is the phone's one pane of glass.
+//! Actions retain grouped cards. Both use touch-height rows.
 
 use crate::ui::tokens::Voice;
 use rune::{El, Key, Tx, col, el, row, text, text_input};
@@ -47,6 +46,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         Page::Switcher => unreachable!(),
     };
     let heading = text(title)
+        .key("phone-navigation-heading")
         .font(
             (if page == Page::Sessions {
                 p.ty.title
@@ -61,12 +61,12 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .min_w(0.0)
         .shrink();
     let done = done(desk, p);
+    let margin = crate::ui::tokens::phone::page_margin() + s.s1;
     let header = row()
         .w_full()
         .max_w(column_max())
         .min_h(s.s16)
-        .pl(crate::ui::tokens::phone::page_margin())
-        .pr(s.s1)
+        .px(margin)
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
     // Done. Searching borrows that large title's room above the keyboard;
@@ -222,8 +222,7 @@ fn done(desk: &Desk, p: &Look) -> El {
         badge: None,
         painted: false,
     };
-    let glass = super::hosted(desk, done.size(p.round(), p.round()).px(0.0), control);
-    el().pr(p.space.s2).child(glass)
+    super::hosted(desk, done.size(p.round(), p.round()).px(0.0), control)
 }
 
 /// The widest a phone column grows (an iPad's is centred).
@@ -331,6 +330,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .on_input_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
         .on_submit(|d: &mut Desk, tx| d.blur_phone_search(tx));
     let search = row()
+        .key("phone-session-search")
         .w_full()
         .pl(s.s3)
         .pr(s.s1)
@@ -416,42 +416,38 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .gap(s.s2)
         .pb(s.s3)
         // Search borrows the machine line's room so even a 320×568 phone
-        // can show a complete result above the keyboard and floating dock.
-        .child(search)
-        .children(connections)
+        // can show a complete result above the keyboard and the footer.
         .child(
-            el().grow(1.0)
+            col()
+                .w_full()
+                .px(s.s1)
+                .gap(s.s2)
+                .child(search)
+                .children(connections),
+        )
+        .child(
+            col()
+                .key("phone-session-list")
+                .grow(1.0)
                 .min_h(0.0)
                 .w_full()
-                .child(
-                    col()
-                        .key("phone-session-list")
-                        .w_full()
-                        .h_full()
-                        .min_h(0.0)
-                        .scroll(rune::ScrollSpec { stick_bottom: false })
-                        // Rows slide under the search field and the dock
-                        // instead of being cut by a hard edge.
-                        .scroll_edge_fade(s.s4)
-                        .scroll_margin(s.s4)
-                        // A real scroll tail: the last row can clear the
-                        // floating dock, also when the search keyboard is up
-                        // and at the largest text sizes, where the dock's
-                        // label line outgrows the touch minimum.
-                        .child(
-                            list.pt(s.s2)
-                                .pb(s.touch_min.max(p.ty.lead.line_px() + s.s4) + s.s3),
-                        ),
-                )
-                .child(footer.pin(Some(0.0), None, Some(0.0), Some(0.0))),
+                .scroll(rune::ScrollSpec { stick_bottom: false })
+                .scroll_edge_fade(s.s2)
+                .scroll_margin(s.s2)
+                .child(list.px(s.s1).py(s.s2)),
         )
+        .child(el().w_full().px(s.s1).child(footer))
 }
 
 /// An inset hairline between touch rows, starting at the text column.
 fn separator(p: &Look) -> El {
+    separator_at(p.space.s3 + p.icon.grid + p.space.s2, p)
+}
+
+fn separator_at(text_inset: f32, p: &Look) -> El {
     let s = &p.space;
     el().w_full()
-        .pl(s.s3 + p.icon.grid + s.s2)
+        .pl(text_inset)
         .pr(s.s3)
         .child(
             el().w_full()
