@@ -186,9 +186,14 @@ pub struct Desk {
     pub settings: settings::Settings,
     /// `config.toml`'s `[rune]` keys, which win over saved choices.
     pub file: phux_config_core::RuneCfg,
-    /// `[experimental] predictive-echo`: unset draws typing ahead of the
-    /// echo on another machine's terminals only.
+    /// `[labs] predictive-echo` (or the `[experimental]` key it replaced):
+    /// unset draws typing ahead of the echo on another machine's terminals
+    /// only.
     pub(crate) predictive_echo: Option<bool>,
+    /// `[developer] mode`: Settings shows Labs.
+    pub(crate) developer_mode: bool,
+    /// `[labs]` as config.toml holds it; Settings writes it back there.
+    pub(crate) labs: phux_config_core::LabsCfg,
     pub settings_open: bool,
     /// First-run onboarding, while open, and what it has learned.
     pub onboarding: onboarding::Onboarding,
@@ -277,8 +282,10 @@ impl Desk {
         // A config that didn't load is not consent to draw guesses.
         let predictive_echo = match file_error {
             Some(_) => Some(false),
-            None => config.experimental.predictive_echo,
+            None => config.predictive_echo(),
         };
+        let developer_mode = config.developer.mode;
+        let labs = config.labs.clone();
         let file = config.rune;
         // `defaults.attach-session` opens this computer's server unless a
         // flag or link named a session.
@@ -378,6 +385,8 @@ impl Desk {
             quick_chord: quick::Chord::default(),
             native: None,
             predictive_echo,
+            developer_mode,
+            labs,
             file,
         };
         if let Some(error) = file_error {

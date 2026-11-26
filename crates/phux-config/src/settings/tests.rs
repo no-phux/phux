@@ -11,7 +11,7 @@ const OPTIONAL_KEYS: &[&str] = &[
     "defaults.spawn-on-attach",
     "defaults.fixed-cwd",
     "defaults.attach-session",
-    "experimental.predictive-echo",
+    "labs.predictive-echo",
     "voice.transcriber",
     "voice.timeout-secs",
     "organize.jev-key-command",
@@ -187,4 +187,29 @@ fn render_value_shapes() {
         render_value(Some(&argv)),
         "curl -sf -F file=@{path} 'a b' 'it'\\''s'"
     );
+}
+
+/// Every registered lab has exactly one `labs.<id>` row, and every row
+/// under `[labs]` names a registered lab; a lab is unset until chosen, so
+/// its row is tri-state.
+#[test]
+fn labs_section_matches_the_registry() {
+    let rows: BTreeSet<&str> = CATALOG
+        .iter()
+        .filter(|spec| spec.section == SettingSection::Labs)
+        .inspect(|spec| assert_eq!(spec.kind, SettingKind::OptionalBool, "{}", spec.key))
+        .map(SettingSpec::leaf)
+        .collect();
+    let labs: BTreeSet<&str> = phux_config_core::labs::LABS
+        .iter()
+        .map(|lab| lab.id)
+        .collect();
+    assert_eq!(rows, labs);
+}
+
+#[test]
+fn labs_hide_until_developer_mode() {
+    assert!(!SettingSection::visible(false).any(|s| s == SettingSection::Labs));
+    assert!(SettingSection::visible(true).any(|s| s == SettingSection::Labs));
+    assert!(SettingSection::visible(false).any(|s| s == SettingSection::Developer));
 }

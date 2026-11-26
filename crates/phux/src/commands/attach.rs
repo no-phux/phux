@@ -293,8 +293,8 @@ pub(crate) fn predictive_config_for(dial: &Dial) -> PredictiveConfig {
     match config_loader::load() {
         Ok(cfg) => PredictiveConfig {
             enabled: cfg
-                .experimental
-                .predictive_echo_for(dial_leaves_the_machine(dial)),
+                .labs
+                .predictive_echo_for(&cfg.experimental, dial_leaves_the_machine(dial)),
         },
         Err(err) => {
             warn!(

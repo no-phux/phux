@@ -145,6 +145,23 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
+    /// List, turn on, or turn off labs: the feature flags all of phux reads
+    ///
+    /// A lab is a feature that is off (or decided for you) until it is ready.
+    /// Choices live under `[labs]` in config.toml, which the server, the
+    /// terminal UI and Rune all read, so one choice reaches every part that
+    /// acts on the lab (its scope). `developer` turns developer mode on or
+    /// off: clients show their Labs section only in developer mode.
+    ///
+    /// Examples:
+    ///   phux config labs list
+    ///   phux config labs set predictive-echo on
+    ///   phux config labs developer on
+    Labs {
+        #[usage(subcommand)]
+        action: LabsAction,
+    },
+
     /// List plugin manifests declared by `[[plugins]]`
     Plugins {
         /// Emit a stable JSON document instead of human text.
@@ -203,6 +220,62 @@ pub(crate) enum ConfigAction {
 }
 
 /// Local distro selection; no server contact.
+/// `phux config labs <action>`.
+#[derive(Debug, Subcommands)]
+pub(crate) enum LabsAction {
+    /// Every lab with its state and scope, and whether developer mode is on
+    List {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Turn a lab on or off, or back to its default
+    ///
+    /// Writes `[labs] ID` in config.toml (`default` removes the key). A
+    /// client-scoped lab applies on each client's next attach; a server one
+    /// on `phux config reload` or the next server start.
+    Set {
+        /// The lab's id, as `phux config labs list` prints it.
+        #[usage(value_name = "ID")]
+        id: String,
+        /// on, off, or default.
+        #[usage(value_enum, value_name = "STATE")]
+        state: LabState,
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Turn developer mode on or off: whether clients show their Labs section
+    Developer {
+        /// on or off.
+        #[usage(value_enum, value_name = "STATE")]
+        state: Switch,
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+}
+
+/// What `phux config labs set` does to one lab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, usage::ValueEnum)]
+pub(crate) enum LabState {
+    /// Turn it on.
+    On,
+    /// Turn it off.
+    Off,
+    /// Remove the choice so the lab's default applies.
+    Default,
+}
+
+/// On or off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, usage::ValueEnum)]
+pub(crate) enum Switch {
+    /// On.
+    On,
+    /// Off.
+    Off,
+}
+
 #[derive(Debug, Subcommands)]
 pub(crate) enum DistroAction {
     /// List bundled names in search precedence, sorted by name

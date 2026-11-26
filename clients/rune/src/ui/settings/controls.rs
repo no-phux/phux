@@ -94,12 +94,14 @@ fn copy(desk: &Desk, title: &'static str, detail: &'static str, t: &Tokens) -> E
 }
 
 /// A switch row: what it sets, and the kit switch that shows it.
-pub(in crate::ui) struct Toggle {
-    pub(in crate::ui) key: &'static str,
+/// `K` is the row's key and `P` its press, so a row built from data (a
+/// lab) can carry its own.
+pub(in crate::ui) struct Toggle<K = &'static str, P = fn(&mut Desk)> {
+    pub(in crate::ui) key: K,
     pub(in crate::ui) title: &'static str,
     pub(in crate::ui) detail: &'static str,
     pub(in crate::ui) on: bool,
-    pub(in crate::ui) press: fn(&mut Desk),
+    pub(in crate::ui) press: P,
     /// Off, the row takes no press and draws the kit's disabled switch.
     pub(in crate::ui) enabled: bool,
 }
@@ -107,7 +109,11 @@ pub(in crate::ui) struct Toggle {
 /// The whole row is the switch (role, name, description, checked), so a
 /// press anywhere on it flips it; the kit `Switch` draws the track and
 /// stays out of the tree and the Tab order.
-pub(in crate::ui) fn toggle(desk: &Desk, toggle: Toggle, t: &Tokens) -> El {
+pub(in crate::ui) fn toggle<K, P>(desk: &Desk, toggle: Toggle<K, P>, t: &Tokens) -> El
+where
+    K: Into<String>,
+    P: Fn(&mut Desk) + 'static,
+{
     let s = &t.space;
     let size = if desk.phone.is_some() {
         ControlSize::Small

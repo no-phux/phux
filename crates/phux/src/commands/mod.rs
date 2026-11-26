@@ -185,6 +185,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             config_action::ConfigAction::Show { .. } => Some("config show"),
             config_action::ConfigAction::Keys { .. } => Some("config keys"),
             config_action::ConfigAction::Plugins { .. } => Some("config plugins"),
+            config_action::ConfigAction::Labs { .. } => Some("config labs"),
             config_action::ConfigAction::Run { .. } => Some("config run"),
             // `agents` best-effort reads live state; `reload` rings the
             // server doorbell.

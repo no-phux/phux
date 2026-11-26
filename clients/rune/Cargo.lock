@@ -2881,6 +2881,7 @@ dependencies = [
  "skrifa",
  "tempfile",
  "tiny-skia",
+ "toml",
  "url",
  "zbus",
 ]

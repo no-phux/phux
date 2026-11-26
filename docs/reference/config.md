@@ -33,7 +33,9 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[sessions]]` | A colour for a session by name, drawn beside it in the sidebar: `color` is one of the host palette's ids. |
 | `[[icons]]` | An icon drawn before a pane's name, by foreground `process` or `cwd` glob; a program-set icon comes first. |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
-| `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
+| `[experimental]` | Superseded by `[labs]`; `predictive-echo` here is still read when `[labs]` leaves it unset. |
+| `[developer]` | Developer mode: `mode = true` shows the Labs section in every client's Settings. It hides nothing that runs. |
+| `[labs]` | Feature flags by lab id (`phux config labs list`), read by the server and every client; an absent id is the lab's default, and a retired id still loads. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 | `[organize]` | Who judges where panes belong for `phux organize`: `TypeSafe`'s Jev with a key, else repository matching. |
@@ -77,13 +79,15 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `defaults.shell-integration` | `false` |
 | `defaults.term` | `"xterm-256color"` |
 | `defaults.window-size` | `"smallest"` |
-| `experimental.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
+| `developer.mode` | `false` |
+| `experimental.predictive-echo` | unset — deprecated: read only when `labs.predictive-echo` is unset |
 | `forward.agent` | `false` |
 | `forward.tcp` | `true` |
 | `keybindings.defaults` | `true` |
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
+| `labs.predictive-echo` | unset — the dial decides: on when the attach leaves the machine, off otherwise. `true` / `false` force it on every transport |
 | `limits.metadata-value-bytes` | `262144` |
 | `notifications.blocked` | `true` |
 | `notifications.done` | `true` |

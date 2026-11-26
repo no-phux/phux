@@ -137,3 +137,62 @@ fn glass_is_saved_like_the_theme() {
     desk.set_glass(250);
     assert_eq!(super::Settings::load(&desk.prefs).glass, 100, "clamped");
 }
+
+/// Developer mode reveals Labs, whose switches set the flags every part of
+/// phux reads; turning it off from Labs goes back to Developer.
+#[test]
+fn developer_mode_reveals_labs_and_a_lab_switch_takes_effect() {
+    let mut desk = Desk::with_preferences(&Resolved::offline("labs"), None, Prefs::memory());
+    desk.settings_open = true;
+    desk.settings_category(Category::Developer);
+    let mut runtime = runtime(desk);
+    assert!(
+        runtime.find("settings-labs").is_none(),
+        "hidden until asked"
+    );
+    assert!(runtime.accessibility_action("set-developer-mode", Action::Click, None));
+    runtime.frame(1.0 / 60.0);
+    assert!(runtime.state.developer_mode);
+    assert!(runtime.find("settings-labs").is_some());
+
+    assert!(runtime.accessibility_action("settings-labs", Action::Click, None));
+    runtime.frame(2.0 / 60.0);
+    assert_eq!(runtime.state.settings_ui.category, Some(Category::Labs));
+    let key = format!("set-lab-{}", phux_config_core::labs::PREDICTIVE_ECHO);
+    assert_eq!(find(&runtime.accessibility_json(), &key)["role"], "switch");
+    assert_eq!(runtime.state.predictive_echo, None);
+    assert!(runtime.accessibility_action(&key, Action::Click, None));
+    runtime.frame(3.0 / 60.0);
+    assert_eq!(runtime.state.predictive_echo, Some(true), "applies at once");
+    assert_eq!(
+        runtime
+            .state
+            .labs
+            .get(phux_config_core::labs::PREDICTIVE_ECHO),
+        Some(true)
+    );
+
+    runtime.update(|d, _| d.toggle_developer_mode());
+    runtime.frame(4.0 / 60.0);
+    assert_eq!(
+        runtime.state.settings_ui.category,
+        Some(Category::Developer)
+    );
+    assert!(runtime.find("settings-labs").is_none());
+    assert_eq!(
+        runtime.state.predictive_echo,
+        Some(true),
+        "hiding Labs keeps what is set"
+    );
+}
+
+#[test]
+fn labs_is_listed_only_in_developer_mode() {
+    assert!(!Category::shown(false).any(|c| c == Category::Labs));
+    let shown: Vec<_> = Category::shown(true).collect();
+    let at = shown
+        .iter()
+        .position(|c| *c == Category::Labs)
+        .expect("listed");
+    assert_eq!(shown[at - 1], Category::Developer);
+}

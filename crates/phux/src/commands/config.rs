@@ -4,6 +4,7 @@ mod config_json;
 mod distro;
 pub(crate) mod import_tmux;
 mod keys;
+mod labs;
 mod live_feed;
 mod show;
 
@@ -47,6 +48,7 @@ pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBu
         } => show::run_config_show(*default, *layers, *json),
         ConfigAction::Keys { action, json } => keys::run_config_keys(action.as_deref(), *json),
         ConfigAction::Plugins { json } => run_config_plugins(*json),
+        ConfigAction::Labs { action } => labs::run(action),
         ConfigAction::Agents { json } => run_config_agents(*json, socket),
         ConfigAction::Reload => run_config_reload(socket),
         ConfigAction::Run {
