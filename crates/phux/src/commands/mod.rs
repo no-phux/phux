@@ -98,6 +98,7 @@ pub(crate) mod pick;
 pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
+pub(crate) mod program_resume;
 pub(crate) mod project;
 pub(crate) mod public_api;
 pub(crate) mod read_kind;

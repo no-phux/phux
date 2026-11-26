@@ -111,8 +111,15 @@ impl TerminalEngineFactory for TerminalEngine {
         if let Some(keep) = reports.keep_scrollback {
             actor.keep_scrollback(keep);
         }
+        if let Some(token) = reports.program_resume_token.clone() {
+            actor.set_program_resume_token(token);
+        }
+        if let Some((pid, time)) = reports.program_resume_clock {
+            actor.seed_program_resume_clock(pid, time);
+        }
         let program_status = actor.subscribe_program_status();
         let resume = actor.subscribe_resume();
+        let program_resume = actor.subscribe_program_resume();
         let program_note = actor.subscribe_program_note();
         Ok(EngineBundle {
             handle,
@@ -124,6 +131,7 @@ impl TerminalEngineFactory for TerminalEngine {
             agent_state,
             program_status,
             resume,
+            program_resume,
             program_note,
         })
     }
@@ -299,6 +307,8 @@ mod tests {
                     agent_capacity: 1,
                     live_session: None,
                     keep_scrollback: None,
+                    program_resume_token: None,
+                    program_resume_clock: None,
                 },
             })
             .expect("engine");

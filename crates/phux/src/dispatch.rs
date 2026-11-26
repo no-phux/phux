@@ -40,9 +40,13 @@ pub(crate) fn dispatch(
         Some(Command::Relaunch(args)) => {
             commands::org::run_relaunch(&args.target, args.approve_raw, args.json, socket)
         }
-        Some(Command::Restore(args)) => {
-            commands::org::run_restore(args.session.as_deref(), args.verbose, args.json, socket)
-        }
+        Some(Command::Restore(args)) => commands::org::run_restore(
+            args.session.as_deref(),
+            args.verbose,
+            args.dry_run,
+            args.json,
+            socket,
+        ),
         Some(Command::Organize(args)) => commands::organize::run(args, socket),
         Some(Command::SwapPane(args)) => commands::spatial::swap_pane(args, socket),
         Some(Command::Slot(args)) => commands::spatial::slot(args, socket),

@@ -15,9 +15,19 @@ pub struct RestoreCfg {
     pub on_start: bool,
     /// `[[restore.program]]`: the command a relaunch runs for a pane whose
     /// program handed over a resume token (OSC 7501 `resume=`), by `app`.
-    /// A program with no entry here is never resumed.
+    /// A program with no entry here is never resumed. Legacy: new programs
+    /// report with OSC 7577 instead.
     #[serde(deserialize_with = "programs")]
     pub program: Vec<RestoreProgram>,
+    /// Accept OSC 7577 program-resume reports and, when a record is trusted
+    /// and listed in `[[restore.trust]]`, relaunch that command after a crash
+    /// or reboot. Off by default. A server running as root never resumes one.
+    pub program_resume: bool,
+    /// `[[restore.trust]]`: programs a trusted OSC 7577 record may relaunch.
+    /// Each `command` is the program, a bare name or an absolute path. There are
+    /// no built-in rules; an empty list resumes nothing.
+    #[serde(deserialize_with = "trust")]
+    pub trust: Vec<RestoreTrust>,
     /// Lines of each pane's output to keep on disk, at most 10000, and show
     /// above a divider when the pane starts again after the server stopped.
     /// `0`, the default, keeps nothing, and deletes what an earlier setting
@@ -45,7 +55,24 @@ pub struct RestoreProgram {
     pub command: Vec<String>,
 }
 
+/// One `[[restore.trust]]` entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RestoreTrust {
+    /// Program a resume command may relaunch: a bare name or an absolute path.
+    pub command: String,
+}
+
 impl RestoreCfg {
+    /// Whether `argv`'s program is listed in [`Self::trust`].
+    #[must_use]
+    pub fn trusts_program(&self, argv: &[String]) -> bool {
+        let Some(program) = argv.first() else {
+            return false;
+        };
+        self.trust.iter().any(|entry| entry.command == *program)
+    }
+
     /// The argv that resumes `app` with `token`, when the user listed one.
     #[must_use]
     pub fn resume_argv(&self, app: &str, token: &str) -> Option<Vec<String>> {
@@ -115,6 +142,42 @@ fn programs<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<RestoreProgra
             return refuse(&format!(
                 "`command` needs {RESUME_TOKEN_PLACEHOLDER:?} as a whole argument, and nowhere else"
             ));
+        }
+    }
+    Ok(entries)
+}
+
+/// A trust entry names one program, a bare name or an absolute path, once.
+fn trust<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<RestoreTrust>, D::Error> {
+    use serde::de::Error;
+    let entries = Vec::<RestoreTrust>::deserialize(de)?;
+    for (index, entry) in entries.iter().enumerate() {
+        let command = &entry.command;
+        let refuse = |why: &str| {
+            Err(D::Error::custom(format!(
+                "restore.trust {command:?}: {why}"
+            )))
+        };
+        if command.is_empty()
+            || command.chars().any(
+                |ch| matches!(ch, '\u{0000}'..='\u{001F}' | '\u{007F}' | '\u{0080}'..='\u{009F}'),
+            )
+        {
+            return refuse("`command` must be a bare name or an absolute path");
+        }
+        let bare = !command.starts_with('/');
+        if bare && (command.starts_with('-') || command.contains('/')) {
+            return refuse("`command` must be a bare name or an absolute path");
+        }
+        if !bare && command.len() < 2 {
+            return refuse("`command` must be a bare name or an absolute path");
+        }
+        if entries
+            .iter()
+            .take(index)
+            .any(|earlier| earlier.command == *command)
+        {
+            return refuse("`command` is listed twice");
         }
     }
     Ok(entries)

@@ -237,7 +237,11 @@ fn terminal_recipe(
         Refusal::InvalidArgument { field: "archived_recipe", reason:
         "no current trusted host template admits this recipe; inspect and explicitly approve its exact content on the local owner socket".into() }
     };
+    let uid = rustix::process::geteuid().as_raw();
     let mut admitted = launch.clone();
+    if uid_changed(launch, uid) {
+        admitted.program_resume = None;
+    }
     if let Some(bytes) = &launch.restore {
         let provenance: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| deny())?;
         let integration = provenance
@@ -281,7 +285,9 @@ fn terminal_recipe(
         admitted.env = expected_env;
         admitted.last_cwd = None;
         admitted.resume = None;
-    } else if let Some(resume) = launch.resume.as_ref() {
+    } else if let Some(spec) = program_resume_launch(s, &admitted, uid) {
+        return Ok(spec);
+    } else if let Some(resume) = admitted.resume.as_ref() {
         if !launch.env.is_empty() {
             return Err(deny());
         }
@@ -312,6 +318,14 @@ fn terminal_recipe(
             .env
             .iter()
             .all(|(key, value)| shell.get_env(key) == Some(std::ffi::OsStr::new(value)));
+        let already_tried = launch.program_resume.as_ref().is_some_and(|record| {
+            record.tried && launch.env.is_empty() && launch.argv == record.argv
+        });
+        if already_tried {
+            admitted.argv.clear();
+            admitted.env.clear();
+            return Ok(LaunchSpec::Terminal(admitted));
+        }
         if !same_shell || !current_env {
             return Err(deny());
         }
@@ -321,6 +335,43 @@ fn terminal_recipe(
         admitted.env.clear();
     }
     Ok(LaunchSpec::Terminal(admitted))
+}
+
+/// A trusted, allowlisted, not-yet-tried OSC 7577 record, launched as argv
+/// with no shell. Anything else falls through; it is not a refusal.
+fn program_resume_launch(
+    s: &ServerState,
+    launch: &phux_core::TerminalLaunch,
+    uid: u32,
+) -> Option<LaunchSpec> {
+    if !s.config().restore.program_resume || uid == 0 {
+        return None;
+    }
+    let record = launch.program_resume.as_deref()?;
+    if !record.is_valid() || !record.trusted || record.tried || record.uid != uid {
+        return None;
+    }
+    if !s.config().restore.trusts_program(&record.argv) {
+        return None;
+    }
+    let cwd = record.cwd.as_ref().filter(|dir| dir.is_dir())?;
+    let mut admitted = launch.clone();
+    admitted.argv.clone_from(&record.argv);
+    admitted.cwd = Some(cwd.clone());
+    admitted.last_cwd = None;
+    admitted.env.clear();
+    admitted.resume = None;
+    let mut next = record.clone();
+    next.tried = true;
+    admitted.program_resume = Some(Box::new(next));
+    Some(LaunchSpec::Terminal(admitted))
+}
+
+fn uid_changed(launch: &phux_core::TerminalLaunch, uid: u32) -> bool {
+    launch
+        .program_resume
+        .as_ref()
+        .is_some_and(|record| record.uid != uid)
 }
 
 #[cfg(test)]

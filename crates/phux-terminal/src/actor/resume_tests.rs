@@ -86,16 +86,6 @@ fn a_prompt_and_a_resume_token_in_one_burst_keep_the_token() {
     assert!(status.borrow_and_update().is_empty());
 }
 
-/// Pins a known gap that a later change (B2, OSC 7577) intentionally flips.
-/// A foreground child directly under the pane shell, such as cat, can still
-/// set `resume=` while it is that job.
-#[test]
-fn known_gap_foreground_child_resume_is_still_accepted() {
-    let (mut actor, mut rx) = pane(job_under_shell(true));
-    actor.feed_for_test(ONE);
-    assert_eq!(*rx.borrow_and_update(), one());
-}
-
 #[test]
 fn a_direct_exec_foreground_program_can_set_resume() {
     let (mut actor, mut rx) = pane(job_direct_exec());

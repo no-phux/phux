@@ -281,6 +281,7 @@ pub fn core_launch(
                 last_cwd: None,
                 pane_id: None,
                 parent: None,
+                program_resume: None,
             }))
         }
         phux_core::ResourceKind::AgentSession => {

@@ -295,6 +295,13 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Clients must not set or delete it.
 pub const RESOURCE_CONTROLLER_KEY: &str = "phux.controller/v1";
 
+/// Server-owned global index of OSC 7577 program-resume records.
+///
+/// JSON object keyed by the resource key's text form. Each value is
+/// `{ "command", "trusted", "tried" }` with `command` already escaped.
+/// The per-pane token is never included. Clients may read it and must not write it.
+pub const PROGRAM_RESUME_INDEX_KEY: &str = "phux.program-resume/v1";
+
 /// Server-owned OSC 7501 record index and active status.
 pub const RESOURCE_PROGRAM_STATUS_KEY: &str = "phux.program-status/v1";
 

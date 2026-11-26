@@ -10,3 +10,9 @@
 fn org_receipts() {
     phux_frozen::json::<Vec<phux_core::Receipt>>("org-receipts").check();
 }
+
+/// A pane's saved launch, including an OSC 7577 record. The token is not a field.
+#[test]
+fn terminal_launch() {
+    phux_frozen::json::<phux_core::TerminalLaunch>("terminal-launch").check();
+}

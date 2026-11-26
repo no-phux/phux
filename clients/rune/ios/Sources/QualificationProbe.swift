@@ -137,15 +137,15 @@ final class QualificationProbe {
     }
 
     /// The Sessions page the glass back button opened, once its own glass
-    /// dock shows and the covered top bar's glass is gone.
+    /// dock shows and the covered top bar's glass is gone. The drawer slides
+    /// in from the left, so the bar's trailing controls stay uncovered (and
+    /// rightly glass) until it lands; wait for all of them.
     private func recordGlass() throws {
         guard let before = glassBefore, !glassRecorded, let surface else { return }
         let after = surface.glassEvidence
         let ids = Set(after.compactMap { $0["id"] as? String })
-        // A moving drawer covers the bar from left to right. Losing Back
-        // alone does not mean its other controls have disappeared.
-        let previous = Set(before.compactMap { $0["id"] as? String })
-        guard ids.contains("phone-session-new"), ids.isDisjoint(with: previous) else { return }
+        let topBar: Set<String> = ["phone-back", "phone-place", "phone-news", "phone-more"]
+        guard ids.contains("phone-session-new"), ids.isDisjoint(with: topBar) else { return }
         try write(["schema": 1, "tapped": "phone-back", "terminal": before, "sessions": after],
                   name: "rune-glass.json")
         glassRecorded = true
