@@ -75,7 +75,15 @@ impl Desk {
         self.phone.as_ref()?.composer.drafts.get(owner)
     }
 
-    pub(crate) fn open_composer(&mut self, tx: &mut Tx) {
+    pub(crate) fn toggle_composer(&mut self, tx: &mut Tx) {
+        if self.active_composer().is_some() {
+            self.close_composer(tx);
+        } else {
+            self.open_composer(tx);
+        }
+    }
+
+    fn open_composer(&mut self, tx: &mut Tx) {
         let Some(owner) = self.composer_owner() else {
             return;
         };

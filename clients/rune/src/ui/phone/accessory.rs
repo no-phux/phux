@@ -182,6 +182,8 @@ fn key_rail(strip: El, p: &Look) -> El {
 pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     let s = &p.space;
     let native_field = desk.native.is_some() && crate::desk::native_input::editing(desk);
+    let can_compose = desk.composer_owner().is_some();
+    let composing = desk.active_composer().is_some();
     let ink = p.roles.text.text.paint();
     let pad = touchable(
         el().key("phone-pad")
@@ -205,12 +207,8 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     // Only a native host has photos and files to attach, and only a
     // terminal takes them. It ends the strip beside Paste, so the pinned
     // pair keeps room for Return on the narrowest phone.
-    let clip = (desk.native.is_some()
-        && !native_field
-        && !desk.settings_open
-        && desk.composer_owner().is_none())
-    .then(|| attach(p, &icons::PAPERCLIP));
-    let (strip_pad, pair_pad) = if scrolling_pad {
+    let clip = (desk.native.is_some() && !native_field && !desk.settings_open).then(|| attach(p));
+    let (strip_pad, pair_pad) = if scrolling_pad || can_compose {
         ([clip, Some(pad)], None)
     } else {
         ([clip, None], Some(pad))
@@ -231,16 +229,13 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     .child(keyboard_control(desk, native_field, p))
     .children(pair_enter);
     let command = touchable(
-        surface(
-            el().key("phone-command")
-                .min_w(p.round())
-                .min_h(p.round())
-                .px(s.s2)
-                .py(s.s1)
-                .radius(p.radius.full)
-                .center(),
-            p,
-        ),
+        el().key("phone-command")
+            .min_w(p.round())
+            .min_h(p.round())
+            .px(s.s2)
+            .py(s.s1)
+            .radius(p.radius.full)
+            .center(),
         p,
     )
     .label(if desk.settings_open {
@@ -254,6 +249,14 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
             .color(ink),
     )
     .on_press_tx(Desk::phone_commands);
+    let leading = surface(
+        row()
+            .radius(p.radius.full)
+            .items_center()
+            .child(command)
+            .children(can_compose.then(|| super::composer::toggle(desk, composing, p))),
+        p,
+    );
     row()
         .key("phone-accessory")
         .preserve_focus_on_press(true)
@@ -261,11 +264,11 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
         .px(s.s2)
         .gap(s.s2)
         .items_center()
-        .child(el().pb(s.s2).child(command))
+        .child(el().pb(s.s2).child(leading))
         .child(strip(
             phone,
             native_field,
-            desk.active_composer().is_some(),
+            composing,
             strip_pad,
             strip_enter,
             p,
@@ -294,7 +297,7 @@ fn return_key(p: &Look) -> El {
 
 /// The paperclip: the phone's photos, camera and files, for the agent in
 /// this pane. What ⇧⌘O is to a desktop's screenshots.
-pub(super) fn attach(p: &Look, icon: &'static rune::Icon) -> El {
+fn attach(p: &Look) -> El {
     touchable(
         el().key("phone-attach")
             .min_w(p.round())
@@ -305,7 +308,11 @@ pub(super) fn attach(p: &Look, icon: &'static rune::Icon) -> El {
     )
     .label("Attach a photo or file")
     .on_press_tx(|d: &mut Desk, tx| d.shortcut(Shortcut::Screenshot, tx))
-    .child(glyph(icon, p.icon.size.lg, p.roles.text.text.paint()))
+    .child(glyph(
+        &icons::PAPERCLIP,
+        p.icon.size.lg,
+        p.roles.text.text.paint(),
+    ))
 }
 
 fn keyboard_control(desk: &Desk, native_field: bool, p: &Look) -> El {

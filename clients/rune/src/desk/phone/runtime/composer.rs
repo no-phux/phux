@@ -61,6 +61,30 @@ fn press_host_button(rt: &mut Runtime<Desk>, key: &str) {
 }
 
 #[test]
+fn composer_toggle_reclaims_terminal_space_and_restores_the_hidden_keyboard() {
+    let (_client, mut rt) = phone((320.0, 568.0), false);
+    let mut bridge = Bridge::default();
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = false);
+    settle(&mut rt);
+    let stage = element(&rt, "phone-stage").rect;
+    assert!(rt.find("phone-composer").is_none());
+    assert!(!bridge.snapshot(&rt).wanted);
+
+    press_host_button(&mut rt, "phone-compose");
+    write(&mut bridge, &mut rt, "Keep this draft");
+    assert!(element(&rt, "phone-stage").rect[3] < stage[3]);
+    press_host_button(&mut rt, "phone-compose");
+    assert!(rt.find("phone-composer").is_none());
+    assert_eq!(element(&rt, "phone-stage").rect, stage);
+    let raw = bridge.snapshot(&rt);
+    assert_eq!(raw.kind, "terminal");
+    assert!(!raw.wanted);
+
+    press_host_button(&mut rt, "phone-compose");
+    assert_eq!(bridge.snapshot(&rt).text, "Keep this draft");
+}
+
+#[test]
 fn staged_input_only_reaches_its_pane_on_send_and_survives_refusal() {
     let (client, mut rt) = phone((393.0, 480.0), false);
     let mut bridge = Bridge::default();
