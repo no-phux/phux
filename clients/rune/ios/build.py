@@ -96,6 +96,9 @@ def bundle_plist(identity, simulator, fonts, icons=None):
         "ITSAppUsesNonExemptEncryption": False,
         "NSCameraUsageDescription": "Scan a Phux pairing QR to connect, or take a photo to attach to a terminal.",
         "NSLocalNetworkUsageDescription": "Connect securely to your computer and get its Phux pairing code over SSH.",
+        # Dictation.swift: the Action Button's "Dictate to Phux".
+        "NSMicrophoneUsageDescription": "Hear what you say to send it to a terminal.",
+        "NSSpeechRecognitionUsageDescription": "Turn what you say into text to send to a terminal.",
         # App.swift accepts pairing links on exactly these schemes.
         "CFBundleURLTypes": [{"CFBundleURLName": bundle_id + ".pairing",
                               "CFBundleURLSchemes": identity["url_schemes"]}],
@@ -227,11 +230,13 @@ def build_swift(out, env, app, sources, library, flags, simulator, release, swif
         entitlement = simulator_entitlements(out, bundle_id, app_group, push=push)
         for flag in ["-sectcreate", "__TEXT", "__entitlements", str(entitlement)]:
             linker_flags.extend(["-Xlinker", flag])
+    intents = helper("app_intents")
     run(["/usr/bin/xcrun", "--sdk", sdk, "swiftc", "-swift-version", "6", "-strict-concurrency=complete", "-warnings-as-errors", "-target", swift_target,
-         "-sdk", sdk_path, "-module-cache-path", module_cache,
+         "-sdk", sdk_path, "-module-cache-path", module_cache, *intents.swift_flags(out),
          "-import-objc-header", IOS / "Bridge.h", "-parse-as-library",
          "-O" if release else "-Onone", *sources, library, *linker_flags, *swift_flags,
          "-o", app / "PhuxRune"], env, out, "swift", timeout=600)
+    intents.metadata(out, env, run, app, sources, sdk_path, swift_target, MIN_IOS)
 
 
 def simulator_entitlements(out, bundle_id, app_group=None, name="simulator-entitlements", push=False):

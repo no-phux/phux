@@ -445,6 +445,12 @@ impl Desk {
         } else {
             changed |= held && self.connection.reveal.is_none();
         }
+        let dictating = self.phone.as_ref().is_some_and(|p| p.dictation.is_some());
+        if self.follow_dictation() {
+            tx.wake_after(Duration::from_millis(250));
+        } else {
+            changed |= dictating;
+        }
         let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client) | self.tend_popup(&client, tx);
         let opened = self.settle_home(&client) | self.open_wanted(&client);

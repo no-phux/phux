@@ -228,6 +228,12 @@ final class RuneView: UIView {
         wake()
     }
 
+    /// Words the Action Button heard: Rune holds them until `session` shows.
+    func dictate(_ words: String, to session: String) {
+        bridge?.dictate(words, to: session)
+        wake()
+    }
+
     private func synchronizeInput(_ frame: [String: Any]) {
         guard let input = InputContext(frame["input"]) else { return }
         let caret = input.caret ?? CGRect(x: 4, y: max(0,bounds.height - 24), width: 1, height: 20)

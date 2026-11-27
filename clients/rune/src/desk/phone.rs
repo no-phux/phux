@@ -10,6 +10,7 @@ use crate::keys::{self, Typed};
 
 pub mod attach;
 pub mod composer;
+pub mod dictation;
 pub mod navigation;
 mod refit;
 pub mod spatial;
@@ -47,6 +48,8 @@ pub struct Phone {
     pub(crate) switcher: Option<switcher::Switcher>,
     pub query: rune::TextEdit,
     pub composer: composer::Composer,
+    /// Words heard for a session, waiting for it to show.
+    pub dictation: Option<dictation::Dictation>,
     /// Sessions folded to their header on the Sessions page, by id.
     pub folded: std::collections::HashSet<u32>,
     /// The quiet sessions are unfolded under their band.
@@ -91,6 +94,7 @@ impl Default for Phone {
             switcher: None,
             query: rune::TextEdit::new(""),
             composer: composer::Composer::default(),
+            dictation: None,
             folded: std::collections::HashSet::new(),
             quiet_shown: false,
             menu: None,

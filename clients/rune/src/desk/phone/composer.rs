@@ -45,6 +45,14 @@ impl Composer {
     pub(crate) fn draft_mut(&mut self, owner: &Owner) -> Option<&mut Draft> {
         self.drafts.get_mut(owner)
     }
+
+    /// `owner`'s draft, begun empty if it had none.
+    pub(crate) fn draft_entry(&mut self, owner: &Owner) -> &mut Draft {
+        self.drafts.entry(owner.clone()).or_insert_with(|| Draft {
+            edit: TextEdit::new(""),
+            sending: None,
+        })
+    }
 }
 
 impl Desk {
@@ -89,14 +97,7 @@ impl Desk {
         };
         let Some(phone) = &mut self.phone else { return };
         phone.release();
-        phone
-            .composer
-            .drafts
-            .entry(owner.clone())
-            .or_insert_with(|| Draft {
-                edit: TextEdit::new(""),
-                sending: None,
-            });
+        phone.composer.draft_entry(&owner);
         phone.composer.active = Some(owner);
         self.connection.preedit = None;
         tx.focus_when_shown(FIELD, false);
@@ -141,7 +142,7 @@ impl Desk {
         }
     }
 
-    fn submit_composer(&mut self, owner: &Owner, confirmed: bool) {
+    pub(in crate::desk) fn submit_composer(&mut self, owner: &Owner, confirmed: bool) {
         let Some(draft) = self.composer_draft(owner) else {
             return;
         };
