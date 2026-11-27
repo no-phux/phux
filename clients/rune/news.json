@@ -1,6 +1,11 @@
 [
   {
     "date": "2026-11-27",
+    "title": "Your current split pane, at a glance",
+    "body": "In Rune 0.1.63: a quiet underline and accessible current-pane description identify the shown pane in compact split rows, including forced colours."
+  },
+  {
+    "date": "2026-11-27",
     "title": "Re-read developer mode and labs when settings opens",
     "body": "In Rune 0.1.62."
   },
