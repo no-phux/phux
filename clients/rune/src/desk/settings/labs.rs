@@ -1,6 +1,7 @@
 //! Developer mode and labs: switches Settings writes back to config.toml,
 //! where the server, the terminal UI and the CLI read the same keys.
 
+use phux_config_core::LabsCfg;
 use phux_config_core::labs::{Lab, PREDICTIVE_ECHO};
 
 use super::super::{Desk, NoticeKind};
@@ -10,12 +11,45 @@ impl Desk {
     /// Developer mode on or off, saved to `[developer] mode` in config.toml
     /// so the terminal UI and `phux config labs` see the same switch.
     pub fn toggle_developer_mode(&mut self) {
+        self.refresh_labs();
         let on = !self.developer_mode;
         if !self.save_to_file("developer.mode", Some(on)) {
             return;
         }
         self.developer_mode = on;
-        if !on && self.settings_ui.category == Some(Category::Labs) {
+        self.leave_hidden_labs();
+    }
+
+    /// Re-read `[developer]` and `[labs]` from config.toml, which the terminal
+    /// UI and `phux config labs` change too, so Settings shows and flips what
+    /// the file holds now. A file that does not load keeps what is shown.
+    /// Tests never read the real file.
+    pub(crate) fn refresh_labs(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        if let Ok(config) = phux_config_core::loader::load_client() {
+            let echo = config.predictive_echo();
+            self.adopt_labs(config.developer.mode, config.labs, echo);
+        }
+    }
+
+    /// Take developer mode and the labs as the file now has them.
+    pub(crate) fn adopt_labs(
+        &mut self,
+        developer_mode: bool,
+        labs: LabsCfg,
+        predictive_echo: Option<bool>,
+    ) {
+        self.developer_mode = developer_mode;
+        self.labs = labs;
+        self.predictive_echo = predictive_echo;
+        self.leave_hidden_labs();
+    }
+
+    /// Labs is listed only in developer mode; with it off, Developer is open.
+    fn leave_hidden_labs(&mut self) {
+        if !self.developer_mode && self.settings_ui.category == Some(Category::Labs) {
             self.settings_ui.category = Some(Category::Developer);
         }
     }
@@ -29,6 +63,7 @@ impl Desk {
     /// Flip `lab` and save it under `[labs]` in config.toml, where every
     /// part of phux reads it.
     pub fn toggle_lab(&mut self, lab: &'static Lab) {
+        self.refresh_labs();
         let on = !self.lab_on(lab);
         if !self.save_to_file(&format!("labs.{}", lab.id), Some(on)) {
             return;

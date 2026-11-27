@@ -196,3 +196,22 @@ fn labs_is_listed_only_in_developer_mode() {
         .expect("listed");
     assert_eq!(shown[at - 1], Category::Developer);
 }
+
+/// A change made elsewhere (the terminal UI, `phux config labs`) is what
+/// Settings shows next; turning developer mode off there closes Labs here.
+#[test]
+fn labs_follow_the_file_as_it_changes() {
+    let echo = phux_config_core::labs::PREDICTIVE_ECHO;
+    let mut desk = Desk::with_preferences(&Resolved::offline("labs"), None, Prefs::memory());
+    let mut labs = phux_config_core::LabsCfg::default();
+    labs.flags.insert(echo.to_owned(), false);
+    desk.adopt_labs(true, labs, Some(false));
+    desk.settings_category(Category::Labs);
+    assert!(desk.developer_mode);
+    assert_eq!(desk.predictive_echo, Some(false));
+    assert_eq!(desk.labs.get(echo), Some(false));
+
+    desk.adopt_labs(false, phux_config_core::LabsCfg::default(), None);
+    assert_eq!(desk.settings_ui.category, Some(Category::Developer));
+    assert_eq!(desk.predictive_echo, None);
+}

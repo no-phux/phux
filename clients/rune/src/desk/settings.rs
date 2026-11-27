@@ -350,6 +350,7 @@ impl Desk {
         if self.settings_open {
             self.close_settings();
         } else {
+            self.refresh_labs();
             self.settings_open = true;
         }
     }

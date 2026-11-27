@@ -171,6 +171,7 @@ impl Desk {
             return;
         }
         self.close_inbox();
+        self.refresh_labs();
         self.settings_open = true;
         self.settings_category(SettingsCategory::RemoteHosts);
         if self.settings_ui.pairing.live_code(pair::now()).is_none() {
