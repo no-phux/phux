@@ -71,7 +71,7 @@ fn needs_you_leads_and_quiet_sessions_fold_under_their_names() {
     let waiting = crate::ui::element(&rt, "phone-needs-you-heading")
         .label
         .unwrap_or_default();
-    assert_eq!(waiting, "Needs you, 2");
+    assert_eq!(waiting, "Needs you, 2 · Open Inbox");
     assert!(rt.find("phone-needs-you-pane-@4").is_some());
     assert!(rt.find("phone-needs-you-pane-@2").is_some());
     assert!(rt.find("phone-session-pane-@2").is_some());

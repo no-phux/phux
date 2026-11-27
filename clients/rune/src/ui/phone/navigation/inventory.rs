@@ -3,7 +3,7 @@
 use rune::{El, col};
 
 use super::section::{
-    self, Tally, band_heading, chevron, heading_body, heading_row, heading_title, session_section,
+    self, Tally, chevron, heading_body, heading_row, heading_title, inbox_heading, session_section,
 };
 use super::{Desk, Look, control, empty_state, grid, other_hosts, resource};
 use crate::addressable::Addressable;
@@ -109,13 +109,13 @@ fn needs_you(desk: &Desk, all: &[Addressable], p: &Look) -> Option<El> {
     if waiting.is_empty() {
         return None;
     }
-    let label = format!("Needs you, {}", waiting.len());
+    let label = format!("Needs you, {} · Open Inbox", waiting.len());
     Some(
         col()
             .key("phone-needs-you")
             .w_full()
             .gap(p.space.s1)
-            .child(band_heading(
+            .child(inbox_heading(
                 "phone-needs-you-heading",
                 "Needs you",
                 waiting.len(),

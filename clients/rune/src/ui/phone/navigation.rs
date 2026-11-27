@@ -9,7 +9,7 @@ use rune::{El, Key, Tx, col, el, row, text, text_input};
 
 use super::{Desk, Look};
 use crate::desk::phone::navigation::Page;
-use crate::ui::tokens::{GlassSurface, Paint};
+use crate::ui::tokens::Paint;
 use crate::ui::{icons, pressable};
 
 mod actions;
@@ -17,6 +17,7 @@ mod connections;
 mod dock;
 mod grid;
 mod inventory;
+mod layer;
 mod menu;
 mod resource;
 mod section;
@@ -26,6 +27,8 @@ use crate::ui::Cover;
 use actions::actions;
 use connections::view as connections;
 use inventory::{matches, session_list};
+pub(in crate::ui) use layer::frost;
+use layer::{drawer, layer};
 pub(crate) use menu::native as native_menu;
 use resource::resource_row;
 use states::empty_state;
@@ -39,7 +42,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let p = &super::page_look(desk);
     let s = &p.space;
     if page == Page::Switcher {
-        return Some(switcher::view(desk, top, p));
+        return Some(layer(desk, switcher::view(desk, top, p), page, p));
     }
     let title = match page {
         Page::Sessions => "Sessions",
@@ -105,92 +108,14 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .child(body.max_w(column_max()))
         .children(menu::view(desk, p));
     let sheet = drawer(sheet, page, pull, phone.stage[0], p);
-    Some(match pull {
+    let sheet = match pull {
         Some(_) => sheet.inert(),
         None => sheet
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
             .on_paste(|_: &mut Desk, _, _| {}),
-    })
-}
-
-/// Sessions comes in from the left edge, where the thumb pulls it from, as
-/// frost rather than a sliding panel: the terminal blurs in place under
-/// [`frost`] (the phone's one blur) while the list drifts a short way in
-/// behind the finger and sharpens. A let-go pull or a close fades it back
-/// off. Terminal actions is one glass page. Opaque where glass may not draw.
-fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El {
-    if page != Page::Sessions {
-        return glass(sheet, p);
-    }
-    let shown = shown(pull, width);
-    let drift = p.space.s16;
-    // The list trails the frost, so it reads once the glass has come up
-    // behind it rather than as text floating on the terminal.
-    sheet
-        .offset(-drift * (1.0 - shown), 0.0)
-        .offset_motion(follow(pull, p))
-        .opacity(shown * shown)
-        .opacity_motion(follow(pull, p))
-        .transition(
-            rune::Transition::offset(-drift, 0.0)
-                .combined(rune::Transition::opacity())
-                .springs(p.motion.drawer),
-        )
-}
-
-/// The frost Sessions comes up on: the whole terminal blurred in place.
-/// Under a pulling finger it thickens, its blur and tint growing from
-/// clear to whole by the point a lift opens, so the terminal never shows
-/// crisp through the list. A sibling under the list, never inside a layer
-/// that fades as one, which would flatten what it blurs.
-pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
-    let phone = desk.phone.as_ref()?;
-    let pull = phone.swipe.pull.filter(|_| desk.phone_page().is_none());
-    let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
-    if page != Page::Sessions {
-        return None;
-    }
-    let p = &super::page_look(desk);
-    let commit = crate::desk::phone::swipe::PULL_COMMIT;
-    let thick = (shown(pull, phone.stage[0]) / commit).min(1.0);
-    let frost = p.glass_panel_thick(
-        el().key("phone-drawer-frost").cover(),
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.ground,
-        thick,
-    );
-    Some(
-        frost
-            .transition(rune::Transition::opacity().springs(p.motion.drawer))
-            .inert()
-            .a11y_hidden(),
-    )
-}
-
-fn glass(panel: El, p: &Look) -> El {
-    p.glass_panel(
-        panel,
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.ground,
-    )
-}
-
-/// How far in Sessions has come: whole once open.
-fn shown(pull: Option<f32>, width: f32) -> f32 {
-    pull.map_or(1.0, |pulled| (pulled / width.max(1.0)).clamp(0.0, 1.0))
-}
-
-/// A pulling finger is followed exactly; a let-go one settles on the
-/// drawer spring.
-fn follow(pull: Option<f32>, p: &Look) -> rune::Spring {
-    if pull.is_some() {
-        rune::Spring::NONE
-    } else {
-        p.motion.drawer.enter
-    }
+    };
+    Some(layer(desk, sheet, page, p))
 }
 
 /// Done closes the page: a glass checkmark like the top bar's buttons on
@@ -400,13 +325,17 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     let margin = grid::margin();
     // The scroller spans the page and its content keeps the margin, so a
     // keyboard ring around a card-wide row is never cut by the viewport.
+    // It keeps its place for the next visit, and opens where it was for a
+    // kept search, else around the pane on screen.
     let scroller = col()
         .key("phone-session-list")
         .w_full()
         .min_h(0.0)
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
-        });
+        })
+        .on_scroll_offset(phone.sessions_scroll.follow())
+        .on_layout_tx(move |d: &mut Desk, _, tx| d.reveal_phone_sessions(large_text, tx));
     // At large text sizes these controls can each be taller than the
     // ordinary list viewport. Let the whole body scroll, including search
     // and New session, rather than pinning oversized chrome over the list.
@@ -506,7 +435,7 @@ fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Look) -> El {
                             &format!("{name} · {} terminals", session.terminals),
                             p,
                             move |d, _| {
-                                d.close_phone_navigation();
+                                d.close_phone_sessions_picked();
                                 d.open_on(host.clone(), name.clone());
                             },
                         )

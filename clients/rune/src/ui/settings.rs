@@ -306,6 +306,9 @@ fn heading(desk: &Desk, t: &Tokens) -> El {
         .child(close(t))
 }
 
+/// Back leads only where there is a level to go back to; Close always ends
+/// the row, where every phone page keeps its close. A swipe in from the
+/// left edge goes back, or at the top level closes.
 fn phone_heading(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     let back = desk.phone.is_some() && desk.settings_ui.category.is_some();
@@ -329,14 +332,10 @@ fn phone_heading(desk: &Desk, t: &Tokens) -> El {
                         .a11y_hidden(),
                 )
         } else {
-            close(t)
-        })
-        .child(el().grow(1.0).center().child(title(t)))
-        .child(if back {
-            close(t)
-        } else {
             el().size(s.touch_min, s.touch_min)
         })
+        .child(el().grow(1.0).center().child(title(t)))
+        .child(close(t))
 }
 
 /// A quieter top edge below the heading, and a stronger cue toward more
@@ -376,7 +375,8 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
         .modal_tx(true, Desk::settings_escape)
         .label("Settings")
         .fill(ground)
-        .child(
+        .child(super::phone::swipeable(
+            desk,
             col()
                 .key("settings")
                 .w_full()
@@ -388,7 +388,9 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
                 .child(heading(desk, t))
                 .child(scroller(desk, t))
                 .child(el().w_full().padding(t.space.s3).child(search(desk, t))),
-        )
+            crate::desk::phone::dismiss::Away::Settings,
+            t,
+        ))
 }
 
 fn desktop(desk: &Desk, t: &Tokens) -> El {

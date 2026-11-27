@@ -438,8 +438,14 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
             .transition(rune::Transition::opacity())
             .child(phone_header(desk, t, &g))
             .child(rule("palette-header-rule"))
-            .child(scroller(results, &g, cap, t));
-        return scrim.child(page);
+            .child(super::phone::swipe_list(
+                desk,
+                scroller(results, &g, cap, t),
+                crate::desk::phone::dismiss::Away::Palette,
+            ));
+        // A swipe down, from its top, lowers it as Cancel does.
+        let away = crate::desk::phone::dismiss::Away::Palette;
+        return scrim.child(super::phone::swipeable(desk, page, away, t));
     }
     let (verb, _) = verb_and_glyph(mode);
     let panel = col()

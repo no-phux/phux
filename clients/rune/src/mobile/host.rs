@@ -5,6 +5,20 @@ use serde_json::{Value, json};
 
 use super::State;
 
+/// One of the host's touches. A page a swipe can take away sees it first,
+/// as a system gesture recogniser does; everything else is Rune's
+/// (`desk/phone/dismiss.rs`).
+pub fn touch(
+    rt: &mut rune::Runtime<State>,
+    id: u64,
+    phase: rune::TouchPhase,
+    x: f32,
+    y: f32,
+    seconds: f64,
+) {
+    crate::desk::phone::dismiss::touch(rt, id, phase, x, y, seconds);
+}
+
 /// Called before a changed native viewport reaches Rune. Restart the grid's
 /// wait before poll can send an old proposal ahead of the new layout.
 pub fn viewport_changed(rt: &mut rune::Runtime<State>) {

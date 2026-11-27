@@ -481,7 +481,7 @@ mod host;
 mod invite;
 pub use host::{
     attach, controls, dictate, edge_srgb, open_link, paste, path_changed, press, set_accessibility,
-    set_live, take_requests, viewport_changed, zoom,
+    set_live, take_requests, touch, viewport_changed, zoom,
 };
 pub use invite::parse_pairing_invite;
 

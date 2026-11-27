@@ -53,7 +53,8 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
         }
         list = list.child(card(rows, p));
     }
-    col()
+    let scroller = col()
+        .key("phone-actions-list")
         .w_full()
         .grow(1.0)
         .min_h(0.0)
@@ -61,7 +62,23 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
             stick_bottom: false,
         })
         .scroll_edge_fade(s.s4)
-        .child(list)
+        .child(list);
+    col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .pb(s.s3)
+        .child(crate::ui::phone::swipe_list(
+            desk,
+            scroller,
+            crate::desk::phone::dismiss::Away::Sheet(crate::desk::phone::navigation::Page::Actions),
+        ))
+        .child(
+            el().w_full()
+                .px(grid::margin())
+                .pt(s.s2)
+                .child(super::dock::close(desk, p)),
+        )
 }
 
 /// An action's icon in the rows' leading column.
@@ -82,13 +99,7 @@ fn news_row(desk: &Desk, p: &Look) -> El {
         "phone-action-news",
         crate::ui::news::bell_name(desk),
         p,
-        |d: &mut Desk, tx| {
-            d.close_phone_navigation();
-            tx.blur();
-            if !d.news.open {
-                d.toggle_news();
-            }
-        },
+        |d: &mut Desk, tx| d.phone_news(tx),
     )
     .w_full()
     .gap(s.s2)

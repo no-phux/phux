@@ -12,6 +12,7 @@ use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words};
 use super::tokens::{Paint, Tier, Tokens};
 use super::{MOD, badge, icons, lifted, pressable};
 use crate::activity::{Ask, Mark};
+use crate::desk::phone::dismiss::Away;
 use crate::desk::{Desk, NoticeKind};
 use crate::inbox::{self, Item, Waiting};
 
@@ -553,7 +554,13 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         .h_full()
         .border(s.hairline, r.border.base.paint())
         .transition(Transition::asymmetric(
-            Transition::move_edge(Edge::Trailing).springs(t.motion.drawer),
+            // A phone's Inbox is a sheet: it rises, and a swipe lowers it.
+            Transition::move_edge(if desk.phone.is_some() {
+                Edge::Bottom
+            } else {
+                Edge::Trailing
+            })
+            .springs(t.motion.drawer),
             Transition::opacity(),
         ))
         .child(title(desk, items.len(), t))
@@ -573,15 +580,19 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                     t,
                 ))
         } else {
-            col()
-                .key("inbox-scroll")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(list)
+            super::phone::swipe_list(
+                desk,
+                col()
+                    .key("inbox-scroll")
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .child(list),
+                Away::Inbox,
+            )
         })
         .child(rule("inbox-footer-rule"))
         .children(reply::phone_reply(desk, &items, picked, t))
@@ -596,6 +607,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         ),
         Tier::Overlay,
     );
+    let drawer = super::phone::swipeable(desk, drawer, Away::Inbox, t);
     super::scrim(el().key("inbox-scrim"), "Inbox", Some(Desk::close_inbox), t)
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }

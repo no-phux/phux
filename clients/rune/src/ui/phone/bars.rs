@@ -58,20 +58,43 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .gap(s.s1)
         .items_center()
         .window_drag()
-        .child(
-            floating_round(
-                desk,
-                "phone-back",
-                "Sessions",
-                &icons::CHEVRON_LEFT,
-                "chevron.left",
-                None,
-                p,
-            )
-            .on_press(Desk::open_phone_sessions),
-        )
+        .child(back(desk, p))
         .child(place)
         .child(trailing)
+}
+
+/// Back to Sessions, carrying the needs-you dot while a pane off screen
+/// asks: the way to it is one tap from the terminal, whatever it shows.
+fn back(desk: &Desk, p: &Look) -> El {
+    let waiting = waiting_elsewhere(desk);
+    let label = match waiting {
+        0 => "Sessions".to_owned(),
+        n => format!(
+            "Sessions, {}",
+            phux_design::plural("count.needs_you", n as u64).unwrap_or_default()
+        ),
+    };
+    let dot = (waiting > 0).then(|| p.status.state(State::NeedsYou).tone.ink);
+    floating_round(
+        desk,
+        "phone-back",
+        &label,
+        &icons::CHEVRON_LEFT,
+        "chevron.left",
+        dot,
+        p,
+    )
+    .on_press(Desk::open_phone_sessions)
+}
+
+/// Panes that need you other than the one on screen, whose own state the
+/// title's subtitle already says.
+fn waiting_elsewhere(desk: &Desk) -> usize {
+    let shown = desk.connection.shown.as_ref().map(|s| &s.resource);
+    desk.addressable()
+        .iter()
+        .filter(|r| Some(&r.id) != shown && desk.activities.mark(&r.id).needs_you())
+        .count()
 }
 
 /// Where you are, as an iOS navigation title: the pane over its session,
@@ -207,10 +230,7 @@ pub(super) fn computer(desk: &Desk, p: &Look) -> El {
         .min_w(p.round())
         .center()
         .label(&label)
-        .on_press(move |d: &mut Desk| {
-            d.close_phone_navigation();
-            d.toggle_machines();
-        })
+        .on_press_tx(|d: &mut Desk, tx| d.phone_connections(tx))
         .child(surface(pill, p));
     row().w_full().center().child(hosted(
         desk,

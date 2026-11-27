@@ -125,18 +125,49 @@ fn session_header(
         Some(summary.join(" · ")),
         p,
     );
-    let header = with_count(heading_row(header, p), heading, tally.waiting, p);
-    match fold {
+    // The ⋯ takes the trailing column the rows' checks share, so the
+    // header's own padding ends at it.
+    let header = with_count(heading_frame(header, p).pr(0.0), heading, tally.waiting, p);
+    let header = match fold {
         Some(folded) => header.expanded(!folded).child(chevron(folded, p)),
         None => header.child(chevron(true, p)),
-    }
+    };
+    row()
+        .key(format!("phone-session-header-{id}"))
+        .w_full()
+        .items_center()
+        .pr(grid::clear_inset(p))
+        .child(header.grow(1.0).min_w(0.0))
+        .child(more(id, &session.name, p))
+}
+
+/// The session's menu in plain sight: the verbs a hold on its header
+/// opens (Open, New Pane, Fold, Rename, Close Session), one tap away.
+fn more(id: u32, name: &str, p: &Look) -> El {
+    let key = format!("phone-session-more-{id}");
+    let row = key.clone();
+    control(&key, &format!("More for {name}"), p, move |d, tx| {
+        d.open_phone_more(Held::Session(id), row.clone(), tx);
+    })
+    .px(0.0)
+    .center()
+    .radius(p.radius.full)
+    .child(
+        rune::icon(&icons::MORE, grid::trail_mark(p))
+            .color(p.roles.text.dim.paint())
+            .a11y_hidden(),
+    )
 }
 
 /// Every section heading's frame: on the card's content inset, a touch row
 /// tall, its trailing marks on the rows' trailing column.
 pub(super) fn heading_row(heading: El, p: &Look) -> El {
+    heading_frame(heading, p).w_full()
+}
+
+/// [`heading_row`] without its width, to share a row with a control.
+fn heading_frame(heading: El, p: &Look) -> El {
     heading
-        .w_full()
         .min_h(p.space.touch_min)
         .px(grid::inset(p))
         .py(p.space.s1)
@@ -227,26 +258,38 @@ pub(super) fn attention_count(count: usize, p: &Look) -> El {
         .a11y_hidden()
 }
 
-/// A band's heading over its card, set as every section heading is: its
-/// name, and the count as the sessions' headings mark attention, on their
-/// column, with the disclosure's column left empty. At the accessibility
-/// sizes the count sits under the name and the name takes the full measure.
-pub(super) fn band_heading(key: &str, title: &str, count: usize, label: String, p: &Look) -> El {
-    // Not a control, so no touch height: it sits on its card as the
-    // sessions' names do on theirs.
-    let frame = heading_row(row().key(key.to_owned()), p)
-        .min_h(0.0)
-        .role("heading")
-        .label(label);
-    with_count(
-        frame,
-        heading_body(
-            heading_title(title.to_owned(), p).key(format!("{key}-title")),
-            None,
-            p,
-        ),
-        count,
+/// The Needs you band's heading, set as every section heading is: its
+/// name, the count as the sessions' headings mark attention, and the
+/// disclosure on their column, here to the Inbox, where every question
+/// can be answered in place. A touch row tall, as theirs are. At the
+/// accessibility sizes the name takes the whole measure, with the count
+/// and the disclosure under it.
+pub(super) fn inbox_heading(key: &str, title: &str, count: usize, label: String, p: &Look) -> El {
+    let frame = heading_row(
+        control(key, &label, p, |d: &mut Desk, tx| {
+            d.phone_action(crate::keys::Shortcut::Inbox, tx);
+        }),
         p,
+    );
+    let name = heading_body(
+        heading_title(title.to_owned(), p).key(format!("{key}-title")),
+        None,
+        p,
+    );
+    let count = (count > 0).then(|| attention_count(count, p));
+    if !count_under(p) {
+        return frame.child(name).children(count).child(chevron(true, p));
+    }
+    let disclosure = rune::icon(&icons::CHEVRON_RIGHT, grid::trail_mark(p))
+        .color(p.roles.text.dim.paint())
+        .a11y_hidden();
+    frame.child(
+        name.child(
+            row()
+                .gap(p.space.s1)
+                .items_center()
+                .children(count)
+                .child(disclosure),
+        ),
     )
-    .children((!count_under(p)).then(|| grid::trail_slot(None, grid::trail_w(p), p)))
 }

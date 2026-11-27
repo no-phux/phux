@@ -435,7 +435,8 @@ impl Desk {
             | self.follow_host_theme()
             | self.pump_onboarding(tx)
             | self.follow_accessibility()
-            | self.expire_notice(tx);
+            | self.expire_notice(tx)
+            | self.phone_return(tx);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let updated = updated | self.pump_plugin_actions();
         let Some(client) = self.connection.client.clone() else {

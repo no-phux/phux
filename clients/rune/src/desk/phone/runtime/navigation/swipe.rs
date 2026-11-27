@@ -398,3 +398,24 @@ fn closing_sessions_fades_the_frost_and_the_list_without_flattening_the_glass() 
     tick(&mut rt, 4.0);
     assert!(rt.find("phone-drawer-frost").is_none(), "gone once settled");
 }
+
+#[test]
+fn the_edge_reaches_a_thumb_landing_just_inside_the_screen() {
+    let (_, mut rt) = scene();
+    let (_, y) = middle(&rt);
+    // Just inside the widened edge: it pulls Sessions.
+    drag(&mut rt, (30.0, y), &[40.0, 120.0, 220.0], 0.2);
+    assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
+    // Just past it, the same drag pages as the rest of the stage does.
+    rt.update(|d, _| d.close_phone_navigation());
+    for _ in 0..90 {
+        rt.frame(1.0 / 60.0);
+    }
+    rt.touch(9, Started, 40.0, y, 3.0);
+    tick(&mut rt, 3.0);
+    rt.touch(9, Moved, 100.0, y, 3.016);
+    tick(&mut rt, 3.016);
+    assert!(swipe(&rt).pull.is_none() && swipe(&rt).paging);
+    rt.touch(9, rune::TouchPhase::Cancelled, 100.0, y, 3.032);
+    tick(&mut rt, 3.032);
+}

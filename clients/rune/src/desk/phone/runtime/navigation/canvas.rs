@@ -158,7 +158,8 @@ fn large_connections_give_text_the_full_measure_and_remain_one_destination() {
         rt.key(crate::keys::plain(Key::Enter));
         settle(&mut rt);
         assert!(rt.state.native.as_ref().unwrap().connection_requested);
-        assert!(rt.state.phone_page().is_none());
+        // UIKit's sheet comes up over Sessions, which waits under it.
+        assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
         no_terminal_input(&client);
     }
 }

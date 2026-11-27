@@ -278,13 +278,50 @@ pub(super) fn hosted(desk: &Desk, placeholder: El, control: crate::mobile::Contr
     placeholder
 }
 
+/// `page`, while it is the page a swipe would take ([`Desk::swipe_away`]),
+/// bound to where the finger has it: it follows one to one without a
+/// rebuild or a layout, and a let-go short of leaving springs it home on
+/// the drawer spring. A drawer or a level fades as it goes; a sheet slides
+/// whole, as a system sheet does, so a glass sheet never blurs inside a
+/// fading layer. Never a page under the top one.
+pub(in crate::ui) fn swipeable(
+    desk: &Desk,
+    page: El,
+    away: crate::desk::phone::dismiss::Away,
+    p: &Tokens,
+) -> El {
+    use crate::desk::phone::dismiss::Way;
+    let Some(phone) = desk.phone.as_ref().filter(|_| desk.swipes(away)) else {
+        return page;
+    };
+    let spring = p.motion.drawer.enter;
+    let page = page.live_offset(phone.dismiss.shift.smooth(spring));
+    match away.way() {
+        Way::Down => page,
+        Way::Left | Way::Back => page.live_opacity(phone.dismiss.shown.smooth(spring)),
+    }
+}
+
+/// A list a downward swipe defers to until it is at its top: it reports
+/// its offset live, so scrolling it runs no view.
+pub(in crate::ui) fn swipe_list(
+    desk: &Desk,
+    list: El,
+    away: crate::desk::phone::dismiss::Away,
+) -> El {
+    match desk.phone.as_ref() {
+        Some(phone) => list.on_scroll_offset(phone.dismiss.follow_list(away)),
+        None => list,
+    }
+}
+
 /// A floating round symbol button with an optional dot (`badge`): native
 /// Liquid Glass where [`native_glass`], else [`round`] with `badge` drawn
 /// on its upper trailing shoulder.
 fn floating_round(
     desk: &Desk,
     key: &'static str,
-    name: &'static str,
+    name: &str,
     icon: &'static rune::Icon,
     symbol: &'static str,
     badge: Option<Color>,
@@ -300,7 +337,7 @@ fn floating_round(
         .key(key)
         .size(p.round(), p.round())
         .radius(p.radius.full)
-        .label(name);
+        .label(name.to_owned());
     let control = crate::mobile::Control {
         key: key.to_owned(),
         label: name.to_owned(),
@@ -319,13 +356,15 @@ fn floating_round(
 }
 
 /// A round control around `content`: the 44-point touch target.
-fn round(key: &'static str, name: &'static str, content: El, p: &Look) -> El {
+fn round(key: &'static str, name: &str, content: El, p: &Look) -> El {
     let circle = el()
         .key(key)
         .size(p.round(), p.round())
         .radius(p.radius.full)
         .center();
-    touchable(surface(circle, p), p).label(name).child(content)
+    touchable(surface(circle, p), p)
+        .label(name.to_owned())
+        .child(content)
 }
 
 pub(super) fn glyph(icon: &'static rune::Icon, size: f32, color: Color) -> El {

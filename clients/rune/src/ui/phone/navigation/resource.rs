@@ -84,7 +84,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
     )
     .key(format!("{}-glyph-{}", place.key(), resource.id));
     control(&row_key, &label, p, move |d, _| {
-        d.close_phone_navigation();
+        d.close_phone_sessions_picked();
         d.show(id.clone(), &session);
     })
     .w_full()

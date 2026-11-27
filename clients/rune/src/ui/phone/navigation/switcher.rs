@@ -8,22 +8,12 @@ use crate::ui::phone::{floating_round, glyph, hosted, touchable};
 pub(super) fn view(desk: &Desk, top: f32, p: &Look) -> El {
     let s = &p.space;
     let r = &p.roles;
+    // Where you are leads, as every page's title does; its close ends the
+    // row, as every page's Done does, beside the way to the whole list.
     let header = row()
         .w_full()
         .items_center()
         .gap(s.s3)
-        .child(
-            floating_round(
-                desk,
-                "phone-switcher-close",
-                "Close switcher",
-                &icons::CLOSE,
-                "xmark",
-                None,
-                p,
-            )
-            .on_press(Desk::close_phone_navigation),
-        )
         .child(
             text("Switch session")
                 .grow(1.0)
@@ -47,6 +37,18 @@ pub(super) fn view(desk: &Desk, top: f32, p: &Look) -> El {
                 d.close_phone_navigation();
                 d.open_phone_sessions();
             }),
+        )
+        .child(
+            floating_round(
+                desk,
+                "phone-switcher-close",
+                "Close switcher",
+                &icons::CLOSE,
+                "xmark",
+                None,
+                p,
+            )
+            .on_press(Desk::close_phone_navigation),
         );
     let body = match desk.switcher_selection() {
         Some((session, index, count)) => col()

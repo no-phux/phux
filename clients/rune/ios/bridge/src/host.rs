@@ -328,9 +328,14 @@ pub unsafe extern "C" fn phux_rune_ios_touch(
             .as_ref()
             .is_some_and(|n| n.active)
         {
-            host.layer
-                .runtime_mut()
-                .touch(identity, phase, x as f32, y as f32, seconds);
+            mobile::touch(
+                host.layer.runtime_mut(),
+                identity,
+                phase,
+                x as f32,
+                y as f32,
+                seconds,
+            );
         }
         Ok(())
     });
