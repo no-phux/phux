@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.61"
+version = "0.1.62"
 dependencies = [
  "async-io",
  "futures-lite",
