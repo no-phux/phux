@@ -175,16 +175,10 @@ async fn expired_peer_join_aborts_and_reaps_the_owned_task_before_returning_fail
     );
 }
 
-async fn advance_before_deadline(deadline: Instant) {
-    // Real-I/O setup leaves a fractional-millisecond origin. Tokio's timer
-    // wheel rounds it up. First prove the operation is still pending just
-    // before expiry, then the caller crosses that one timer tick.
-    tokio::time::advance(
-        deadline
-            .saturating_duration_since(Instant::now())
-            .saturating_sub(Duration::from_millis(1)),
-    )
-    .await;
+async fn wait_before_deadline(deadline: Instant) {
+    // Awaiting a timer drives the wheel; advance() alone does not guarantee
+    // that an elapsed production timer is ready on its next manual poll.
+    tokio::time::sleep_until(deadline - Duration::from_millis(1)).await;
 }
 
 async fn await_socket_stage(
@@ -206,14 +200,16 @@ async fn expire_first_dial(
     recorded: &Recorded,
 ) {
     tokio::time::pause();
-    advance_before_deadline(first.started + options.dial_timeout).await;
+    let dial_deadline = first.started + options.dial_timeout;
+    wait_before_deadline(dial_deadline).await;
     assert!(running.as_mut().now_or_never().is_none());
     assert!(
         !rows(recorded)
             .iter()
             .any(|row| row["phase"] == "dial_deadline")
     );
-    tokio::time::advance(Duration::from_millis(2)).await;
+    // The timer wheel rounds deadlines up to the next millisecond.
+    tokio::time::sleep_until(dial_deadline).await;
     assert!(
         running.as_mut().now_or_never().is_none(),
         "the first deadline walks backoff"
@@ -222,9 +218,12 @@ async fn expire_first_dial(
         .into_iter()
         .find(|row| row["phase"] == "dial_deadline")
         .unwrap();
-    assert!((15_000..=15_001).contains(&deadline["elapsed_ms"].as_u64().unwrap()));
+    assert!(
+        (15_000..=15_001).contains(&deadline["elapsed_ms"].as_u64().unwrap()),
+        "{deadline}"
+    );
     assert_eq!(deadline["attempt"], 1);
-    tokio::time::advance(options.ladder.floor).await;
+    tokio::time::sleep(options.ladder.floor).await;
     assert!(running.as_mut().now_or_never().is_none());
     tokio::time::resume();
 }
@@ -235,18 +234,21 @@ async fn expire_initial_budget(
     options: ConnectOptions,
 ) {
     tokio::time::pause();
-    advance_before_deadline(first.started + options.initial_budget).await;
+    let initial_deadline = first.started + options.initial_budget;
+    wait_before_deadline(initial_deadline).await;
     assert!(
         running.as_mut().now_or_never().is_none(),
         "the original 18s budget has not expired"
     );
-    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::time::sleep_until(initial_deadline).await;
     assert_eq!(running.as_mut().now_or_never(), Some(()));
     tokio::time::resume();
 }
 
 async fn stage_deadlines(stall: Stall) {
-    let recorded = Recorded::default();
+    // Force a real gap between the trace origin and timeout construction
+    // unless the fixture freezes the first poll. Host load can cause this too.
+    let recorded = Recorded::delaying_dial(Duration::from_millis(20));
     let _subscriber = tracing::subscriber::set_default(recorded.clone());
     let signer: Arc<dyn DeviceSigner> = Arc::new(SoftwareSigner::generate());
     let (target, peer, mut ready) = stalled_peer(stall, signer, 2).await;
@@ -264,6 +266,17 @@ async fn stage_deadlines(stall: Stall) {
         fixture.signals,
         wake,
     ));
+    // Align the initial budget, trace origin and dial timeout while the
+    // synchronous first poll runs. Resume before any real socket progress.
+    tokio::time::pause();
+    assert!(running.as_mut().now_or_never().is_none());
+    assert!(
+        rows(&recorded)
+            .iter()
+            .any(|row| row["phase"] == "dial_plan_started"),
+        "the frozen poll must construct the production dial timeout"
+    );
+    tokio::time::resume();
     await_socket_stage(running.as_mut(), &mut ready, Duration::from_secs(5)).await;
     let first = recorded.1.lock().unwrap()[0];
     let stage = match stall {
