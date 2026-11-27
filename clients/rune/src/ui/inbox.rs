@@ -609,6 +609,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
     );
     let drawer = super::phone::swipeable(desk, drawer, Away::Inbox, t);
     super::scrim(el().key("inbox-scrim"), "Inbox", Some(Desk::close_inbox), t)
+        .clip_rounded(0.0)
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 

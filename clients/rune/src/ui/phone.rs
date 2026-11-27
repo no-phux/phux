@@ -297,9 +297,29 @@ pub(in crate::ui) fn swipeable(
     let spring = p.motion.drawer.enter;
     let page = page.live_offset(phone.dismiss.shift.smooth(spring));
     match away.way() {
+        // The Inbox, flush under the top bar, carries a sheet's grabber
+        // to say it pulls down; the palette's search and Cancel lead its
+        // top instead, and Actions and the switcher float as cards.
+        Way::Down if away == crate::desk::phone::dismiss::Away::Inbox => page.child(grabber(p)),
         Way::Down => page,
         Way::Left | Way::Back => page.live_opacity(phone.dismiss.shown.smooth(spring)),
     }
+}
+
+/// A sheet's grabber: out of flow at its top centre, drawing only.
+fn grabber(p: &Tokens) -> El {
+    let s = &p.space;
+    el().key("phone-sheet-grabber")
+        .pin(Some(0.0), Some(s.s1 + s.s0_5), Some(0.0), None)
+        .center()
+        .child(
+            el().w(s.s8 + s.s1)
+                .h(s.s1 + s.s0_5 / 2.0)
+                .radius(p.radius.full)
+                .fill(p.roles.border.control.paint()),
+        )
+        .inert()
+        .a11y_hidden()
 }
 
 /// A list a downward swipe defers to until it is at its top: it reports

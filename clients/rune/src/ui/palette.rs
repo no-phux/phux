@@ -443,9 +443,11 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
                 scroller(results, &g, cap, t),
                 crate::desk::phone::dismiss::Away::Palette,
             ));
-        // A swipe down, from its top, lowers it as Cancel does.
+        // A swipe down, from its top, lowers it as Cancel does, clipped
+        // above the key bar that ends the scrim.
         let away = crate::desk::phone::dismiss::Away::Palette;
-        return scrim.child(super::phone::swipeable(desk, page, away, t));
+        let page = super::phone::swipeable(desk, page, away, t);
+        return scrim.clip_rounded(0.0).child(page);
     }
     let (verb, _) = verb_and_glyph(mode);
     let panel = col()

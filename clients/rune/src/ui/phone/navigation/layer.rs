@@ -15,9 +15,11 @@ use crate::ui::tokens::GlassSurface;
 /// at once.
 pub(super) fn layer(desk: &Desk, page_el: El, page: Page, p: &Look) -> El {
     let drift = p.space.s16;
-    let (away, from) = match page {
-        Page::Sessions => (Away::Sessions, (-drift, 0.0)),
-        _ => (Away::Sheet(page), (0.0, drift)),
+    let drawer = p.motion.drawer;
+    let (away, from, springs) = match page {
+        // The list goes ahead of its frost, which clears after it.
+        Page::Sessions => (Away::Sessions, (-drift, 0.0), lagged(drawer, LIST_LEAD)),
+        _ => (Away::Sheet(page), (0.0, drift), drawer),
     };
     let layer = el()
         .key("phone-navigation-layer")
@@ -25,7 +27,7 @@ pub(super) fn layer(desk: &Desk, page_el: El, page: Page, p: &Look) -> El {
         .transition(
             rune::Transition::offset(from.0, from.1)
                 .combined(rune::Transition::opacity())
-                .springs(p.motion.drawer),
+                .springs(springs),
         )
         .child(page_el);
     crate::ui::phone::swipeable(desk, layer, away, p)
@@ -74,15 +76,28 @@ pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
         p.roles.layer.ground,
         thick,
     );
-    // A swipe toward the edge leaves it whole while the list goes, so
-    // the terminal never shows crisp through the list; it clears as the
-    // drawer closes.
+    // A swipe toward the edge leaves it whole while the list goes, and it
+    // clears on a longer exit than the list's, so the terminal never shows
+    // crisp through a fading list (the dismiss motion sidecars' frost and
+    // list opacities).
     Some(
         frost
-            .transition(rune::Transition::opacity().springs(p.motion.drawer))
+            .transition(rune::Transition::opacity().springs(lagged(p.motion.drawer, FROST_LAG)))
             .inert()
             .a11y_hidden(),
     )
+}
+
+/// Sessions' exit against the drawer's: the list goes in a little over
+/// half its time, and the frost under it clears in half as long again, so
+/// the list is gone before the terminal shows crisp through the frost.
+const LIST_LEAD: f32 = 0.6;
+const FROST_LAG: f32 = 1.5;
+
+/// The drawer's springs with the exit taking `scale` times as long.
+fn lagged(drawer: rune::SpringPair, scale: f32) -> rune::SpringPair {
+    let exit = rune::Spring::new(drawer.exit.duration * scale, drawer.exit.bounce);
+    rune::SpringPair::new(drawer.enter, exit)
 }
 
 fn glass(panel: El, p: &Look) -> El {

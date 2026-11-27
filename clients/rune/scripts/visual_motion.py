@@ -17,7 +17,7 @@ BATCHED_SWIPE_FRAMES = {
 DISMISS_FRAMES = {
     "idle": 0, "mid-drag": 1, "short-release": 2, "short-release-plus-100ms": 8,
     "short-settled": 68, "past-commit": 69, "release": 70, "release-plus-100ms": 76,
-    "settled": 136,
+    "release-plus-200ms": 82, "settled": 136,
 }
 DISMISS_GESTURES = (
     "sessions-left", "actions-down", "switcher-down", "inbox-down", "palette-down",

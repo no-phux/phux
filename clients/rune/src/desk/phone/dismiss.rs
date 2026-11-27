@@ -421,9 +421,17 @@ fn lifted(rt: &mut Runtime<Desk>, id: u64, at: [f32; 2], time: f64, cancelled: b
     let leaves =
         !cancelled && along > 0.0 && across.commits(along, f.extent, COMMIT, FLICK_MIN, time);
     if leaves {
+        let still = rt.system_reduced_motion();
         rt.update(|d, tx| {
             // A finger caused it: the page's exit plays from where it is.
-            tx.animated();
+            // Under Reduce Motion it is gone at once, frost and all, as a
+            // short swipe lands home at once, rather than fade a list
+            // over a frost fading at the same pace.
+            if still {
+                tx.instant();
+            } else {
+                tx.animated();
+            }
             d.swiped_away(f.away, tx);
             if let Some(phone) = d.phone.as_mut() {
                 phone.dismiss.renew();

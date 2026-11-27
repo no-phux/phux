@@ -165,6 +165,8 @@ fn frames(
                 // mid-drag, home again once settled.
                 "drawn_rect": rt.presented(gesture.layer).map(|(rect, _)| rect),
                 "drawn_opacity": rt.presented(gesture.layer).map(|(_, opacity)| opacity),
+                // Sessions' frost under it: never clearer than the list.
+                "frost_opacity": rt.presented("phone-drawer-frost").map(|(_, opacity)| opacity),
                 "page_on_top": format!("{:?}", rt.state.swipe_away()),
             }))
             .unwrap(),
@@ -245,7 +247,13 @@ fn frames(
         rt.frame(1.0 / 60.0);
     }
     capture(&mut rt, "release-plus-100ms", 76);
-    for _ in 0..60 {
+    frost_outlasts_the_list(&rt, gesture, &name);
+    for _ in 0..6 {
+        rt.frame(1.0 / 60.0);
+    }
+    capture(&mut rt, "release-plus-200ms", 82);
+    frost_outlasts_the_list(&rt, gesture, &name);
+    for _ in 0..54 {
         rt.frame(1.0 / 60.0);
     }
     capture(&mut rt, "settled", 136);
@@ -255,4 +263,18 @@ fn frames(
         assert_ne!(rt.state.swipe_away(), Some(gesture.away), "{name} left");
     }
     no_terminal_input(&client);
+}
+
+/// Sessions leaving: its frost stays thicker than the list on it, so the
+/// list never shows over a terminal the frost has already cleared from.
+fn frost_outlasts_the_list(rt: &Runtime<Desk>, gesture: &Gesture, name: &str) {
+    if gesture.away != Away::Sessions {
+        return;
+    }
+    let list = rt.presented(gesture.layer).map_or(0.0, |(_, o)| o);
+    let frost = rt.presented("phone-drawer-frost").map_or(0.0, |(_, o)| o);
+    assert!(
+        list <= 0.02 || list <= frost * frost,
+        "{name}: list {list} over frost {frost}"
+    );
 }

@@ -63,7 +63,7 @@ class MotionReview(unittest.TestCase):
 
     def test_dismiss_swipes_bind_both_let_goes_and_name_their_own_stage(self):
         inventory = dismiss_inventory()
-        self.assertEqual(len(inventory), 432)
+        self.assertEqual(len(inventory), 480)
         self.fixture.populate(inventory)
         for case in self.fixture.produce()["cases"]:
             if not case["png"].startswith("navigation/dismiss-"):
