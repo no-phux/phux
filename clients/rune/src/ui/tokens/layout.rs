@@ -11,13 +11,20 @@ pub(crate) struct Overlay {
     /// The command palette; the phone column's measure.
     pub(crate) palette_w: f32,
     /// Where the palette sits under the window's top: clear of the title
-    /// bar on the desktop, flush on the phone.
+    /// bar, or in a short window this share of its height, never closer
+    /// than the least.
     pub(crate) palette_top: f32,
-    pub(crate) palette_top_phone: f32,
+    pub(crate) palette_top_share: f32,
+    pub(crate) palette_top_min: f32,
+    /// The palette's field row: room for the query, a chip and a count.
+    pub(crate) palette_header_h: f32,
     /// The path picker, narrower, at the cursor.
     pub(crate) paths_w: f32,
     pub(crate) paths_h: f32,
-    /// How tall the palette's rows may grow before they scroll.
+    /// How tall the palette's rows may grow before they scroll: the list's
+    /// insets and eleven and a half 32 pt rows. The palette moves it up to
+    /// the middle of the row it ends in, past whatever headings took, so
+    /// half a row says more lies below.
     pub(crate) palette_rows_h: f32,
     pub(crate) paths_rows_h: f32,
     /// The inbox drawer.
@@ -41,10 +48,12 @@ pub(crate) struct Overlay {
 pub(crate) const OVERLAY: Overlay = Overlay {
     palette_w: LAYOUT.content_max.phone_column,
     palette_top: 96.0,
-    palette_top_phone: SPACE.s2,
+    palette_top_share: 0.18,
+    palette_top_min: SPACE.s6,
+    palette_header_h: SPACE.s12 + SPACE.s1,
     paths_w: 460.0,
     paths_h: 340.0,
-    palette_rows_h: 380.0,
+    palette_rows_h: 2.0 * SPACE.s2 + 11.5 * SPACE.s8,
     paths_rows_h: 240.0,
     drawer_w: 400.0,
     ask_w: 340.0,

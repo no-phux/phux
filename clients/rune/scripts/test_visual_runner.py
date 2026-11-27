@@ -28,7 +28,7 @@ class VisualRunner(unittest.TestCase):
         scripts = repo / "clients/rune/scripts"
         scripts.mkdir(parents=True)
         for name in ("visual-review.sh", "visual_review.py", "visual_motion.py",
-                     "visual_navigation.py", "visual_states.py", "visual_themes.py", "visual_acp.py"):
+                     "visual_navigation.py", "visual_palette.py", "visual_states.py", "visual_themes.py", "visual_acp.py"):
             shutil.copyfile(Path(__file__).with_name(name), scripts / name)
         (scripts.parent / "Cargo.toml").write_text('rune = { rev = "test-pin" }\n')
         for args in (["init", "-q"], ["add", "."],
@@ -57,10 +57,10 @@ class VisualRunner(unittest.TestCase):
                                 env=environment, cwd=self.root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         manifest = json.loads((out / "manifest.json").read_text())
-        self.assertEqual(len(manifest["cases"]), 1905)
+        self.assertEqual(len(manifest["cases"]), 1961)
         self.assertEqual(manifest["currentRunePin"], "test-pin")
         self.assertFalse(manifest["dirty"])
-        self.assertEqual(len(list((out / "logs").glob("*.log"))), 28)
+        self.assertEqual(len(list((out / "logs").glob("*.log"))), 29)
         self.assertEqual(seed.read_bytes(), seed_bytes)
         self.assertEqual({path.relative_to(private_seed).as_posix(): path.read_bytes()
                           for path in private_seed.rglob("*") if path.is_file()},

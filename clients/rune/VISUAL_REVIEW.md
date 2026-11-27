@@ -45,7 +45,8 @@ diff identities. Run new fixtures against baseline in an isolated worktree;
 distinguish fixture-only from app changes. Candidate captures are not "before".
 
 The runner reuses real Rune `Runtime<Desk>`/GPU exporters for Settings,
-navigation, resources and `phone_inbox_visual_review_frames`, not mock HTML
+navigation, the command palette (`palette_visual_review_frames`), resources
+and `phone_inbox_visual_review_frames`, not mock HTML
 or a second UI. Extend coverage near behavior tests. Use deterministic IDs,
 realistic text, fixed timing and explicit settling. Seed inventory, then use
 actual handlers/events for the interaction under review.
@@ -65,6 +66,7 @@ Keep a populated core gallery every tick, not just the selected happy path:
 | Settings | Grouped sections and current values; category drill-down; long labels; typed search/no match; in-progress update feedback. |
 | Phone navigation | Several sessions and panes with long names/folders; mixed working/attention/quiet states; current pane; scrolled bottom; matching search with keyboard and no matches. |
 | Attention and contrast | Populated desktop sidebar and selected tab with a waiting agent; Inbox closed, keyboard-focused via Focus Sidebar then Shift+Tab, and opened with Space (native button activation). Normal and forced colours, light/dark, 1100×720 and 640×360, at true 2×. Phone Inbox remains in the existing core matrix; phone tabs have no attention glow. |
+| Command palette | Populated terminals with working, blocked and done agents, sessions, commands; empty list, typed matches, no match, Themes and Sessions modes; phone keyboard up and largest text. 1100×720, 640×360, 393×852, 320×568, light/dark, 2×. |
 | Resources | Actual decoded image beside a structured native document/accessibility tree; readable text and labels, not an empty placeholder. |
 | Phone Inbox | Populated questions and approvals, long agent/detail text, suggested replies; focused reply with keyboard; empty state and a safe dismiss path. Delivery cases include pending, acknowledged, refused and unconfirmed answers, plus a newer draft and another question before an older receipt. |
 

@@ -123,6 +123,23 @@ icon!(
     "M2.5 4.5a1 1 0 0 1 1-1h2.5L7.5 5h5a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z"
 );
 icon!(ARROW_LEFT, "phux-arrow-left", "M13 8H3M7 4L3 8l4 4");
+icon!(ARROW_RIGHT, "phux-arrow-right", "M3 8h10M9 4l4 4-4 4");
+icon!(
+    REFRESH,
+    "phux-refresh",
+    "M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3"
+);
+// The command key: a palette row with no glyph of its own.
+icon!(
+    COMMAND,
+    "phux-command",
+    "M6 6h4v4H6zM6 6V4.5a1.5 1.5 0 1 0-1.5 1.5H6M10 6V4.5a1.5 1.5 0 1 1 1.5 1.5H10M6 10v1.5a1.5 1.5 0 1 1-1.5-1.5H6M10 10v1.5a1.5 1.5 0 1 0 1.5-1.5H10"
+);
+icon!(
+    CAMERA,
+    "phux-camera",
+    "M2.5 5.5a1 1 0 0 1 1-1h2l1-1.5h3l1 1.5h2a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1zM8 10.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"
+);
 icon!(
     PUZZLE,
     "phux-puzzle",

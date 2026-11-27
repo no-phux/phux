@@ -69,6 +69,7 @@ impl Desk {
             self.refresh_plugin_actions();
         }
         self.palette_picked = 0;
+        self.palette_keyed = false;
         self.palette_query.clear();
         // Ask once; the runtime keeps the field's focus from here.
         self.palette_query.focused = true;
@@ -190,7 +191,7 @@ impl Desk {
                     native,
                     self.resource_items(),
                 );
-                palette::rank(items, query)
+                self.sectioned(palette::rank(items, query))
             }
             Mode::All => {
                 // The quick terminal's own action leads; then terminals,
@@ -202,7 +203,7 @@ impl Desk {
                     .then(|| palette::Item {
                         title: "Move to a Tab".to_owned(),
                         detail: "into the main window".to_owned(),
-                        kind: "action",
+                        kind: palette::sections::SUGGESTED_KIND,
                         target: Target::MoveToTab,
                     })
                     .into_iter()
@@ -229,7 +230,8 @@ impl Desk {
                 items.push(super::size_lock::item(self.connection.size_locked));
                 items.extend(self.resource_items());
                 let listed: Vec<_> = shown.into_iter().map(|r| r.id).collect();
-                palette::rank_grouped(items, &self.palette_tabs(&listed), query)
+                let tabs = self.palette_tabs(&listed);
+                self.sectioned(palette::rank_grouped(items, &tabs, query))
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
             Mode::Screens => self.screen_hits(query),
@@ -273,6 +275,37 @@ impl Desk {
         }
     }
 
+    /// Whether a palette row is a terminal asking for you.
+    fn palette_urgent(&self, item: &palette::Item) -> bool {
+        match &item.target {
+            Target::Terminal { id, .. } => self.activities.mark(id).needs_you(),
+            _ => false,
+        }
+    }
+
+    /// The general palette's `hits` in sections (`palette::sections`).
+    fn sectioned(&self, hits: Vec<Hit>) -> Vec<Hit> {
+        let query = &self.palette_query.text;
+        palette::sections::arrange(hits, query, |item| self.palette_urgent(item))
+    }
+
+    /// Where the palette's section headings sit in `hits`, as
+    /// `palette_hits` arranged them: the general list's and the session
+    /// picker's (its sessions, then what typing would create).
+    pub fn palette_headings(&self, hits: &[Hit]) -> Vec<(usize, &'static str)> {
+        if !matches!(self.palette_mode, Mode::All | Mode::Sessions) {
+            return Vec::new();
+        }
+        let query = &self.palette_query.text;
+        palette::sections::headings(hits, query, |item| self.palette_urgent(item))
+    }
+
+    /// The theme the palette keeps on Escape: the one it opened over while
+    /// the highlight previews others.
+    pub fn kept_theme(&self) -> Option<&'static crate::theme::Theme> {
+        self.theme_before.unwrap_or(self.settings.theme)
+    }
+
     /// The point under the focused pane's cursor, in window points, where
     /// the path picker opens.
     pub fn cursor_point(&self) -> Option<[f32; 2]> {
@@ -306,6 +339,11 @@ impl Desk {
         // Only the rendered rows can be highlighted.
         let count = self.palette_hits().len().min(palette::ROWS);
         match event.key {
+            // The first press on a phone's touch list shows the row Return
+            // runs before it moves anything.
+            Key::Down | Key::Tab | Key::Up if count > 0 && !self.palette_pick_shown() => {
+                self.palette_keyed = true;
+            }
             Key::Down | Key::Tab if count > 0 => {
                 self.palette_picked = (self.palette_picked + 1) % count
             }
@@ -321,8 +359,24 @@ impl Desk {
         true
     }
 
-    /// Run the highlighted row, or the row at `index`.
+    /// Whether the picked row is drawn as picked. A phone's touch list
+    /// shows none until a query, an arrow or the Themes preview makes one
+    /// the row Return runs.
+    pub fn palette_pick_shown(&self) -> bool {
+        self.phone.is_none()
+            || self.palette_keyed
+            || self.palette_mode == Mode::Themes
+            || !self.palette_query.text.trim().is_empty()
+    }
+
+    /// Run the highlighted row, or the row at `index`. Return never runs a
+    /// row nobody can see picked: on a phone's untouched list it shows the
+    /// first one instead, and a second Return runs it.
     pub fn palette_run(&mut self, index: Option<usize>, tx: &mut Tx) {
+        if index.is_none() && !self.palette_pick_shown() {
+            self.palette_keyed = true;
+            return;
+        }
         let hits = self.palette_hits();
         let picked = self.palette_picked.min(hits.len().saturating_sub(1));
         let Some(hit) = hits.get(index.unwrap_or(picked)).cloned() else {

@@ -1,103 +1,450 @@
-//! The command palette overlay: a scrim, a field, and ranked rows; and the
-//! context menu, the kit's.
+//! The command palette: a field over ranked rows in sections, on one
+//! column grid; and the context menu, the kit's.
+//!
+//! On a desktop it floats as a glass panel under the window's top. On a
+//! phone it is a page, as the Sessions page is: a search field with
+//! Cancel over grouped cards, filling the room above the keyboard.
+
+use std::ops::Range;
 
 use crate::ui::tokens::Voice;
-use rune::{Cursor, El, PointerPress, Span, col, el, rich, row, text, text_input};
-use rune_kit::{MenuItem, context_menu as kit_menu};
+use rune::{El, col, el, row, text};
 
+use super::icons;
 use super::overlay::{EXTENTS, Glass, empty_note, glass, key_hint, pop};
-use super::tokens::{Paint, Tier, Tokens};
-use super::{icons, kit_overlay};
-use crate::desk::{CONTEXT_MENU, Desk, TAB_MENU};
-use crate::keys::{self, Shortcut};
-use crate::palette::{Hit, Mode, Target};
+use super::tokens::{Paint, Tier, Tokens, Type};
+use crate::desk::Desk;
+use crate::palette::{Hit, Mode};
 use crate::ui::Cover;
 
-/// `top` is the room above the panel; a short window scrolls its rows.
-pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
-    let t = p;
+mod header;
+mod marks;
+mod menu;
+mod rows;
+use header::{desktop_header, phone_header, verb_and_glyph};
+pub use menu::context_menu;
+use rows::Rows;
+#[cfg(test)]
+use rows::details_keys;
+
+/// The palette's one column grid. Every leading edge (the field's glyph,
+/// the rows' marks, the section headings, the footer's keys) sits
+/// [`Grid::lead`] in from the panel or page; every text (the query, the
+/// rows' titles) at [`Grid::text`].
+#[derive(Clone, Copy)]
+pub(super) struct Grid {
+    /// The list's inset: from the panel on a desktop, from the page's edge
+    /// to a card's rows on a phone.
+    pub inset: f32,
+    /// A row's own padding before its mark.
+    pub pad: f32,
+    /// The marks' column.
+    pub slot: f32,
+    /// Between a mark and its title.
+    pub gap: f32,
+    pub row_h: f32,
+    /// The form's type roles: a phone's are its own.
+    pub ty: Type,
+    pub phone: bool,
+}
+
+impl Grid {
+    fn new(t: &Tokens, phone: bool) -> Self {
+        let s = &t.space;
+        if phone {
+            Self {
+                // A card's rows run to its edges, as an iOS grouped list's
+                // cells do: the row pads its mark in.
+                inset: super::tokens::phone::page_margin(),
+                pad: s.s3 + s.s1,
+                // The Sessions page's leading column: its step up to the
+                // grid's text cap, then as wide as the grown mark and a step.
+                slot: ((s.s5 + s.s1) * t.type_scale.min(crate::desk::accessibility::GRID_CAP))
+                    .max(t.icon.size.md + s.s1),
+                gap: s.s2,
+                row_h: s.row_h_touch,
+                ty: super::tokens::phone::ty(t.type_scale),
+                phone,
+            }
+        } else {
+            Self {
+                inset: s.s2,
+                pad: s.s2,
+                slot: s.s6,
+                gap: s.s3,
+                row_h: s.s8,
+                ty: t.ty,
+                phone,
+            }
+        }
+    }
+
+    /// The marks' column, from the panel's (or page's) edge.
+    pub(super) fn lead(&self) -> f32 {
+        self.inset + self.pad
+    }
+
+    /// The titles' column, from the panel's (or page's) edge.
+    pub(super) fn text(&self) -> f32 {
+        self.lead() + self.slot + self.gap
+    }
+
+    /// Where the list's rows are inset from: the panel on a desktop, the
+    /// page's margin on a phone.
+    fn list_edge(&self) -> f32 {
+        if self.phone {
+            super::tokens::phone::page_margin()
+        } else {
+            self.inset
+        }
+    }
+
+    /// The marks' column cell for `mark`: centred on a desktop; on a phone
+    /// at the column's leading edge, as the Sessions page sets its marks.
+    pub(super) fn mark_cell(&self, key: String, mark: El) -> El {
+        if self.phone {
+            row().key(key).w(self.slot).items_center().child(mark)
+        } else {
+            el().key(key).w(self.slot).center().child(mark)
+        }
+    }
+
+    /// A row's corners, nested in what holds it by the list's inset. A
+    /// phone's rows are square: their card's corners clip them.
+    pub(super) fn row_radius(&self, t: &Tokens) -> f32 {
+        if self.phone {
+            0.0
+        } else {
+            t.nested(t.radius.lg, self.inset)
+        }
+    }
+}
+
+/// A section's heading on the marks' column, never a row the arrows land
+/// on. A desktop's is a quiet caption over its flat rows; a phone's is set
+/// as the Sessions page sets a section's name over its card. Needs you
+/// counts its rows in its tone, with its mark, as that page's heading does.
+fn heading(title: &'static str, rows: Range<usize>, g: &Grid, t: &Tokens) -> El {
     let s = &t.space;
-    let r = &t.roles;
-    let hits = desk.palette_hits();
-    let picked = desk.palette_picked.min(hits.len().saturating_sub(1));
-    let mode = desk.palette_mode;
-    let phone = desk.phone.is_some();
-    let prompt = match mode {
-        Mode::All if phone => "Search commands and terminals…",
-        Mode::All => "Jump to a terminal, session, or action…",
-        Mode::Mirror(source) => source.prompt(),
-        Mode::Shortcuts => "Filter keyboard shortcuts…",
-        Mode::Essentials => "The keys worth learning first; pick one to try it…",
-        Mode::Playground => "Open a playground scene…",
-        Mode::Sessions => "Switch session, or name a new one…",
-        Mode::Themes => "Preview a theme…",
-        Mode::Paths => "Find a file or folder…",
-        Mode::Screens => "Filter displays and windows…",
-        Mode::Popup => "A command to run in a popup…",
+    let at = rows.start;
+    let count = (title == crate::palette::sections::NEEDS_YOU).then(|| rows.len());
+    let label = count.map_or_else(|| title.to_owned(), |n| format!("{title}, {n}"));
+    let needs = t.status.state(phux_design::State::NeedsYou);
+    let (font, ink) = if g.phone {
+        (g.ty.lead.semibold(), t.roles.text.text.paint())
+    } else {
+        (g.ty.caption.semibold(), t.roles.text.dim.paint())
     };
-    let (open, glyph) = match mode {
-        Mode::Paths => ("insert", &icons::FOLDER),
-        Mode::Themes => ("keep", &icons::PALETTE),
-        Mode::Sessions => ("switch", &icons::WINDOW),
-        _ => ("open", &icons::SEARCH),
+    let name = text(title).font(font).color(ink).grow(1.0).min_w(0.0);
+    // Whole, wrapped, at the accessibility sizes, as the Sessions page
+    // sets a section's name; one line otherwise.
+    let name = if g.phone && t.type_scale >= super::tokens::layout::PHONE.stacked_title_scale {
+        name.wrap()
+    } else {
+        name.truncate()
     };
-    let field = text_input(&desk.palette_query, t.ty.lead)
-        .key("palette-query")
-        .label("Command search")
-        .single_line()
-        .grow(1.0)
-        .color(r.text.text.paint())
-        .placeholder(prompt, r.text.faint.paint())
-        .on_edit(|d: &mut Desk| &mut d.palette_query)
-        .on_input_key(|d: &mut Desk, event, tx| d.palette_key(event, tx))
-        .on_input_change(|d: &mut Desk, _| d.palette_edited())
-        .on_submit(|d: &mut Desk, tx| d.palette_run(None, tx));
-    // One list the arrows walk, its picked row the keyboard's cursor.
+    row()
+        .key(format!("palette-section-{at}"))
+        .w_full()
+        .pl(g.pad)
+        .pr(g.pad)
+        .pt(heading_top(at, g, t))
+        .pb(s.s1)
+        .gap(s.s2)
+        .items_center()
+        .role("heading")
+        .label(label)
+        .child(name.a11y_hidden())
+        .children(count.map(|n| {
+            row()
+                .key("palette-needs-you-count")
+                .gap(s.s1)
+                .items_center()
+                .a11y_hidden()
+                .children(
+                    g.phone
+                        .then(|| rune::icon(needs.icon, t.icon.size.xs).color(needs.tone.ink)),
+                )
+                .child(
+                    text(n.to_string())
+                        .font(g.ty.caption.semibold().figures())
+                        .color(needs.tone.ink),
+                )
+        }))
+}
+
+/// The phone's grouped cards and search bar, as the Sessions page fills
+/// its own: one step up from the page, so a card reads as a card on dark
+/// as it does on light.
+pub(super) fn card_fill(t: &Tokens) -> rune::Color {
+    if t.dark() {
+        t.roles.layer.overlay.paint()
+    } else {
+        t.roles.layer.raised.paint()
+    }
+}
+
+/// The list's runs: each heading's title and the rows under it, or one
+/// untitled run when the list has no sections.
+fn runs(
+    headings: &[(usize, &'static str)],
+    len: usize,
+) -> Vec<(Option<&'static str>, Range<usize>)> {
+    if headings.is_empty() {
+        return vec![(None, 0..len)];
+    }
+    let ends = headings.iter().skip(1).map(|(at, _)| *at).chain([len]);
+    headings
+        .iter()
+        .zip(ends)
+        .map(|(&(at, title), end)| (Some(title), at..end))
+        .collect()
+}
+
+/// A phone's run of rows: one grouped card, a hairline between rows from
+/// the titles' column to the card's trailing edge, as an iOS grouped
+/// list's separators run. A picked row fills to the card's edges, its
+/// corners the card's.
+fn card(rows: &Rows<'_>, hits: &[Hit], range: Range<usize>) -> El {
+    let t = rows.t;
+    let s = &t.space;
+    let g = &rows.grid;
+    let mut card = col()
+        .w_full()
+        .radius(t.radius.xl)
+        .continuous_corners()
+        .clip_rounded(t.radius.xl)
+        .fill(card_fill(t));
+    let first = range.start;
+    for index in range {
+        if index > first {
+            card = card.child(
+                el().w_full()
+                    .pl(g.pad + g.slot + g.gap)
+                    .child(
+                        el().w_full()
+                            .h(s.hairline)
+                            .fill(t.roles.border.muted.paint()),
+                    )
+                    .a11y_hidden(),
+            );
+        }
+        card = card.child(rows.row(&hits[index], index));
+    }
+    card
+}
+
+/// The ranked rows in their sections: flat under headings on a desktop,
+/// a card per section on a phone.
+fn list(rows: &Rows<'_>, hits: &[Hit], headings: &[(usize, &'static str)]) -> El {
+    let t = rows.t;
+    let g = &rows.grid;
     let mut results = col()
         .key("palette-results")
         .role("listbox")
         .label("Results")
         .focus_group()
-        .w_full()
-        .padding(s.s1);
-    for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
-        results = results.child(hit_row(hit, index, index == picked, phone, t));
-    }
-    let search = desk.connection.paths.as_ref();
-    let empty = match search {
-        Some(s) if s.searching() => "Searching…",
-        Some(s) if s.note.is_some() && hits.is_empty() => s.note.as_deref().unwrap_or_default(),
-        _ if mode == Mode::Screens && hits.is_empty() => {
-            desk.connection.resources.screens.empty_text()
-        }
-        _ => "Nothing matches",
+        .w_full();
+    results = if g.phone {
+        let margin = super::tokens::phone::page_margin();
+        // An unsectioned list (Themes) keeps a heading's room above it.
+        let top = if headings.is_empty() {
+            t.space.s4
+        } else {
+            t.space.s1
+        };
+        results.px(margin).pt(top).pb(t.space.s4).gap(t.space.s1)
+    } else {
+        results.padding(g.inset)
     };
-    let query = desk.palette_query.text.trim();
-    if hits.is_empty() && phone && search.is_none() && !query.is_empty() {
-        results = results.child(no_results(query, t));
-    } else if hits.is_empty() {
-        results = results.child(empty_note(empty, t));
-    } else if let Some(note) = search.and_then(|s| s.note.clone()) {
-        results = results.child(
-            el().w_full()
-                .px(s.s3)
-                .py(s.s1)
-                .child(text(note).font(t.ty.caption).color(r.text.dim.paint())),
-        );
+    for (title, range) in runs(headings, hits.len()) {
+        if let Some(title) = title {
+            results = results.child(heading(title, range.clone(), g, t));
+        }
+        if g.phone {
+            results = results.child(card(rows, hits, range));
+        } else {
+            for index in range {
+                results = results.child(rows.row(&hits[index], index));
+            }
+        }
     }
-    let (width, rows_h) = if mode == Mode::Paths {
+    results
+}
+
+/// What stands in the list when it has no rows, or a note under them.
+fn notes(desk: &Desk, results: El, hits: &[Hit], g: &Grid, t: &Tokens) -> El {
+    let search = desk.connection.paths.as_ref();
+    let query = desk.palette_query.text.trim();
+    if hits.is_empty() && search.is_none() && !query.is_empty() {
+        return results.child(no_results(query, desk.palette_mode, g, t));
+    }
+    if hits.is_empty() {
+        let empty = match search {
+            Some(s) if s.searching() => "Searching…",
+            Some(s) if s.note.is_some() => s.note.as_deref().unwrap_or_default(),
+            _ if desk.palette_mode == Mode::Screens => {
+                desk.connection.resources.screens.empty_text()
+            }
+            _ => "Nothing matches",
+        };
+        return results.child(empty_note(empty, t));
+    }
+    match search.and_then(|s| s.note.clone()) {
+        Some(note) => results.child(
+            el().w_full()
+                .pl(g.text() - g.list_edge())
+                .pr(g.pad)
+                .py(t.space.s1)
+                .child(
+                    text(note)
+                        .font(g.ty.caption)
+                        .color(t.roles.text.dim.paint()),
+                ),
+        ),
+        None => results,
+    }
+}
+
+fn rows<'a>(desk: &'a Desk, t: &'a Tokens, g: Grid, hits: &[Hit], bare_themes: bool) -> Rows<'a> {
+    let current_terminal = desk.connection.shown.as_ref().map(|s| s.resource.clone());
+    Rows {
+        desk,
+        t,
+        grid: g,
+        picked: desk.palette_picked.min(hits.len().saturating_sub(1)),
+        wash: desk.palette_pick_shown(),
+        ground: if g.phone {
+            card_fill(t)
+        } else {
+            t.roles.layer.overlay.paint()
+        },
+        bare_themes,
+        shown: desk.addressable(),
+        current_terminal,
+        current_session: desk.selected_session_name(),
+        kept_theme: desk.kept_theme().map(|theme| theme.id),
+        checks: hits.iter().any(|hit| rows::can_be_current(&hit.item)),
+    }
+}
+
+/// The list that scrolls: up to its cap on a desktop, the page's height
+/// on a phone. A row cut by the edge fades rather than slicing mid-glyph,
+/// and says more lies below.
+fn scroller(content: El, g: &Grid, cap: f32, t: &Tokens) -> El {
+    let list = col()
+        .key("palette-scroll")
+        .w_full()
+        .shrink()
+        .min_h(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(content);
+    if g.phone {
+        list.grow(1.0).scroll_edge_fade(t.space.s8)
+    } else {
+        // The fade spans the half row the cap leaves, so it reads as a
+        // row going on, not a smudge.
+        list.max_h(cap).scroll_edge_fade(t.space.s4)
+    }
+}
+
+/// The desktop list's height: `base`, moved up to the middle of the row
+/// it would end in, so half a row always says more lies below, whatever
+/// the headings above it took.
+fn half_row_cap(
+    base: f32,
+    hits: &[Hit],
+    headings: &[(usize, &'static str)],
+    g: &Grid,
+    t: &Tokens,
+) -> f32 {
+    let s = &t.space;
+    let row_h = g.row_h.max(g.ty.body.line_px() + 2.0 * s.s1);
+    let mut y = g.inset;
+    let mut last_mid = None;
+    for (title, range) in runs(headings, hits.len()) {
+        if title.is_some() {
+            y += heading_top(range.start, g, t) + g.ty.caption.line_px() + s.s1;
+        }
+        for _ in range {
+            let mid = y + row_h / 2.0;
+            if y + row_h > base {
+                // A heading the cut would split gives way to the row above.
+                return if mid <= base {
+                    mid
+                } else {
+                    last_mid.unwrap_or(base)
+                };
+            }
+            last_mid = Some(mid);
+            y += row_h;
+        }
+    }
+    base
+}
+
+/// The room over a section's heading: less over the list's first.
+fn heading_top(at: usize, g: &Grid, t: &Tokens) -> f32 {
+    if g.phone || at > 0 {
+        t.space.s3
+    } else {
+        t.space.s1
+    }
+}
+
+/// `top` is the room above the panel (a phone's top inset); a short window
+/// scrolls its rows.
+pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
+    let t = p;
+    let s = &t.space;
+    let r = &t.roles;
+    let phone = desk.phone.is_some();
+    let mode = desk.palette_mode;
+    let g = Grid::new(t, phone);
+    let hits = desk.palette_hits();
+    // Counted before the list is cut to its rows.
+    let found = hits.len();
+    let hits = &hits[..found.min(crate::palette::ROWS)];
+    let headings = desk.palette_headings(hits);
+    let bare = mode == Mode::Themes || !headings.is_empty();
+    let rows = rows(desk, t, g, hits, bare);
+    let results = notes(desk, list(&rows, hits, &headings), hits, &g, t);
+    let (width, cap) = if mode == Mode::Paths {
         (EXTENTS.paths_w, EXTENTS.paths_rows_h)
     } else {
         (EXTENTS.palette_w, EXTENTS.palette_rows_h)
     };
+    let cap = half_row_cap(cap, hits, &headings, &g, t);
     let rule = |key: &'static str| {
         rune::rule(s.hairline, r.border.base.paint())
             .w_full()
             .key(key)
     };
+    let scrim = el()
+        .key("palette-scrim")
+        .cover()
+        .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
+        .transition(rune::Transition::opacity())
+        .modal(true, |d: &mut Desk| d.close_palette());
+    if phone {
+        let page = col()
+            .key("palette")
+            .w_full()
+            .h_full()
+            .pt(top)
+            .fill(r.layer.ground.paint())
+            .transition(rune::Transition::opacity())
+            .child(phone_header(desk, t, &g))
+            .child(rule("palette-header-rule"))
+            .child(scroller(results, &g, cap, t));
+        return scrim.child(page);
+    }
+    let (verb, _) = verb_and_glyph(mode);
     let panel = col()
         .key("palette")
-        // A narrow window (the phone form) takes what it has.
+        // A narrow window takes what it has.
         .w_full()
         .max_w(width)
         .shrink()
@@ -106,125 +453,122 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
         .clip_rounded(t.radius.lg)
         .border(s.hairline, r.border.base.paint())
         .transition(pop(t))
-        .child(
-            row()
-                .w_full()
-                .h(s.s12)
-                .px(s.s4)
-                .gap(s.s3)
-                .items_center()
-                .child(
-                    rune::icon(glyph, t.icon.size.md)
-                        .color(r.accent.accent_text.paint())
-                        .a11y_hidden(),
-                )
-                .child(field),
-        )
+        .child(desktop_header(desk, t, &g, found))
         .child(rule("palette-header-rule"))
+        .child(scroller(results, &g, cap, t))
+        .child(rule("palette-footer-rule"))
         .child(
-            col()
-                .w_full()
-                .max_h(rows_h)
-                .shrink()
-                .min_h(0.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                // A row cut by the footer rule fades rather than slicing
-                // mid-glyph, and says more lies below.
-                .scroll_edge_fade(t.space.s6)
-                .child(results),
-        )
-        // A phone taps its rows; the keys this footer teaches are a desktop's.
-        .children((!phone).then(|| rule("palette-footer-rule")))
-        .children((!phone).then(|| {
             row()
+                .key("palette-footer")
                 .w_full()
-                .px(s.s3)
+                .px(g.lead())
                 .py(s.s2)
-                .gap(s.s3)
-                .child(key_hint("↑↓", "move", t))
-                .child(key_hint("↩", open, t))
-                .child(key_hint("esc", "close", t))
-        }));
+                .gap(s.s4)
+                .items_center()
+                // Nothing to move to or open: only Escape does anything.
+                .children((!hits.is_empty()).then(|| key_hint("↑↓", "move", t)))
+                .children((!hits.is_empty()).then(|| key_hint("↩", verb, t)))
+                .child(key_hint("esc", "close", t)),
+        );
     let panel = t.elevate(
-        glass(panel, t, r.layer.overlay, Glass::Overlay, phone),
+        glass(panel, t, r.layer.overlay, Glass::Overlay, false),
         Tier::Overlay,
     );
-    let scrim = el()
-        .key("palette-scrim")
-        .cover()
-        .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
-        .transition(rune::Transition::opacity())
-        .modal(true, |d: &mut Desk| d.close_palette());
     // Paths open where they'll land.
-    // A phone has no room beside the cursor: its paths take the sheet.
-    let at_cursor = (mode == Mode::Paths && !phone)
-        .then(|| desk.cursor_point())
-        .flatten();
-    match at_cursor {
-        Some([x, y]) => {
-            let [window_w, window_h] = desk.pointer.window;
-            let gap = s.s1;
-            let below = y + gap;
-            let tall = EXTENTS.paths_h;
-            // No room under the line: sit above it instead.
-            let y = if window_h > 0.0 && below + tall > window_h {
-                (y - desk.metrics().cell_h - tall - gap).max(0.0)
-            } else {
-                below
-            };
-            scrim.child(panel.absolute(fit(x, EXTENTS.paths_w, window_w, gap), y))
-        }
-        None => scrim.fill(r.layer.scrim.paint()).child(
-            col()
-                .w_full()
-                .h_full()
-                .pt(top)
-                .px(s.s3)
-                .pb(s.s3)
-                .items_center()
-                .child(panel),
-        ),
+    if mode == Mode::Paths
+        && let Some([x, y]) = desk.cursor_point()
+    {
+        return scrim.child(at_cursor(desk, panel, x, y, t));
+    }
+    scrim.fill(r.layer.scrim.paint()).child(
+        col()
+            .w_full()
+            .h_full()
+            .pt(desktop_top(desk))
+            .px(s.s3)
+            .pb(s.s3)
+            .items_center()
+            .child(panel),
+    )
+}
+
+/// The room above the desktop panel: its usual drop, or a share of a short
+/// window, as Spotlight sits a fifth of the way down.
+fn desktop_top(desk: &Desk) -> f32 {
+    let [_, window_h] = desk.pointer.window;
+    let top = EXTENTS.palette_top;
+    if window_h <= 0.0 {
+        return top;
+    }
+    top.min(window_h * EXTENTS.palette_top_share)
+        .max(EXTENTS.palette_top_min)
+}
+
+/// The path picker under the cursor's line, or above it where there is no
+/// room below.
+fn at_cursor(desk: &Desk, panel: El, x: f32, y: f32, t: &Tokens) -> El {
+    let [window_w, window_h] = desk.pointer.window;
+    let gap = t.space.s1;
+    let below = y + gap;
+    let tall = EXTENTS.paths_h;
+    let y = if window_h > 0.0 && below + tall > window_h {
+        (y - desk.metrics().cell_h - tall - gap).max(0.0)
+    } else {
+        below
+    };
+    panel.absolute(fit(x, EXTENTS.paths_w, window_w, gap), y)
+}
+
+/// What a mode lists, for the hint under a search that found nothing.
+const fn try_hint(mode: Mode) -> &'static str {
+    match mode {
+        Mode::All => "Try a command, session or terminal name.",
+        Mode::Sessions => "Try another session name, or Return to make it.",
+        Mode::Themes => "Try a theme name.",
+        Mode::Shortcuts | Mode::Essentials => "Try a command name or a key.",
+        Mode::Playground => "Try a scene name.",
+        Mode::Paths => "Try another file or folder name.",
+        Mode::Screens => "Try a display or window name.",
+        Mode::Mirror(_) => "Try a terminal name.",
+        Mode::Popup => "Try a command to run.",
     }
 }
 
-/// A phone's search that found nothing: what was looked for, quoted, and
-/// what the list holds, so the next try is a better one.
-fn no_results(query: &str, t: &Tokens) -> El {
+/// A search that found nothing: what was looked for, quoted, and what the
+/// list holds, so the next try is a better one.
+fn no_results(query: &str, mode: Mode, g: &Grid, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
-    let ty = super::tokens::phone::ty(t.type_scale);
     col()
         .key("palette-no-results")
         .role("status")
         .w_full()
         .px(s.s6)
-        .pt(s.s8)
-        .pb(s.s10)
-        .gap(s.s1)
+        .py(s.s8)
+        .gap(s.s2)
         .items_center()
         .child(
             rune::icon(&icons::SEARCH, t.icon.size.xl)
                 .color(r.text.faint.paint())
                 .a11y_hidden(),
         )
-        .child(el().h(s.s2))
         .child(
             text("No Results")
-                .font(ty.lead.semibold())
+                .font(g.ty.lead.semibold())
                 .color(r.text.text.paint())
                 .align(rune::Align::Center),
         )
         .child(
             text(format!(
-                "Nothing matches \u{201c}{query}\u{201d}. Try a command, session or terminal name."
+                "Nothing matches \u{201c}{query}\u{201d}. {}",
+                try_hint(mode)
             ))
-            .font(ty.body)
+            .font(g.ty.body)
             .color(r.text.dim.paint())
             .align(rune::Align::Center)
             .wrap()
-            .w_full(),
+            .w_full()
+            .max_w(EXTENTS.ask_w),
         )
 }
 
@@ -235,305 +579,6 @@ fn fit(at: f32, size: f32, window: f32, gap: f32) -> f32 {
         return at;
     }
     at.min(window - size - gap).max(0.0)
-}
-
-/// Which actions belong together in the menu: a separator falls between
-/// groups.
-const fn group(action: Shortcut) -> u8 {
-    match action {
-        // A screenshot goes in as Paste does, so it sits with the edits
-        // rather than splitting them with rules of its own.
-        Shortcut::Copy | Shortcut::Paste | Shortcut::Screenshot | Shortcut::SelectAll => 0,
-        Shortcut::Find => 1,
-        Shortcut::SplitRight | Shortcut::SplitDown => 2,
-        Shortcut::LockTab | Shortcut::RenameTab => 3,
-        _ => 4,
-    }
-}
-
-/// The right-click menu over a pane or a tab (kit `context_menu`): it opens
-/// at the press, flips to stay inside the window, takes the keyboard
-/// (arrows, Home and End, Return, Escape) and gives focus back on close.
-/// The menu mounts in the kit layer; what this returns marks its place.
-pub fn context_menu(desk: &Desk, at: PointerPress, p: &Tokens) -> El {
-    let t = p;
-    let actions: &[Shortcut] = if desk.pointer.tab_menu {
-        &TAB_MENU
-    } else {
-        &CONTEXT_MENU
-    };
-    let locked = desk
-        .connection
-        .tabs
-        .list
-        .iter()
-        .any(|tab| tab.active && tab.locked);
-    let mut menu = kit_menu("context", el(), Some(at)).on_close(|d: &mut Desk| d.close_menu());
-    let mut last = None;
-    let mut widest: f32 = 0.0;
-    for &action in actions {
-        let Some((title, hint)) = context_words(action, locked) else {
-            continue;
-        };
-        if last.is_some_and(|g| g != group(action)) {
-            menu = menu.separator();
-        }
-        last = Some(group(action));
-        widest = widest.max(context_row_width(title, &hint, t));
-        menu = menu.item(context_item(action, title, hint, locked));
-    }
-    // The kit holds a menu at a fixed minimum and truncates labels to fit,
-    // so "Screenshot to Terminal" read "Screenshot to…". Size it to its
-    // longest row instead, as a native menu fits its items.
-    let menu = menu.min_width(widest);
-    let mut layer = Vec::new();
-    let anchor = menu.build(&t.kit, &mut layer);
-    for overlay in layer {
-        kit_overlay(overlay);
-    }
-    anchor
-}
-
-/// What a context row says: its title and its chord.
-fn context_words(action: Shortcut, locked: bool) -> Option<(&'static str, String)> {
-    let command = keys::command(action)?;
-    // The lock row says which way it goes for the tab under it.
-    let title = match action {
-        Shortcut::LockTab if locked => "Unlock Tab",
-        Shortcut::LockTab => "Lock Tab",
-        _ => command.title,
-    };
-    Some((title, command.hint()))
-}
-
-/// The width a kit menu row needs to show `title` and `hint` whole: the
-/// list's inset, the row's padding, the label, a clear gap and the chord,
-/// each in the face the kit sets them in.
-fn context_row_width(title: &str, hint: &str, t: &Tokens) -> f32 {
-    let ty = &t.kit.ty;
-    let (label, _) = rune::text::measure(title, &[], ty.ui_compact, None);
-    let chord = if hint.is_empty() {
-        0.0
-    } else {
-        rune::text::measure(hint, &[], ty.small_medium, None).0 + t.space.s6
-    };
-    // List inset (2 a side), row padding (12 leading, 6 trailing).
-    let chrome = 2.0 * 2.0 + 12.0 + 6.0;
-    (label + chord + chrome).ceil()
-}
-
-fn context_item(action: Shortcut, title: &'static str, hint: String, locked: bool) -> MenuItem {
-    let item = MenuItem::new(title)
-        .danger(matches!(action, Shortcut::CloseTerminal | Shortcut::CloseTab))
-        // A locked tab refuses to close: say so before the press.
-        .disabled(action == Shortcut::CloseTab && locked)
-        .on_select_tx(move |d: &mut Desk, tx| d.context_pick(action, tx));
-    if hint.is_empty() {
-        item
-    } else {
-        item.shortcut(hint)
-    }
-}
-
-/// A command's own glyph, where one says it at a glance. The rest have
-/// none: one generic glyph repeated down every command row says nothing.
-fn action_mark(action: Shortcut) -> Option<&'static rune::Icon> {
-    Some(match action {
-        Shortcut::NewTerminal | Shortcut::NewSession => &icons::PLUS,
-        Shortcut::Paste | Shortcut::Copy => &icons::CLIPBOARD,
-        Shortcut::Find | Shortcut::FindNext | Shortcut::FindPrevious => &icons::SEARCH,
-        Shortcut::SwitchSession | Shortcut::NextSession | Shortcut::PreviousSession => {
-            &icons::WINDOW
-        }
-        Shortcut::SplitRight => &icons::SPLIT_RIGHT,
-        Shortcut::SplitDown => &icons::SPLIT_DOWN,
-        Shortcut::ZoomIn
-        | Shortcut::ZoomOut
-        | Shortcut::ZoomReset
-        | Shortcut::InterfaceBigger
-        | Shortcut::InterfaceSmaller
-        | Shortcut::InterfaceReset => &icons::TEXT_SIZE,
-        Shortcut::Settings => &icons::SETTINGS,
-        Shortcut::Machines => &icons::MACHINES,
-        Shortcut::CloseTerminal | Shortcut::CloseTab => &icons::CLOSE,
-        Shortcut::ScrollToBottom => &icons::ARROW_DOWN,
-        Shortcut::ScrollToTop => &icons::ARROW_UP,
-        Shortcut::Inbox => &icons::INBOX,
-        Shortcut::ChangeTheme => &icons::PALETTE,
-        Shortcut::RenameSession | Shortcut::RenameTab => &icons::PROMPT,
-        _ => return None,
-    })
-}
-
-/// The glyph for a kind of place. An action without its own glyph has
-/// none, so its title stands alone in the column the glyphs keep aligned.
-fn kind_mark(kind: &str) -> Option<&'static rune::Icon> {
-    match kind {
-        "terminal" | "pane" => Some(&icons::PROMPT),
-        "session" => Some(&icons::WINDOW),
-        "path" => Some(&icons::FOLDER),
-        "keep-awake" => Some(&icons::AWAKE),
-        _ => None,
-    }
-}
-
-/// What a row is: an icon, for a theme a swatch of its colours, or for an
-/// action without its own glyph nothing.
-fn mark(hit: &Hit, washed: bool, t: &Tokens) -> Option<El> {
-    let size = t.icon.size.md;
-    let Target::Theme(id) = hit.item.target else {
-        let ink = if washed {
-            t.roles.text.text
-        } else {
-            t.roles.text.dim
-        };
-        let glyph = match hit.item.target {
-            Target::Action(action) => action_mark(action),
-            _ => kind_mark(hit.item.kind),
-        };
-        return glyph.map(|glyph| rune::icon(glyph, size).color(ink.paint()).a11y_hidden());
-    };
-    let theme = id.and_then(crate::theme::find);
-    let (fill, ring) = theme.map_or(
-        (t.roles.layer.ground.paint(), t.roles.border.control.paint()),
-        |t| {
-            (
-                crate::theme::color(t.background),
-                crate::theme::color(t.accent),
-            )
-        },
-    );
-    Some(
-        el().w(size)
-            .h(size)
-            .radius(t.radius.full)
-            .fill(fill)
-            .border(t.space.s0_5, ring)
-            .a11y_hidden(),
-    )
-}
-
-/// One ranked result (OWN): its kind or swatch, the title with the
-/// matched characters in the accent's text ink one weight heavier (and
-/// underlined when that ink is body text), a
-/// detail, and for a screen its machine. The picked row is the keyboard's
-/// cursor.
-fn hit_row(hit: &Hit, index: usize, picked: bool, phone: bool, t: &Tokens) -> El {
-    let s = &t.space;
-    let r = &t.roles;
-    let title = &hit.item.title;
-    let heavy = t.ty.label.semibold().weight;
-    // Where the accent fell back to body text (a grey accent,
-    // `Roles::emphasis`), its colour cannot mark a match; an underline does.
-    let underline = (r.accent.accent_text == r.text.text).then(|| r.text.text.paint());
-    let spans = hit
-        .matched
-        .iter()
-        .filter_map(|&at| title.char_indices().nth(at))
-        .map(|(start, ch)| {
-            let mut span = Span::new(start, start + ch.len_utf8())
-                .color(r.accent.accent_text.paint())
-                .weight(heavy);
-            span.underline = underline;
-            span
-        })
-        .collect();
-    // Faint never sits on a wash: the picked row's detail reads dim.
-    let detail = if picked { r.text.dim } else { r.text.faint };
-    let row_h = if phone { s.row_h_touch } else { s.row_h };
-    let base = row()
-        .key(format!("palette-row-{index}"))
-        .role("option")
-        .label(title.clone())
-        .description(hit.item.detail.clone())
-        .w_full()
-        .min_h(row_h)
-        .py(s.s1)
-        .px(s.s3)
-        .gap(s.s3)
-        // Nested in the palette's `lg` panel by the list's inset.
-        .radius(t.nested(t.radius.lg, s.s1))
-        .items_center()
-        .focusable(true)
-        .focus_selected(picked);
-    // A tab's terminals sit indented under its heading.
-    let base = if hit.item.kind == "pane" {
-        base.pl(s.s3 + s.s6)
-    } else {
-        base
-    };
-    let base = if picked {
-        base.fill(r.wash.current.paint())
-    } else {
-        base
-    };
-    let target = hit.item.target.clone();
-    t.kit
-        .interactive(base)
-        .cursor(Cursor::Pointer)
-        .on_press_tx(move |d: &mut Desk, tx| d.palette_run_target(target.clone(), tx))
-        .child(el().w(s.s6).center().children(mark(hit, picked, t)))
-        .child(
-            rich(title.clone(), spans)
-                .font(t.ty.label)
-                .color(r.text.text.paint())
-                .truncate()
-                .min_w(0.0)
-                .shrink()
-                .a11y_hidden(),
-        )
-        .child(el().grow(1.0))
-        .children(match &hit.item.target {
-            Target::Screen(host, _) => {
-                let host = host.as_deref().unwrap_or(crate::machines::LOCAL);
-                Some(crate::host_color::dot(host, s.s2, r.layer.overlay.paint()))
-            }
-            _ => None,
-        })
-        .child(shortcut_or_detail(hit, detail.paint(), t))
-}
-
-/// A command's keys as a key cap (`⇧⌘P`), like every shortcut Rune shows;
-/// any other detail (a session, a pane id, what the row does) as words.
-fn shortcut_or_detail(hit: &Hit, ink: rune::Color, t: &Tokens) -> El {
-    let detail = &hit.item.detail;
-    if details_keys(&hit.item) {
-        return super::keycap(detail.clone(), t);
-    }
-    detail_text(detail, ink, t)
-}
-
-/// Whether an item's detail is its command's chords, not words about it.
-fn details_keys(item: &crate::palette::Item) -> bool {
-    let Target::Action(action) = item.target else {
-        return false;
-    };
-    let detail = &item.detail;
-    !detail.is_empty()
-        && crate::keys::command(action).is_some_and(|c| *detail == c.hint() || *detail == c.hints())
-}
-
-/// A row's detail in its voices: the session's name in the ui face,
-/// a pane id (`@N`) after it as a machine noun, mono with tabular figures.
-fn detail_text(detail: &str, ink: rune::Color, t: &Tokens) -> El {
-    let words = |w: String, font| text(w).font(font).color(ink).truncate();
-    let id = detail.rsplit_once(" · ").filter(|(_, id)| {
-        id.strip_prefix('@')
-            .is_some_and(|n| n.parse::<u32>().is_ok())
-    });
-    match id {
-        Some((name, id)) => row()
-            .items_center()
-            .min_w(0.0)
-            .child(
-                words(format!("{name} · "), t.ty.caption)
-                    .shrink()
-                    .min_w(0.0),
-            )
-            .child(words(id.to_owned(), t.ty.readout))
-            .a11y_hidden(),
-        None => words(detail.to_owned(), t.ty.caption).a11y_hidden(),
-    }
 }
 
 #[cfg(test)]

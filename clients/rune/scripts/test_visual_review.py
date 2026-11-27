@@ -78,10 +78,11 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 1905)
+        self.assertEqual(len(manifest["cases"]), 1961)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                         {"inbox": 404, "settings": 298, "navigation": 1202, "resources": 1})
+                         {"inbox": 404, "settings": 298, "navigation": 1202, "palette": 56,
+                          "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
         self.assertEqual(case["logical"], [320, 568])

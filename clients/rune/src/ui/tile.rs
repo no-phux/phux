@@ -131,7 +131,8 @@ pub(in crate::ui) fn tile(
 
 fn badge(mark: Mark, ground: Color, t: &Tokens) -> El {
     let f = face(mark, t);
-    let glyph = t.icon.size.xs;
+    // Large text grows the glyph, never past the tile it marks.
+    let glyph = t.icon.size.xs.min(t.space.s3);
     el().pin(None, None, Some(-t.space.s0_5), Some(-t.space.s0_5))
         .size(glyph + t.space.s0_5, glyph + t.space.s0_5)
         .radius(t.radius.full)
