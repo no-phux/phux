@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2710,7 +2710,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "jiff",
  "phux-config-core",
@@ -2759,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "nix",
  "schemars",
@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "serde",
  "sha2",
@@ -2781,11 +2781,11 @@ dependencies = [
 
 [[package]]
 name = "phux-design"
-version = "0.173.0"
+version = "0.173.1"
 
 [[package]]
 name = "phux-dial"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "phux-layout-codec"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "ciborium",
  "phux-core",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "libc",
  "nix",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "phux-config",
  "serde",
@@ -2834,7 +2834,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2897,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "phux-vt"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "bytes",
  "flate2",
@@ -2909,7 +2909,7 @@ dependencies = [
 
 [[package]]
 name = "phux-wire-fixtures"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "bytes",
  "phux-protocol",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.173.0"
+version = "0.173.1"
 dependencies = [
  "quinn",
  "rustls",
