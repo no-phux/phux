@@ -6,6 +6,11 @@
   },
   {
     "date": "2026-11-26",
+    "title": "Clearer connection diagnostics",
+    "body": "In Rune 0.1.61: payload-free diagnostics identify the WebSocket establishment stage where a connection stalls, without changing connection deadlines."
+  },
+  {
+    "date": "2026-11-26",
     "title": "Polish the mobile sessions drawer",
     "body": "In Rune 0.1.60."
   },
