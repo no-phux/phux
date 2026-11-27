@@ -71,8 +71,9 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_footer() {
         tx.instant();
     });
     settle(&mut rt);
+    // Title and search stay put; Connections leads the list and scrolls.
     assert_eq!(element(&rt, "phone-session-query").rect, query);
-    assert_eq!(element(&rt, "phone-session-connections").rect, connections);
+    assert!(element(&rt, "phone-session-connections").rect[1] < connections[1]);
     assert_eq!(element(&rt, "phone-session-new").rect, dock);
     let last = element(&rt, "phone-session-20");
     assert!(last.visible[3] >= 44.0, "{last:?}");
@@ -143,7 +144,7 @@ fn editing_a_filter_resets_the_old_scroll_offset_to_the_first_result() {
     let list = element(&rt, "phone-session-list").rect;
     let first = element(&rt, "phone-session-1").rect;
     // The list's top inset, and nothing of the old offset.
-    let inset = phux_design::tokens::SPACE.s2;
+    let inset = phux_design::tokens::SPACE.s4;
     assert!(
         first[1] >= list[1] && first[1] - list[1] < inset + 1.0,
         "{first:?} vs {list:?}"

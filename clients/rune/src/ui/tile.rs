@@ -51,16 +51,40 @@ fn kind_icon(kind: ResourceKind) -> &'static Icon {
 }
 
 fn glyph(identity: &Identity, t: &Tokens) -> El {
+    glyph_at(identity, t.icon.size.md, t)
+}
+
+fn glyph_at(identity: &Identity, size: f32, t: &Tokens) -> El {
     let ink = t.roles.text.dim.paint();
     match &identity.glyph {
         Some(glyph) => text(glyph.clone())
             .key("identity-declared-glyph")
             .font(t.ty.label)
             .color(ink),
-        None => rune::icon(icon(identity), t.icon.size.md)
+        None => rune::icon(icon(identity), size)
             .key(icon(identity).name)
             .color(ink),
     }
+}
+
+/// A single pane's identity as a list row's leading mark: the glyph alone
+/// at `size`, its state badge on the glyph's lower trailing corner, ringed
+/// in `ground` (the surface under it) as a system badge sits on a symbol.
+pub(in crate::ui) fn mark(
+    identity: &Identity,
+    mark: Mark,
+    ground: Color,
+    size: f32,
+    t: &Tokens,
+) -> El {
+    el().size(size, size)
+        .center()
+        .a11y_hidden()
+        .child(glyph_at(identity, size, t))
+        .children(tells(mark).then(|| {
+            let f = face(mark, t);
+            state_badge(f.icon, f.ink, ground, size, t)
+        }))
 }
 
 /// `members` is actual tab membership, never session size or ancestry.
@@ -115,6 +139,31 @@ fn badge(mark: Mark, ground: Color, t: &Tokens) -> El {
         .center()
         .inert()
         .child(rune::icon(f.icon, glyph).color(f.ink))
+}
+
+/// A state's mark in a ring of `ground`, centred just inside the lower
+/// trailing corner of the glyph it is pinned to, so it overlaps the glyph
+/// as a system badge does without hiding it.
+pub(in crate::ui) fn state_badge(
+    icon: &'static Icon,
+    ink: Color,
+    ground: Color,
+    of: f32,
+    t: &Tokens,
+) -> El {
+    // At the 16 point glyph: a 10 point mark in a 12 point ring whose
+    // centre is 2 points in from the corner. Everything scales with `of`.
+    let edge = of / 8.0;
+    let glyph = of * 0.625;
+    let ring = glyph + edge;
+    let out = -(ring / 2.0 - edge);
+    el().pin(None, None, Some(out), Some(out))
+        .size(ring, ring)
+        .radius(t.radius.full)
+        .fill(ground)
+        .center()
+        .inert()
+        .child(rune::icon(icon, glyph).color(ink))
 }
 
 #[cfg(test)]

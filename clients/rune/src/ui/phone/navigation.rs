@@ -15,6 +15,7 @@ use crate::ui::{icons, pressable};
 mod actions;
 mod connections;
 mod dock;
+mod grid;
 mod inventory;
 mod menu;
 mod resource;
@@ -47,26 +48,24 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     };
     let heading = text(title)
         .key("phone-navigation-heading")
-        .font(
-            (if page == Page::Sessions {
-                p.ty.title
-            } else {
-                p.ty.lead
-            })
-            .semibold(),
-        )
+        .font(p.ty.title.semibold())
         .color(p.roles.text.text.paint())
         .role("heading")
         .wrap()
         .min_w(0.0)
         .shrink();
+    let glass_done = super::native_glass(desk, p);
     let done = done(desk, p);
-    let margin = crate::ui::tokens::phone::page_margin() + s.s1;
+    // The title starts on the cards' edge; Done ends on it, as a bar
+    // button does: the glass circle itself, or the accent word inside its
+    // touch box.
+    let margin = grid::margin();
     let header = row()
         .w_full()
         .max_w(column_max())
-        .min_h(s.s16)
-        .px(margin)
+        .min_h(s.touch_min + s.s2)
+        .pl(margin)
+        .pr(if glass_done { margin } else { margin - s.s3 })
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
     // Done. Searching borrows that large title's room above the keyboard;
@@ -230,14 +229,14 @@ fn column_max() -> f32 {
     phux_design::tokens::LAYOUT.content_max.phone_column
 }
 
-/// A row nested in a card: the card's radius less its inset.
+/// A row nested in a padded panel: the panel's radius less its inset.
 fn nested(p: &Look) -> f32 {
     (p.radius.xl - p.space.s1).max(p.radius.xs)
 }
 
-/// A grouped surface: rows on one raised card, as an inset grouped list
-/// and the Actions page draw them.
-fn card(p: &Look) -> El {
+/// A floating panel of rows, such as the long-press menu: rows inset by
+/// [`nested`] so each press keeps its own rounded shape.
+fn panel(p: &Look) -> El {
     col()
         .w_full()
         .padding(p.space.s1)
@@ -246,9 +245,28 @@ fn card(p: &Look) -> El {
         .fill(p.roles.layer.raised.paint())
 }
 
-/// Two lines of text in a touch row.
-fn row_h(p: &Look) -> f32 {
-    p.space.row_h_touch + p.space.s4
+/// A grouped surface: `rows` edge to edge on one card, an inset hairline
+/// between them from the text column, as an iOS inset grouped list draws
+/// them. The first and last rows take the card's corners, so a press
+/// fills the row to the card's edge.
+fn card(rows: impl IntoIterator<Item = El>, p: &Look) -> El {
+    let rows: Vec<El> = rows.into_iter().collect();
+    let last = rows.len().saturating_sub(1);
+    let r = p.radius.xl;
+    let mut surface = col()
+        .w_full()
+        .radius(r)
+        .continuous_corners()
+        .fill(grid::card_fill(p));
+    for (i, row) in rows.into_iter().enumerate() {
+        if i > 0 {
+            surface = surface.child(separator(p));
+        }
+        let top = if i == 0 { r } else { 0.0 };
+        let bottom = if i == last { r } else { 0.0 };
+        surface = surface.child(row.corners([top, top, bottom, bottom]).continuous_corners());
+    }
+    surface
 }
 
 fn control(
@@ -306,13 +324,17 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     let dim = p.roles.text.dim.paint();
     let ink = p.roles.text.text.paint();
     // The lead role: an iOS field under 16 points zooms the page.
+    // The line sits on the field's centre line, with the magnifier: equal
+    // room above and below it at every text size.
+    let line = p.ty.lead.line_px();
+    let magnifier = p.icon.grid * p.type_scale;
     let search = text_input(&phone.query, p.ty.lead)
         .key("phone-session-query")
         .single_line()
         .grow(1.0)
         .min_w(0.0)
         .min_h(s.touch_min)
-        .py(s.s2)
+        .py(((s.touch_min - line) / 2.0).max(s.s2))
         .label("Search sessions, panes, agents, and folders")
         .color(ink)
         // Past the grid's text cap the full hint is cut mid-word on a
@@ -332,28 +354,22 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     let search = row()
         .key("phone-session-search")
         .w_full()
-        .pl(s.s3)
-        .pr(s.s1)
+        .pl(grid::inset(p))
+        .pr(grid::clear_inset(p))
         .gap(s.s2)
         .items_center()
-        .radius(p.radius.lg)
+        .radius(p.radius.full)
         .continuous_corners()
-        .fill(p.roles.layer.raised.paint())
-        // Increased contrast keeps the field's edge; otherwise the fill
-        // alone reads as a field, as a system search field does.
-        .border(
-            s.hairline,
-            if p.increased_contrast {
-                p.roles.border.control.paint()
-            } else {
-                p.roles.border.muted.paint()
-            },
-        )
-        // The magnifier grows with the field's text, or the largest size
-        // leaves a speck beside a headline-sized placeholder.
+        .fill(grid::card_fill(p))
+        // The magnifier sits in the leading column the rows' marks use,
+        // and the text starts where their titles do. Past the grid's cap it
+        // keeps growing with the field's text, which would otherwise leave
+        // a speck beside a headline-sized placeholder, and widens its slot.
         .child(
-            rune::icon(&icons::SEARCH, p.icon.grid * p.type_scale)
-                .color(dim)
+            el().size(grid::lead_w(p).max(magnifier), line)
+                .center()
+                .key("phone-session-search-mark")
+                .child(rune::icon(&icons::SEARCH, magnifier).color(dim))
                 .a11y_hidden(),
         )
         .child(search)
@@ -368,90 +384,81 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .a11y_hidden(),
                 )
         }));
-    let list = session_list(desk, p);
+    // Increased contrast keeps the field's edge; otherwise the fill alone
+    // reads as a field, as a system search field does.
+    let search = if p.increased_contrast {
+        search.border(s.hairline, p.roles.border.control.paint())
+    } else {
+        search
+    };
+    let connections = (!phone.query.focused).then(|| connections(desk, p));
+    // Connections leads the list and scrolls with it; only the title and
+    // search stay put, as a system list's do.
+    let list = col()
+        .w_full()
+        .gap(grid::block_gap(p))
+        .children(connections)
+        .child(session_list(desk, p));
     let large_text = p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
     let footer = dock::footer(desk, phone.query.text.trim(), ink, large_text, p);
-    let connections = (!phone.query.focused).then(|| connections(desk, p));
+    let margin = grid::margin();
+    // The scroller spans the page and its content keeps the margin, so a
+    // keyboard ring around a card-wide row is never cut by the viewport.
+    let scroller = col()
+        .key("phone-session-list")
+        .w_full()
+        .min_h(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        });
     // At large text sizes these controls can each be taller than the
     // ordinary list viewport. Let the whole body scroll, including search
     // and New session, rather than pinning oversized chrome over the list.
     if large_text {
-        return col()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .px(crate::ui::tokens::phone::page_margin())
-            .pb(s.s3)
-            .child(
+        return col().w_full().grow(1.0).min_h(0.0).pb(s.s3).child(
+            scroller.h_full().scroll_margin(s.s1).child(
                 col()
-                    .key("phone-session-list")
                     .w_full()
-                    .h_full()
-                    .min_h(0.0)
-                    .scroll(rune::ScrollSpec {
-                        stick_bottom: false,
-                    })
-                    .scroll_margin(s.s1)
-                    .child(
-                        col()
-                            .w_full()
-                            .px(s.s1)
-                            .pt(s.s1)
-                            .gap(s.s3)
-                            .child(search)
-                            .children(connections)
-                            .child(list)
-                            .child(footer)
-                            // A real tail protects the last outside focus ring
-                            // where reveal margins cannot scroll farther.
-                            .child(el().w_full().h(s.s1).inert().a11y_hidden()),
-                    ),
-            );
+                    .px(margin)
+                    .pt(s.s1)
+                    .gap(grid::block_gap(p))
+                    .child(search)
+                    .child(list)
+                    .child(footer)
+                    // A real tail protects the last outside focus ring
+                    // where reveal margins cannot scroll farther.
+                    .child(el().w_full().h(s.s1).inert().a11y_hidden()),
+            ),
+        );
     }
     col()
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .px(crate::ui::tokens::phone::page_margin())
-        .gap(s.s2)
         .pb(s.s3)
-        // Search borrows the machine line's room so even a 320×568 phone
-        // can show a complete result above the keyboard and the footer.
+        .child(el().w_full().px(margin).child(search))
         .child(
-            col()
-                .w_full()
-                .px(s.s1)
-                .gap(s.s2)
-                .child(search)
-                .children(connections),
-        )
-        .child(
-            col()
-                .key("phone-session-list")
+            scroller
                 .grow(1.0)
-                .min_h(0.0)
-                .w_full()
-                .scroll(rune::ScrollSpec { stick_bottom: false })
-                .scroll_edge_fade(s.s2)
+                .scroll_edge_fade(s.s4)
                 .scroll_margin(s.s2)
-                .child(list.px(s.s1).py(s.s2)),
+                .child(list.px(margin).py(s.s4)),
         )
-        .child(el().w_full().px(s.s1).child(footer))
+        .child(el().w_full().px(margin).child(footer))
 }
 
-/// An inset hairline between touch rows, starting at the text column.
+/// An inset hairline between touch rows, from the text column to the
+/// card's trailing edge.
 fn separator(p: &Look) -> El {
-    separator_at(p.space.s3 + p.icon.grid + p.space.s2, p)
+    separator_at(grid::text_x(p), p)
 }
 
-fn separator_at(text_inset: f32, p: &Look) -> El {
-    let s = &p.space;
+fn separator_at(lead: f32, p: &Look) -> El {
     el().w_full()
-        .pl(text_inset)
-        .pr(s.s3)
+        .pl(lead)
         .child(
             el().w_full()
-                .h(s.hairline)
+                .h(p.space.hairline)
                 .fill(p.roles.border.muted.paint()),
         )
         .a11y_hidden()

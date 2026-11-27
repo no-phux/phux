@@ -1,8 +1,8 @@
 //! One screen-addressable resource: identity, useful detail and its state
 //! as the status ladder draws it (colour, mark and word together).
-use rune::{El, col, el, text};
+use rune::{El, col, text};
 
-use super::{Desk, Look, control, nested};
+use super::{Desk, Look, control, grid};
 use crate::activity::Mark;
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Held;
@@ -27,17 +27,13 @@ impl Place {
         }
     }
 
-    /// The current-pane bar keeps its old key in a session's card.
+    /// The current pane's check keeps the key its marker always had.
     const fn current_key(self) -> &'static str {
         match self {
             Self::NeedsYou => "phone-needs-you",
             Self::Session | Self::Elsewhere => "phone-session",
         }
     }
-}
-
-pub(super) fn identity_width(p: &Look) -> f32 {
-    p.space.s5 + p.space.s1
 }
 
 pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p: &Look) -> El {
@@ -70,19 +66,30 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
         resource.session,
         if current { " · current pane" } else { "" }
     );
-    let detail_ink = p.roles.text.dim.paint();
-    let row = control(
-        &row_key,
-        &label,
+    let line = p.ty.body.line_px();
+    // Location has the one native cue: an accent check at the trailing
+    // edge, a shape as well as a colour. No resting slab, no bar.
+    let check = current.then(|| {
+        rune::icon(&icons::CHECK, p.icon.size.md)
+            .key(format!("{}-current-{}", place.current_key(), resource.id))
+            .color(p.roles.accent.accent_text.paint())
+            .inert()
+    });
+    let identity = crate::ui::tile::mark(
+        &presentation.identity,
+        mark,
+        grid::card_fill(p),
+        grid::glyph(p),
         p,
-        move |d, _| {
-            d.close_phone_navigation();
-            d.show(id.clone(), &session);
-        },
-    )
+    );
+    control(&row_key, &label, p, move |d, _| {
+        d.close_phone_navigation();
+        d.show(id.clone(), &session);
+    })
     .w_full()
     .gap(s.s2)
-    .radius(nested(p))
+    .px(grid::inset(p))
+    .py(s.s2 + s.s0_5)
     .focus_selected(current)
     .on_secondary_press_local(move |d: &mut Desk, event, tx| {
         let at = [event.window_x, event.window_y];
@@ -90,11 +97,8 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
     })
     // The mark stays on the title's line when the detail wraps under it.
     .items_start()
-    .py(s.s2)
-    .children([
-        el().size(identity_width(p), p.ty.body.line_px())
-            .center()
-            .child(crate::ui::tile::tile(&presentation.identity, mark, 1, p.roles.layer.raised.paint(), p)),
+    .child(grid::lead_slot(identity, line, p).key(format!("{}-mark-{}", place.key(), resource.id)))
+    .child(
         col()
             .grow(1.0)
             .min_w(0.0)
@@ -112,28 +116,12 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
             .children((!detail.is_empty()).then(|| {
                 text(detail)
                     .font(p.ty.caption)
-                    .color(detail_ink)
+                    .color(p.roles.text.dim.paint())
                     .wrap()
                     .a11y_hidden()
             })),
-        // The check grows with the row's text, as the search magnifier does.
-        el().size(p.icon.grid * p.type_scale, p.ty.body.line_px())
-            .center()
-            .children(current.then(|| {
-                rune::icon(&icons::CHECK, p.icon.size.md * p.type_scale)
-                    .color(p.roles.accent.accent_text.paint())
-                    .a11y_hidden()
-            })),
-    ]);
-    // Location has its own narrow cue and check, separate from agent state.
-    // Keep the same structural cue in Increased Contrast; no resting slab.
-    row.children(current.then(|| {
-        crate::host_color::stripe(p.roles.accent.accent.paint(), p).key(format!(
-            "{}-current-{}",
-            place.current_key(),
-            resource.id
-        ))
-    }))
+    )
+    .child(grid::trail_slot(check, line, p))
 }
 
 /// Session membership is already the group heading. Spend the second line on

@@ -5,7 +5,7 @@ use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, col, el, text};
 
-use super::{Desk, Look, card, control, nested, separator};
+use super::{Desk, Look, control, nested, panel, separator_at};
 use crate::desk::phone::navigation::{Held, Verb};
 use crate::ui::Cover;
 use crate::ui::icons;
@@ -41,7 +41,7 @@ pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
         let bottom = page_h - row_y + s.s2;
         ((None, Some(bottom)), page_h - margin - bottom)
     };
-    let mut surface = card(p)
+    let mut surface = panel(p)
         .key("phone-menu")
         .w(width)
         .max_h(room.max(s.touch_min))
@@ -71,7 +71,7 @@ pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
         );
     for (verb, name, glyph, _) in verbs {
         surface = surface
-            .child(separator(p))
+            .child(separator_at(p.space.s3, p))
             .child(verb_row(verb, name, glyph, p));
     }
     let surface = p

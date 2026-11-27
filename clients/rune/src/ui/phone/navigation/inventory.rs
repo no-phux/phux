@@ -1,12 +1,12 @@
 //! The inventory as the Sessions page organises it: what needs you, the
 //! active sessions as headed cards, and the quiet ones folded under a band.
-use crate::ui::tokens::Voice;
-use rune::{El, col, row, text};
+use rune::{El, col};
 
-use super::section::{self, Tally, band_heading, chevron, session_section};
-use super::{Desk, Look, control, empty_state, other_hosts, resource};
+use super::section::{
+    self, Tally, band_heading, chevron, heading_body, heading_row, heading_title, session_section,
+};
+use super::{Desk, Look, control, empty_state, grid, other_hosts, resource};
 use crate::addressable::Addressable;
-use crate::ui::tokens::Paint;
 
 /// Every query word may match a different inventory field; never screen text.
 pub(super) fn matches(query: &str, fields: &[&str]) -> bool {
@@ -48,10 +48,9 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
     let searching = !query.trim().is_empty();
     let all = desk.addressable();
     let current = desk.selected_session_name();
-    let mut list = col().w_full().gap(p.space.s5);
-    if !searching {
-        list = list.children(needs_you(desk, &all, p));
-    }
+    let mut sections = Vec::new();
+    // The session whose card opens right under Needs you, if unfolded.
+    let mut below = None;
     let mut count = 0;
     let mut quiet = Vec::new();
     for session in desk.ordered_sessions() {
@@ -71,8 +70,20 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
             continue;
         }
         let fold = (!searching).then(|| phone.folded.contains(&session.id));
-        list = list.child(session_section(desk, session, &members, &filtered, fold, p));
+        if sections.is_empty() && fold == Some(false) {
+            below = Some(session.id);
+        }
+        sections.push(session_section(desk, session, &members, &filtered, fold, p));
     }
+    let mut list = col()
+        .w_full()
+        .gap(grid::block_gap(p))
+        .children(
+            (!searching)
+                .then(|| needs_you(desk, &all, below, p))
+                .flatten(),
+        )
+        .children(sections);
     if !quiet.is_empty() {
         list = list.child(quiet_band(desk, &quiet, phone.quiet_shown, p));
     }
@@ -97,12 +108,14 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
     other_hosts(list, desk, query, p)
 }
 
-/// Every pane asking for you, across sessions, ahead of the map: the
-/// question a person opens the app with. Their sessions still list them.
-fn needs_you(desk: &Desk, all: &[Addressable], p: &Look) -> Option<El> {
+/// Every pane asking for you, ahead of the map: the question a person
+/// opens the app with. The card unfolded right under the band (`below`)
+/// already lists its own, so the band names only what that card does not.
+fn needs_you(desk: &Desk, all: &[Addressable], below: Option<u32>, p: &Look) -> Option<El> {
     let waiting: Vec<_> = all
         .iter()
         .filter(|r| r.id.host().is_none() && desk.activities.mark(&r.id).needs_you())
+        .filter(|r| Some(r.session_id) != below)
         .collect();
     if waiting.is_empty() {
         return None;
@@ -132,7 +145,6 @@ type Quiet<'a> = (
 /// them while folded and lists them, each under its header, when shown.
 fn quiet_band(desk: &Desk, quiet: &[Quiet<'_>], shown: bool, p: &Look) -> El {
     let s = &p.space;
-    let dim = p.roles.text.dim.paint();
     let names = quiet
         .iter()
         .map(|(session, ..)| session.name.as_str())
@@ -146,50 +158,22 @@ fn quiet_band(desk: &Desk, quiet: &[Quiet<'_>], shown: bool, p: &Look) -> El {
         },
         if shown { "shown" } else { "folded" }
     );
-    let header = control("phone-quiet", &label, p, |d, _| d.toggle_phone_quiet())
-        .w_full()
-        .px(s.s3 + s.s1)
-        .py(s.s1)
-        .gap(s.s2)
-        .expanded(shown)
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(s.s0_5)
-                .child(
-                    row()
-                        .w_full()
-                        .gap(s.s2)
-                        .child(
-                            text("Quiet")
-                                .font(p.ty.caption.semibold())
-                                .color(dim)
-                                .grow(1.0)
-                                .min_w(0.0)
-                                .a11y_hidden(),
-                        )
-                        .child(
-                            text(quiet.len().to_string())
-                                .font(p.ty.caption.figures())
-                                .color(dim)
-                                .a11y_hidden(),
-                        ),
-                )
-                .children((!shown).then(|| {
-                    text(names)
-                        .font(p.ty.body)
-                        .color(dim)
-                        .wrap()
-                        .max_lines(2)
-                        .a11y_hidden()
-                })),
-        )
-        .child(chevron(!shown, p));
+    let summary = (!shown).then_some(names);
+    let header = heading_row(
+        control("phone-quiet", &label, p, |d, _| d.toggle_phone_quiet()),
+        p,
+    )
+    .expanded(shown)
+    .child(heading_body(
+        heading_title("Quiet".to_owned(), p),
+        summary,
+        p,
+    ))
+    .child(chevron(!shown, p));
     let mut band = col()
         .key("phone-quiet-band")
         .w_full()
-        .gap(s.s3)
+        .gap(s.s2)
         .child(header);
     if shown {
         let folded = &desk.phone.as_ref().expect("phone").folded;

@@ -3,7 +3,7 @@
 
 use rune::{Color, El, text};
 
-use super::{Desk, Look, control};
+use super::{Desk, Look, control, grid};
 use crate::ui::icons;
 use crate::ui::tokens::{Paint, Voice};
 
@@ -20,15 +20,23 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
     } else {
         "Open or create session"
     };
+    // Nothing can run it until a connection can: its words say so in the
+    // faint ink a disabled action takes, as well as being inert.
+    let enabled = desk.connection.client.is_some();
+    let words = if enabled {
+        ink
+    } else {
+        p.roles.text.faint.paint()
+    };
     let footer = control("phone-session-new", &create, p, |d, _| {
         d.phone_create_session()
     })
     .w_full()
     .radius(p.radius.full);
     let footer = if large_text {
-        labelled(footer, title, ink, p)
+        labelled(footer, title, words, p)
             .radius(p.radius.lg)
-            .fill(p.roles.layer.raised.paint())
+            .fill(grid::card_fill(p))
     } else if super::super::native_glass(desk, p) {
         let control = crate::mobile::Control {
             key: "phone-session-new".to_owned(),
@@ -37,7 +45,7 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
             subtitle: None,
             leading: false,
             symbol: "plus",
-            enabled: desk.connection.client.is_some(),
+            enabled,
             dark: p.dark(),
             ink,
             badge: None,
@@ -45,15 +53,11 @@ pub(super) fn footer(desk: &Desk, name: &str, ink: Color, large_text: bool, p: &
         };
         super::super::hosted(desk, footer, control)
     } else {
-        labelled(footer, title, ink, p)
+        labelled(footer, title, words, p)
             .continuous_corners()
-            .fill(p.roles.layer.raised.paint())
+            .fill(grid::card_fill(p))
     };
-    if desk.connection.client.is_some() {
-        footer
-    } else {
-        footer.inert()
-    }
+    if enabled { footer } else { footer.inert() }
 }
 
 /// Rune's own plus and title on the control, wrapping at large text.

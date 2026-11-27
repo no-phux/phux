@@ -2,7 +2,7 @@
 use crate::ui::tokens::Voice;
 use rune::{El, col, el, row, text};
 
-use super::{Desk, Look};
+use super::{Desk, Look, card, grid};
 use crate::ui::icons;
 use crate::ui::tokens::Paint;
 
@@ -51,8 +51,8 @@ fn no_matches(p: &Look) -> El {
     col()
         .key("phone-session-empty")
         .w_full()
-        .px(p.space.s3)
-        .py(p.space.s4)
+        .px(grid::inset(p))
+        .py(p.space.s2)
         .gap(p.space.s2)
         .child(
             text("No matches")
@@ -70,48 +70,78 @@ fn no_matches(p: &Look) -> El {
 }
 
 /// Before the first inventory arrives: where it is coming from, over the
-/// shape of what will appear. The placeholders hold still: a connection
-/// that never answers must not keep the phone drawing.
+/// shape of what will appear, drawn from the same grid and metrics as the
+/// rows that replace it so nothing moves when they do. The placeholders
+/// hold still: a connection that never answers must not keep the phone
+/// drawing.
 fn loading(desk: &Desk, p: &Look) -> El {
     let s = &p.space;
-    let bar = |w: f32, h: f32| {
-        el().w(w)
-            .h(h)
-            .radius(p.radius.xs)
-            .fill(p.roles.border.muted.paint())
-    };
     let section = |rows: usize| {
-        let mut section = col().w_full().gap(s.s4).child(
-            col()
-                .gap(s.s2)
-                .child(bar(s.s16 + s.s12, s.s3))
-                .child(bar(s.s16, s.s2)),
-        );
-        for _ in 0..rows {
-            section = section.child(
-                row()
-                    .min_h(super::row_h(p))
-                    .pl(s.s4)
-                    .gap(s.s2)
-                    .items_center()
-                    .child(bar(s.s3, s.s3))
-                    .child(bar(s.s16 + s.s16, s.s2 + s.s0_5)),
-            );
-        }
-        section
+        col()
+            .w_full()
+            .gap(s.s1)
+            .child(skeleton_heading(p))
+            .child(card((0..rows).map(|_| skeleton_row(p)), p))
     };
     col()
         .key("phone-session-loading")
         .w_full()
-        .gap(s.s6)
+        .gap(grid::block_gap(p))
         .label("Loading sessions")
         .child(
             text(format!("Reaching {}…", desk.machines.label()))
                 .font(p.ty.caption)
                 .color(p.roles.text.dim.paint())
-                .px(s.s1)
+                .px(grid::inset(p))
                 .a11y_hidden(),
         )
         .child(section(2).a11y_hidden())
         .child(section(1).a11y_hidden())
+}
+
+fn bar(w: f32, h: f32, p: &Look) -> El {
+    el().w(w)
+        .h(h)
+        .radius(p.radius.xs)
+        .fill(p.roles.border.muted.paint())
+}
+
+/// `bar` centred on a text line `line` points tall.
+fn on_line(bar: El, line: f32) -> El {
+    el().h(line).items_center().child(bar)
+}
+
+/// A section heading's shape: its name over its summary.
+fn skeleton_heading(p: &Look) -> El {
+    let s = &p.space;
+    col()
+        .w_full()
+        .min_h(s.touch_min)
+        .px(grid::inset(p))
+        .py(s.s1)
+        .gap(s.s0_5)
+        .child(on_line(bar(s.s16 + s.s12, s.s3, p), p.ty.lead.line_px()))
+        .child(on_line(bar(s.s16, s.s2, p), p.ty.caption.line_px()))
+}
+
+/// A pane row's shape: its mark in the leading column, its title and
+/// detail lines from the text column.
+fn skeleton_row(p: &Look) -> El {
+    let s = &p.space;
+    let line = p.ty.body.line_px();
+    let mark = grid::glyph(p) - s.s1;
+    row()
+        .w_full()
+        .px(grid::inset(p))
+        .py(s.s2 + s.s0_5)
+        .gap(s.s2)
+        .items_start()
+        .child(grid::lead_slot(bar(mark, mark, p), line, p))
+        .child(
+            col()
+                .grow(1.0)
+                .gap(s.s0_5)
+                .child(on_line(bar(s.s16 + s.s16, s.s2 + s.s0_5, p), line))
+                .child(on_line(bar(s.s16, s.s2, p), p.ty.caption.line_px())),
+        )
 }

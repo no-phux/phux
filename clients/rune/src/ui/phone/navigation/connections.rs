@@ -1,12 +1,13 @@
 //! One named destination, with the current computer and its status as
-//! context: a mark and a word, never colour alone.
+//! context: a mark and a word, never colour alone. A one-row grouped card
+//! on the rows' grid, so it leads the list as one of its sections.
 use phux_design::State;
 use rune::{El, col, el, row, text};
 
-use super::{Desk, Look, control};
+use super::{Desk, Look, card, control, grid};
 use crate::keys::Shortcut;
 use crate::ui::icons;
-use crate::ui::tokens::{Paint, Voice};
+use crate::ui::tokens::Paint;
 
 pub(super) fn view(desk: &Desk, p: &Look) -> El {
     let dim = p.roles.text.dim.paint();
@@ -22,13 +23,13 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
     );
     let title = text("Connections")
         .key("phone-connections-title")
-        .font(p.ty.label.medium())
+        .font(p.ty.body)
         .color(p.roles.text.text.paint())
         .wrap_anywhere()
         .a11y_hidden();
     let detail = text(format!("{} · {}", desk.machines.label(), desk.link_word()))
         .key("phone-connections-detail")
-        .font(p.ty.caption.host(desk.machines.label()))
+        .font(p.ty.caption)
         .color(dim)
         .wrap_anywhere()
         .a11y_hidden();
@@ -37,29 +38,30 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
         .radius(p.radius.full)
         .fill(p.status.state(state).tone.ink)
         .a11y_hidden();
-    let slot = p.icon.grid * p.type_scale;
     let destination = control("phone-session-connections", &label, p, |d, tx| {
         d.phone_action(Shortcut::Machines, tx)
     })
     .w_full()
     .gap(p.space.s2)
-    .py(p.space.s2);
+    .px(grid::inset(p))
+    .py(p.space.s2 + p.space.s0_5);
     if p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale {
         // The destination word gets the full measure at accessibility sizes;
         // the status and disclosure remain together below it, not beside it.
-        return destination.flex_wrap().child(title.w_full()).child(
-            col()
-                .key("phone-connections-detail")
-                .w_full()
-                .gap(p.space.s1)
-                .child(
-                    text(desk.machines.label())
-                        .font(p.ty.caption.host(desk.machines.label()))
-                        .color(dim)
-                        .wrap_anywhere(),
-                )
-                .child(
-                    row()
+        return card(
+            [destination.flex_wrap().child(title.w_full()).child(
+                col()
+                    .key("phone-connections-detail")
+                    .w_full()
+                    .gap(p.space.s1)
+                    .child(
+                        text(desk.machines.label())
+                            .font(p.ty.caption)
+                            .color(dim)
+                            .wrap_anywhere(),
+                    )
+                    .child(
+                        row()
                         .w_full()
                         .items_center()
                         .gap(p.space.s2)
@@ -84,20 +86,41 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
                             )
                             .color(dim),
                         ),
-                )
-                .a11y_hidden(),
+                    )
+                    .a11y_hidden(),
+            )],
+            p,
         );
     }
-    destination
-        .pr(p.space.s3 + p.space.s1)
-        .child(el().size(slot, slot).center().child(mark))
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .gap(p.space.s0_5)
-                .child(title)
-                .child(detail),
-        )
-        .child(super::section::chevron(true, p))
+    // The computer's mark in the rows' leading column, its link state as
+    // the badge a pane's agent state wears.
+    let tone = p.status.state(state);
+    let machine = el()
+        .size(grid::glyph(p), grid::glyph(p))
+        .center()
+        .child(rune::icon(&icons::MACHINES, grid::glyph(p)).color(dim))
+        .child(crate::ui::tile::state_badge(
+            tone.icon,
+            tone.tone.ink,
+            grid::card_fill(p),
+            grid::glyph(p),
+            p,
+        ))
+        .a11y_hidden();
+    let line = p.ty.body.line_px();
+    card(
+        [destination
+            .items_start()
+            .child(grid::lead_slot(machine, line, p).key("phone-connections-mark"))
+            .child(
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(p.space.s0_5)
+                    .child(title)
+                    .child(detail),
+            )
+            .child(super::section::chevron(true, p).self_center())],
+        p,
+    )
 }

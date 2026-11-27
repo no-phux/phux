@@ -3,7 +3,7 @@ use crate::ui::tokens::Voice;
 use phux_design::State;
 use rune::{El, col, el, text};
 
-use super::{Desk, Look, card, control, nested, separator};
+use super::{Desk, Look, card, control, grid};
 use crate::keys::{self, Shortcut};
 use crate::ui::icons;
 use crate::ui::tokens::Paint;
@@ -37,24 +37,21 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
     let s = &p.space;
     let mut list = col()
         .w_full()
-        .px(crate::ui::tokens::phone::page_margin())
+        .px(grid::margin())
         .pt(s.s2)
         .pb(s.s6)
-        .gap(s.s4);
+        .gap(grid::block_gap(p));
     for (index, group) in GROUPS.iter().enumerate() {
-        let mut surface = card(p);
-        for (i, &(action, icon)) in group.iter().enumerate() {
-            if i > 0 {
-                surface = surface.child(separator(p));
-            }
-            surface = surface.child(action_row(desk, action, icon, p));
-        }
+        let mut rows: Vec<El> = group
+            .iter()
+            .map(|&(action, icon)| action_row(desk, action, icon, p))
+            .collect();
         // What's new joins the places the app keeps: the top bar has no
         // bell of its own, and ⋯ carries its unread dot.
         if index == NEWS_GROUP {
-            surface = surface.child(separator(p)).child(news_row(desk, p));
+            rows.push(news_row(desk, p));
         }
-        list = list.child(surface);
+        list = list.child(card(rows, p));
     }
     col()
         .w_full()
@@ -65,6 +62,16 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
         })
         .scroll_edge_fade(s.s4)
         .child(list)
+}
+
+/// An action's icon in the rows' leading column.
+fn lead_icon(icon: &'static rune::Icon, ink: rune::Color, p: &Look) -> El {
+    grid::lead_slot(
+        rune::icon(icon, grid::glyph(p)).color(ink),
+        grid::glyph(p),
+        p,
+    )
+    .a11y_hidden()
 }
 
 /// What's new, with the unread dot ⋯ carried on the terminal.
@@ -85,13 +92,8 @@ fn news_row(desk: &Desk, p: &Look) -> El {
     )
     .w_full()
     .gap(s.s2)
-    .radius(nested(p))
-    .child(
-        el().size(p.icon.grid, p.icon.grid)
-            .center()
-            .child(rune::icon(&icons::BELL, p.icon.size.md).color(p.roles.text.dim.paint()))
-            .a11y_hidden(),
-    )
+    .px(grid::inset(p))
+    .child(lead_icon(&icons::BELL, p.roles.text.dim.paint(), p))
     .child(
         text("What's new")
             .grow(1.0)
@@ -101,12 +103,16 @@ fn news_row(desk: &Desk, p: &Look) -> El {
             .truncate()
             .a11y_hidden(),
     )
-    .children(unread.then(|| {
-        el().size(s.s2, s.s2)
-            .radius(p.radius.full)
-            .fill(crate::ui::news::unread_tone(p))
-            .a11y_hidden()
-    }))
+    // The unread dot sits where a row's chevron or check would.
+    .child(grid::trail_slot(
+        unread.then(|| {
+            el().size(s.s2, s.s2)
+                .radius(p.radius.full)
+                .fill(crate::ui::news::unread_tone(p))
+        }),
+        grid::trail_w(p),
+        p,
+    ))
 }
 
 fn action_row(desk: &Desk, action: Shortcut, icon: &'static rune::Icon, p: &Look) -> El {
@@ -141,13 +147,8 @@ fn action_row(desk: &Desk, action: Shortcut, icon: &'static rune::Icon, p: &Look
     )
     .w_full()
     .gap(p.space.s2)
-    .radius(nested(p))
-    .child(
-        el().size(p.icon.grid, p.icon.grid)
-            .center()
-            .child(rune::icon(icon, p.icon.size.md).color(glyph_ink))
-            .a11y_hidden(),
-    )
+    .px(grid::inset(p))
+    .child(lead_icon(icon, glyph_ink, p))
     .child(
         text(command.title.to_owned())
             .font(p.ty.label.medium())
