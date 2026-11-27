@@ -321,6 +321,10 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     let (client, mut rt) = fixture(true);
     // Unlike the geometry-only fixture, resize settling runs on the app clock.
     rt.poll = Some(Desk::poll);
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = true);
+    settle(&mut rt);
+    // Raising it resized once already; count only the toggle's resizes.
+    resized(&client);
     let before = rt.state.connection.fitted[&id(1)];
     tap(&mut rt, "phone-keyboard-toggle");
     settle(&mut rt);
