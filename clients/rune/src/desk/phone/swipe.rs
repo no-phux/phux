@@ -72,6 +72,8 @@ impl Beside {
 #[derive(Debug, Clone, Copy)]
 pub struct Across {
     dx: f32,
+    /// Position paired with `sampled`, independent of later same-frame moves.
+    sampled_dx: f32,
     velocity: f32,
     sampled: f64,
     /// Past the commit point, so the detent ticks once per crossing.
@@ -82,6 +84,7 @@ impl Across {
     pub(super) const fn new(clock: f64) -> Self {
         Self {
             dx: 0.0,
+            sampled_dx: 0.0,
             velocity: 0.0,
             sampled: clock,
             past: false,
@@ -96,11 +99,14 @@ impl Across {
             self.velocity = 0.0;
         }
         if dt > 0.0 {
-            let now = (dx - self.dx) / dt;
+            let now = (dx - self.sampled_dx) / dt;
             self.velocity = f32::midpoint(self.velocity, now);
             self.sampled = clock;
-            self.dx = dx;
+            self.sampled_dx = dx;
         }
+        // A frame can deliver several moves before the lift. Distance always
+        // follows the last one, even when no further time can sample velocity.
+        self.dx = dx;
     }
 
     /// The lift's speed: none after the finger rested.
@@ -326,6 +332,48 @@ mod tests {
         assert!(far < 400.0 * 0.5);
         assert!(far - rubber(360.0, w) < near);
         assert_eq!(rubber(-40.0, w), -near);
+    }
+
+    #[test]
+    fn same_clock_moves_keep_the_latest_distance() {
+        let mut across = Across::new(0.0);
+        across.sample(-60.0, 0.016);
+        across.sample(-240.0, 0.016);
+        assert_eq!(across.dx, -240.0);
+        assert!(across.commits(across.dx, 400.0, SESSION_COMMIT, 132.0, 0.3));
+        across.sample(-40.0, 0.016);
+        assert_eq!(across.dx, -40.0);
+        assert!(!across.commits(across.dx, 400.0, SESSION_COMMIT, 132.0, 0.3));
+    }
+
+    #[test]
+    fn untimed_moves_preserve_the_velocity_baseline_without_double_counting() {
+        let mut across = Across::new(0.0);
+        across.sample(-20.0, 0.02);
+        assert!((across.velocity + 500.0).abs() < 0.1);
+        across.sample(-60.0, 0.02);
+        assert!((across.velocity + 500.0).abs() < 0.1);
+        across.sample(-100.0, 0.04);
+        assert!((across.velocity + 2250.0).abs() < 0.1);
+        across.sample(-100.0, 0.06);
+        assert!((across.velocity + 1125.0).abs() < 0.1);
+        across.sample(200.0, 0.06);
+        assert_eq!(across.dx, 200.0, "a reversal updates distance, not time");
+        assert_eq!(
+            across.velocity(0.3),
+            0.0,
+            "untimed moves cannot revive a flick"
+        );
+    }
+
+    #[test]
+    fn an_entire_drag_at_the_initial_clock_has_distance_but_no_fabricated_flick() {
+        let mut across = Across::new(1.0);
+        across.sample(-20.0, 1.0);
+        assert!(!across.commits(across.dx, 400.0, PAGE_COMMIT, FLICK_MIN, 1.0));
+        across.sample(-240.0, 1.0);
+        assert!(across.commits(across.dx, 400.0, SESSION_COMMIT, 132.0, 1.0));
+        assert_eq!(across.velocity, 0.0);
     }
 
     #[test]

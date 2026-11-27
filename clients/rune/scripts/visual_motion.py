@@ -8,10 +8,25 @@ MOTION_FRAMES = {
 }
 
 ACCESSORY_RESIZE_FRAMES = {"first": 1, "middle": 6, "settled": 60}
+BATCHED_SWIPE_FRAMES = {
+    "idle": 0, "start": 1, "release": 2, "release-plus-100ms": 8, "settled": 128,
+}
 
 
 def motion_frames(stem):
+    if stem.startswith("batched-swipe-"):
+        return BATCHED_SWIPE_FRAMES
     return ACCESSORY_RESIZE_FRAMES if stem.startswith("accessory-resize-") else MOTION_FRAMES
+
+
+def batched_swipe_inventory(themes=("dark", "light")):
+    return {
+        f"navigation/batched-swipe-{theme}-{width}x{height}-2x-reduced-{reduced}-{stage}.png":
+            (width, height, 2)
+        for theme, (width, height), reduced, stage in product(
+            themes, ((393, 852), (320, 568), (393, 480), (320, 340)),
+            ("false", "true"), BATCHED_SWIPE_FRAMES)
+    }
 
 
 def accessory_resize_inventory(themes=("dark", "light")):

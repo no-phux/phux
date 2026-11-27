@@ -205,6 +205,15 @@ cancellation, reduced motion and keyboard-open cases supplement the small,
 light/dark and native-sized 2× matrix. They establish rendered trajectories
 and input semantics, not physical-device smoothness.
 
+Batched swipe cases queue two moves and a release before one frame. Compare
+idle, start, release, release +100 ms and settled edge-pull frames on both
+phone widths, full and native keyboard-reduced viewports, light/dark and
+reduced motion at true 2×. Their motion sidecars bind the actual fixed-frame
+timeline. The final displacement must determine whether Sessions opens;
+behavior tests also cover tabs, session boundaries, withdrawal, cancellation
+and untimed velocity accumulation. These cases do not establish physical
+touch feel or a velocity estimate for moves with no elapsed app time.
+
 Pane-picker cases compare long, similarly named panes at standard and AX5
 text sizes, light/dark, both phone widths and native keyboard-reduced 2×
 viewports. Retain top, keyboard-focused row and scrolled final-action frames.

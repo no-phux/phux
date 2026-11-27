@@ -17,6 +17,27 @@ fn at(rt: &mut Runtime<Desk>, phase: rune::TouchPhase, x: f32, y: f32, clock: f6
 }
 
 #[test]
+fn batched_moves_choose_the_final_tab_position_without_leaving_the_session() {
+    let (client, mut rt) = fixture(true);
+    let session = rt.state.selected_session_name();
+    let stage = geometry(&rt, "phone-spatial-stage").rect;
+    let (x, y) = (stage[0] + stage[2] * 0.6, stage[1] + stage[3] * 0.5);
+    at(&mut rt, Started, x, y, 1.0);
+    rt.touch(9, Moved, x - 20.0, y, 1.016);
+    rt.touch(9, Moved, x - 240.0, y, 1.020);
+    rt.touch(9, Ended, x - 240.0, y, 1.024);
+    rt.update(|d, tx| {
+        d.poll(1.032, tx);
+    });
+    rt.frame(1.0 / 60.0);
+    poll(&mut rt);
+    settle(&mut rt);
+    assert_eq!(focus(&rt), id(5));
+    assert_eq!(rt.state.selected_session_name(), session);
+    no_input(&client);
+}
+
+#[test]
 fn a_sideways_thumb_pages_to_the_next_tab_one_to_one() {
     let (client, mut rt) = fixture(true);
     let session = rt.state.selected_session_name();
