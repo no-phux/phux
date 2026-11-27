@@ -31,6 +31,20 @@ def valid_report():
             "key_id": "11111111-1111-4111-8111-111111111111"}
 
 
+def apple_tool(command, name):
+    """Stand-ins for the App Intents step's tools; None for any other."""
+    if name == "find-swiftc":
+        return "/toolchain/usr/bin/swiftc\n"
+    if name == "xcode-version":
+        return "Xcode 27.0\nBuild version 27A1\n"
+    if name == "app-intents":
+        app = Path(command[command.index("--output") + 1])
+        (app / "Metadata.appintents").mkdir(parents=True)
+        (app / "Metadata.appintents/extract.actionsdata").write_text("{}")
+        return ""
+    return None
+
+
 class BuildTests(unittest.TestCase):
     def test_native_evidence_is_not_matched_by_desktop_release_artifact_glob(self):
         workflow = (build.REPO / ".github/workflows/rune-build.yml").read_text()
@@ -144,7 +158,7 @@ class BuildTests(unittest.TestCase):
                     library.parent.mkdir(parents=True, exist_ok=True)
                     library.write_bytes(b"fresh")
                     return "note: native-static-libs: -framework Security -lSystem -lSystem\n"
-                return {"sdk": "/an sdk", "revision": "abc123"}.get(name, "")
+                return apple_tool(command, name) or {"sdk": "/an sdk", "revision": "abc123"}.get(name, "")
 
             with patch.multiple(build, IOS=ios, RUNE=rune), \
                     patch.object(build, "apple_environment", return_value={}), \
@@ -178,6 +192,13 @@ class BuildTests(unittest.TestCase):
             linked = out / "cargo/aarch64-apple-ios-sim/debug/libphux_rune_ios.a"
             self.assertEqual(linked.read_bytes(), b"fresh")
             self.assertIn(str(linked), swift)
+            # The Action Button's shortcut: constant values, then their metadata.
+            self.assertEqual(swift[swift.index("-module-name") + 1], "PhuxRune")
+            self.assertIn("-emit-const-values-path", swift)
+            intents = next(c for c in commands if "appintentsmetadataprocessor" in c)
+            self.assertEqual(intents[intents.index("--toolchain-dir") + 1], "/toolchain")
+            self.assertEqual(intents[intents.index("--xcode-version") + 1], "27A1")
+            self.assertEqual(intents[intents.index("--binary-file") + 1], str(app / "PhuxRune"))
 
     def test_command_runner_is_bounded_and_rooted(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -205,9 +226,12 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(result, (library, ["-lSystem"], "release"))
             self.assertTrue(library.is_file())
             self.assertIn("--release", run.call_args.args[0])
-            with patch.object(build, "run", side_effect=["/device/sdk\n", ""]) as run:
+            def device(command, _env, _out, name, **_kwargs):
+                return apple_tool(command, name) or ("/device/sdk\n" if name == "sdk" else "")
+
+            with patch.object(build, "run", side_effect=device) as run:
                 build.build_swift(out, {}, out / "App", [], library, ["-lSystem"], False, True)
-            command = run.call_args.args[0]
+            command = next(c.args[0] for c in run.call_args_list if "swiftc" in c.args[0])
             self.assertIn("arm64-apple-ios26.0", command)
             self.assertIn("iphoneos", command)
             self.assertIn("-O", command)

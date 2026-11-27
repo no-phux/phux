@@ -385,6 +385,21 @@ pub unsafe extern "C" fn phux_rune_ios_open_link(pointer: *mut c_void, url: *con
     })
 }
 
+/// Words heard for `session` by the Action Button's dictation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_rune_ios_dictate(
+    pointer: *mut c_void,
+    session: *const c_char,
+    words: *const c_char,
+) {
+    attempt(|| {
+        let host = unsafe { host(pointer)? };
+        let (session, words) = unsafe { (text(session)?, text(words)?) };
+        mobile::dictate(host.layer.runtime_mut(), session, words);
+        Ok(())
+    });
+}
+
 /// The phone's Live Activity gateway and grant, for every computer it attaches to.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_rune_ios_set_live(
