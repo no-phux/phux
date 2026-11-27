@@ -115,7 +115,7 @@ async fn establish_uds(path: &Path) -> Result<Io, DialFailure> {
 async fn establish_ws(plan: &WsDial) -> Result<Io, DialFailure> {
     // The plan names its TLS identity explicitly, so this never reads one
     // from the environment.
-    let ws = phux_dial::ws::dial(plan)
+    let ws = phux_dial::ws::dial_observed(plan, super::trace::ws_phase)
         .await
         .map_err(DialFailure::Remote)?;
     Ok(Io::ws(ws))
@@ -139,10 +139,12 @@ async fn establish_quic(plan: &QuicDial) -> Result<Io, DialFailure> {
 pub(super) async fn dial(target: &Target, options: ConnectOptions) -> Result<Io, ConnectionEnd> {
     let name = target.name.as_str();
     tokio::time::timeout(options.dial_timeout, async {
+        super::trace::phase("dial_plan_started");
         let plan = target.plan_dial().await.map_err(|error| match error {
             PlanError::Refused(message) => ConnectionEnd::Refused(message),
             PlanError::Unresolved(message) => ConnectionEnd::Dropped(Some(message)),
         })?;
+        super::trace::phase("dial_plan_ready");
         establish(&plan).await.map_err(|failure| failure.end(name))
     })
     .await

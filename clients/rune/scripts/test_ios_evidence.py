@@ -371,6 +371,20 @@ class InputOrderLogTests(unittest.TestCase):
             qualify.print_input_order_lines("quic", text)
         self.assertEqual(printed.getvalue(), "")
 
+    def test_all_establishment_stages_can_interleave_without_becoming_input(self):
+        phases = ("dial_plan_started", "dial_plan_ready", "ws_resolve", "ws_tcp_connect",
+                  "ws_tls_config", "ws_tls_handshake", "ws_upgrade", "ws_upgraded",
+                  "tls_sign_started", "tls_sign_returned")
+        rows = [self.row("attempt_started", 0), self.row("input_ready", 1)]
+        rows += [self.row(phase, index + 2, connection=2) for index, phase in enumerate(phases)]
+        rows.append(self.row("input_injected", 20))
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            qualify.print_input_order_lines("wss", self.trace(rows))
+        self.assertEqual(printed.getvalue().splitlines(), [
+            "wss: input_ready input_ready:true elapsed_ms=1 process_elapsed_ms=1",
+            "wss: input_injected InputKey elapsed_ms=20 process_elapsed_ms=20",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

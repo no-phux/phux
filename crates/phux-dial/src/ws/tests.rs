@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod phases;
+
 #[test]
 fn parses_ws_and_wss_targets() {
     let ws = WsTarget::parse("ws://127.0.0.1:8787/path").expect("ws");
@@ -134,7 +136,10 @@ async fn explicit_no_identity_dials_pinned_ipv6_wss_with_bearer_auth() {
                 token: Some(TOKEN.to_owned()),
                 trust: CertTrust::Pinned(fingerprint),
                 tls_server_name: None,
-                identity: None,
+                identity: Some(TlsClientIdentity::PemFiles {
+                    certificate: dir.path().join("unused-missing-cert"),
+                    private_key: dir.path().join("unused-missing-key"),
+                }),
             },
             &TlsClientIdentity::None,
         )

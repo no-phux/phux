@@ -8,6 +8,26 @@ terminal text or clipboard data. Normal and device launches do not enable it.
 The files distinguish dialing, HELLO, inventory and deadline events even when
 the main thread is slow.
 
+Within the existing dial budget, `dial_plan_started`/`dial_plan_ready` separate
+planning from the WebSocket lane's `ws_resolve`, `ws_tcp_connect`,
+`ws_tls_config`, `ws_tls_handshake`, `ws_upgrade` and `ws_upgraded`. Stages
+precede their operation; only a successful HTTP upgrade emits `ws_upgraded`.
+Plain WS omits TLS stages. A last stage identifies the interrupted operation,
+not its cause or a readiness guarantee.
+
+Held device-key TLS callbacks emit `tls_sign_started` and `tls_sign_returned`
+only when their calling task has an existing `AttemptTrace` scope. The signer
+is shared by QUIC and WSS, but library-created tasks (including Quinn background
+tasks) do not inherit that scope. Unscoped callbacks emit no rows; these labels
+do not promise complete QUIC or library-offloaded signing coverage or guess an
+attempt's identity. Returned includes signing refusal, not just success; CSR
+signing is separate.
+The interval includes the platform callback and surrounding scheduling, not
+exclusively Secure Enclave CPU time. No key, message, signature or error bytes
+enter these rows. A synchronous platform signer can block its current-thread
+runtime beyond a timeout: these observations do not change or preempt it.
+Older captures remain valid; none of these stages certifies inventory or input.
+
 Enrollment now owns an explicit trace identity before its blocking runtime is
 created; it does not depend on a consumer's task-local scope. The same five-field
 rows record fixed `enroll_*` phases for validation, planning, CSR preparation,

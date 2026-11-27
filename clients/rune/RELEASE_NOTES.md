@@ -1,8 +1,4 @@
-**Phux Rune 0.1.60**: 6 changes since 0.1.59.
+**Phux Rune 0.1.61**: 2 changes since 0.1.60.
 
-- Polish the mobile sessions drawer
-- Make the iPhone terminal composer toggleable
-- Export painted iPhone buttons for native activation
-- Rework iPhone terminal input and session switching
-- Developer mode and labs, feature flags every client and the server read
-- Frost sessions in place and swipe between tabs before sessions (#3033)
+- Deliberate phone pulls and swipes follow the latest finger position when moves arrive together.
+- Payload-free connection diagnostics identify the WebSocket establishment stage where a connection stalls.

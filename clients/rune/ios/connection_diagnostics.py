@@ -6,6 +6,9 @@ import subprocess
 
 PHASES = frozenset((
     "attempt_started", "dial_started", "dial_connected", "dial_deadline",
+    "dial_plan_started", "dial_plan_ready", "ws_resolve", "ws_tcp_connect",
+    "ws_tls_config", "ws_tls_handshake", "ws_upgrade", "ws_upgraded",
+    "tls_sign_started", "tls_sign_returned",
     "hello_sent", "hello_received", "hello_accepted", "topology_received", "topology_applied",
     "attach_ready", "initial_deadline", "end_closed", "end_dropped", "end_refused",
     "end_resync", "session_ended", "resync_requested", "nudge_requested",
