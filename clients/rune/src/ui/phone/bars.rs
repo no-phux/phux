@@ -255,8 +255,7 @@ fn place_detail(desk: &Desk, session: &str) -> String {
 /// lands. The active tab's place, counted from one, when it has.
 fn tucked_tab(desk: &Desk) -> Option<(usize, usize)> {
     let tabs = &desk.connection.tabs.list;
-    let typing = desk.phone_keyboard_visible() || desk.active_composer().is_some();
-    if tabs.len() < 2 || !typing {
+    if tabs.len() < 2 || !desk.phone_typing() {
         return None;
     }
     let at = tabs.iter().position(|tab| tab.active)?;

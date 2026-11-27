@@ -11,7 +11,13 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
     let viewport = geometry(rt, "phone-spatial-stage").rect;
     let toolbar = geometry(rt, "phone-navigation-toolbar").rect;
     let map = geometry(rt, "phone-minimap").rect;
-    assert_eq!(toolbar[3], 44.0, "reserved touch toolbar");
+    // Typing tucks Move and Panes away; the map still reaches every pane.
+    let typing = rt.state.phone_typing();
+    assert_eq!(
+        toolbar[3],
+        if typing { 0.0 } else { 44.0 },
+        "reserved touch toolbar"
+    );
     assert!(
         viewport[1] + viewport[3] <= toolbar[1] + 0.5,
         "toolbar must not cover the canvas"
@@ -32,6 +38,10 @@ fn assert_viewport(rt: &rune::Runtime<Desk>, rows: u16) {
         "every proposed row fits above the toolbar"
     );
     for key in ["phone-navigation", "phone-pane-picker"] {
+        if typing {
+            assert!(rt.find(key).is_none(), "{key} tucked away while typing");
+            continue;
+        }
         let action = geometry(rt, key).rect;
         assert_eq!(action[3], 44.0);
         assert!(action[1] >= toolbar[1] && action[1] + action[3] <= toolbar[1] + toolbar[3] + 0.5);
