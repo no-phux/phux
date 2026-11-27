@@ -130,8 +130,9 @@ fn key_rail(strip: El, p: &Look) -> El {
     let thumb = Live::new([0.0; 4]);
     let shown = Live::new(0.0);
     let (at_track, at_thumb, at_shown) = (track.clone(), thumb.clone(), shown.clone());
+    // Inset past the capsule's rounded ends, which the cue now sits inside.
     let (inset, height, track_height, slot, minimum) = (
-        p.space.s2,
+        p.space.s5,
         p.space.s1,
         p.space.hairline,
         p.space.s2,
@@ -150,9 +151,11 @@ fn key_rail(strip: El, p: &Look) -> El {
         at_thumb.set([inset + (width - length) * fraction, y, length, height]);
         at_shown.set(if at.max[0] > 0.5 { 1.0 } else { 0.0 });
     });
+    // Pinned along the strip's own bottom edge, inside its capsule: the
+    // cue costs the bar no height.
     let cue = el()
         .key("phone-strip-cue")
-        .w_full()
+        .pin(Some(0.0), None, Some(0.0), Some(0.0))
         .h(slot)
         .inert()
         .a11y_hidden()
@@ -264,7 +267,8 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
         .px(s.s2)
         .gap(s.s2)
         .items_center()
-        .child(el().pb(s.s2).child(leading))
+        .pb(s.s1)
+        .child(leading)
         .child(strip(
             phone,
             native_field,
@@ -273,7 +277,7 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
             strip_enter,
             p,
         ))
-        .child(el().pb(s.s2).child(pair))
+        .child(pair)
 }
 
 /// Return, pinned under the right thumb where a keyboard's return sits,

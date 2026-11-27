@@ -11,6 +11,8 @@ use crate::ui::tokens::Paint;
 /// Terminal actions as grouped lists: making, finding, naming, going
 /// elsewhere, and closing on its own at the end in the failure tone.
 pub(super) fn actions(desk: &Desk, p: &Look) -> El {
+    /// The Inbox, Computers and Settings group, which What's new ends.
+    const NEWS_GROUP: usize = 3;
     const GROUPS: [&[(Shortcut, &rune::Icon)]; 5] = [
         &[
             (Shortcut::NewTerminal, &icons::PLUS),
@@ -39,13 +41,18 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
         .pt(s.s2)
         .pb(s.s6)
         .gap(s.s4);
-    for group in GROUPS {
+    for (index, group) in GROUPS.iter().enumerate() {
         let mut surface = card(p);
         for (i, &(action, icon)) in group.iter().enumerate() {
             if i > 0 {
                 surface = surface.child(separator(p));
             }
             surface = surface.child(action_row(desk, action, icon, p));
+        }
+        // What's new joins the places the app keeps: the top bar has no
+        // bell of its own, and ⋯ carries its unread dot.
+        if index == NEWS_GROUP {
+            surface = surface.child(separator(p)).child(news_row(desk, p));
         }
         list = list.child(surface);
     }
@@ -58,6 +65,48 @@ pub(super) fn actions(desk: &Desk, p: &Look) -> El {
         })
         .scroll_edge_fade(s.s4)
         .child(list)
+}
+
+/// What's new, with the unread dot ⋯ carried on the terminal.
+fn news_row(desk: &Desk, p: &Look) -> El {
+    let unread = desk.news.unread;
+    let s = &p.space;
+    control(
+        "phone-action-news",
+        crate::ui::news::bell_name(desk),
+        p,
+        |d: &mut Desk, tx| {
+            d.close_phone_navigation();
+            tx.blur();
+            if !d.news.open {
+                d.toggle_news();
+            }
+        },
+    )
+    .w_full()
+    .gap(s.s2)
+    .radius(nested(p))
+    .child(
+        el().size(p.icon.grid, p.icon.grid)
+            .center()
+            .child(rune::icon(&icons::BELL, p.icon.size.md).color(p.roles.text.dim.paint()))
+            .a11y_hidden(),
+    )
+    .child(
+        text("What's new")
+            .grow(1.0)
+            .min_w(0.0)
+            .font(p.ty.label.medium())
+            .color(p.roles.text.text.paint())
+            .truncate()
+            .a11y_hidden(),
+    )
+    .children(unread.then(|| {
+        el().size(s.s2, s.s2)
+            .radius(p.radius.full)
+            .fill(crate::ui::news::unread_tone(p))
+            .a11y_hidden()
+    }))
 }
 
 fn action_row(desk: &Desk, action: Shortcut, icon: &'static rune::Icon, p: &Look) -> El {

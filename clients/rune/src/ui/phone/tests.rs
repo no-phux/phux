@@ -177,7 +177,6 @@ fn every_phone_control_is_a_touch_target() {
     for key in [
         "phone-back",
         "phone-place",
-        "phone-news",
         "phone-more",
         "phone-tab-0",
         "phone-tab-new",

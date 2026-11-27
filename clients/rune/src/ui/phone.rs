@@ -6,7 +6,7 @@
 //! Every control is a touch target of `space.touch_min` on an opaque
 //! surface: the phone spends its one backdrop blur on the session dock,
 //! so nothing here fakes glass. On the native iOS host the floating controls
-//! (the top bar's back, bell and more, and the session dock) are instead
+//! (the top bar's back and more, and the session dock) are instead
 //! UIKit's own Liquid Glass ([`hosted`]).
 
 use std::ops::Deref;
