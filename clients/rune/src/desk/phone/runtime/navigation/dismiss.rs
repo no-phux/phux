@@ -350,6 +350,34 @@ fn a_child_that_left_for_another_pane_or_page_does_not_come_back() {
 }
 
 #[test]
+fn the_inbox_sending_you_to_a_terminal_does_not_bring_the_page_back() {
+    let (_, mut rt) = fixture();
+    detailed_inventory(&mut rt);
+    // The waiting pane is the one on screen, and then one whose view is
+    // not ready yet: either way Return on an empty draft goes to it.
+    for current in [false, true] {
+        if current {
+            rt.update(|d, _| d.connection.shown.as_mut().unwrap().resource = ResourceId::local(2));
+        }
+        page(&mut rt, Page::Actions);
+        tap(&mut rt, "phone-action-Inbox", 0.1);
+        assert!(rt.state.inbox.open);
+        rt.update(|d, tx| d.submit_picked(tx));
+        assert!(!rt.state.inbox.open, "current={current}");
+        poll(&mut rt);
+        assert_eq!(rt.state.phone_page(), None, "current={current}");
+        assert!(rt.state.phone.as_ref().unwrap().return_to.is_none());
+        rt.update(|d, _| d.connection.shown.as_mut().unwrap().resource = ResourceId::local(1));
+    }
+    // Needs you, from Sessions, the same.
+    page(&mut rt, Page::Sessions);
+    tap(&mut rt, "phone-needs-you-heading", 1.3);
+    rt.update(|d, tx| d.submit_picked(tx));
+    poll(&mut rt);
+    assert_eq!(rt.state.phone_page(), None);
+}
+
+#[test]
 fn ios_connections_comes_up_over_the_page_it_was_opened_from() {
     let (_, mut rt) = fixture();
     detailed_inventory(&mut rt);
@@ -411,6 +439,28 @@ fn sessions_opens_on_the_pane_on_screen() {
             && row.rect[1] + row.rect[3] <= list.visible[1] + list.visible[3] + 0.5,
         "{row:?} in {list:?}"
     );
+    // It lands on the session's card, whole at the top, not a cut card
+    // above it.
+    let section = crate::ui::element(&rt, "phone-session-section-1");
+    let inset = phux_design::tokens::SPACE.s2;
+    assert!(
+        (section.rect[1] - (list.visible[1] + inset)).abs() < 1.0,
+        "{section:?} in {list:?}"
+    );
+    // Where the current pane already shows, even partly, the list opens at
+    // its top, Connections and Needs you whole, though the last visit left
+    // it scrolled down.
+    rt.update(|d, _| d.close_phone_navigation());
+    settle(&mut rt);
+    rt.set_viewport((320.0, 568.0), 2.0);
+    page(&mut rt, Page::Sessions);
+    let list = crate::ui::element(&rt, "phone-session-list");
+    let row = crate::ui::element(&rt, "phone-session-pane-@1");
+    assert!(row.rect[1] < list.visible[1] + list.visible[3], "{row:?}");
+    let band = crate::ui::element(&rt, "phone-needs-you");
+    assert_eq!(band.scrolled[1], 0.0, "a pane in sight needs no scroll");
+    assert!(band.rect[1] >= list.visible[1], "{band:?} in {list:?}");
+    assert_eq!(rt.state.phone.as_ref().unwrap().reveal, None);
 }
 
 #[test]

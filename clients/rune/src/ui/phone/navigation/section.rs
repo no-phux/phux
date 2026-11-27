@@ -132,6 +132,12 @@ fn session_header(
         Some(folded) => header.expanded(!folded).child(chevron(folded, p)),
         None => header.child(chevron(true, p)),
     };
+    // Folded, the current session's header stands for its current pane.
+    let header = if current && fold == Some(true) {
+        super::resource::where_you_are(header)
+    } else {
+        header
+    };
     row()
         .key(format!("phone-session-header-{id}"))
         .w_full()
@@ -261,28 +267,37 @@ pub(super) fn attention_count(count: usize, p: &Look) -> El {
 /// The Needs you band's heading, set as every section heading is: its
 /// name, the count as the sessions' headings mark attention, and the
 /// disclosure on their column, here to the Inbox, where every question
-/// can be answered in place. A touch row tall, as theirs are. At the
-/// accessibility sizes the name takes the whole measure, with the count
-/// and the disclosure under it.
+/// can be answered in place. A touch row tall, as theirs are, and a tap
+/// anywhere on it opens the Inbox. To assistive technology it stays a
+/// heading, so the rotor finds the band, and the disclosure is its own
+/// "Open Inbox" button. At the accessibility sizes the name takes the
+/// whole measure, with the count and the disclosure under it.
 pub(super) fn inbox_heading(key: &str, title: &str, count: usize, label: String, p: &Look) -> El {
-    let frame = heading_row(
-        control(key, &label, p, |d: &mut Desk, tx| {
-            d.phone_action(crate::keys::Shortcut::Inbox, tx);
-        }),
-        p,
-    );
+    let open = |d: &mut Desk, tx: &mut rune::Tx| d.phone_action(crate::keys::Shortcut::Inbox, tx);
+    // The disclosure is the touch row's height, so the row adds no padding.
+    let frame = heading_row(row().key(key.to_owned()), p)
+        .py(0.0)
+        .role("heading")
+        .label(label)
+        .on_press_tx(open);
     let name = heading_body(
         heading_title(title.to_owned(), p).key(format!("{key}-title")),
         None,
         p,
     );
     let count = (count > 0).then(|| attention_count(count, p));
+    let disclosure = control(&format!("{key}-open"), "Open Inbox", p, open)
+        .px(0.0)
+        .w(grid::trail_w(p))
+        .center()
+        .child(
+            rune::icon(&icons::CHEVRON_RIGHT, grid::trail_mark(p))
+                .color(p.roles.text.dim.paint())
+                .a11y_hidden(),
+        );
     if !count_under(p) {
-        return frame.child(name).children(count).child(chevron(true, p));
+        return frame.child(name).children(count).child(disclosure);
     }
-    let disclosure = rune::icon(&icons::CHEVRON_RIGHT, grid::trail_mark(p))
-        .color(p.roles.text.dim.paint())
-        .a11y_hidden();
     frame.child(
         name.child(
             row()

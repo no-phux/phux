@@ -10,24 +10,16 @@ use crate::desk::Pending;
 
 pub(crate) mod native;
 mod returns;
+mod reveal;
 
 pub use returns::Return;
+pub use reveal::Reveal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Sessions,
     Actions,
     Switcher,
-}
-
-/// Where the Sessions list opens.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Reveal {
-    /// Where it was left, this far down: a search keeps its place among
-    /// its results. Read as it opens, before the list reports again.
-    Kept(f32),
-    /// Around the pane on screen.
-    Current,
 }
 
 /// A list's scroll offset, reported by its scroller in every frame that
@@ -148,6 +140,7 @@ impl Desk {
             return;
         }
         self.close_phone_menu();
+        let clock = self.clock;
         if let Some(phone) = &mut self.phone {
             phone.reset_navigation();
             phone.release();
@@ -160,7 +153,7 @@ impl Desk {
             phone.query.focused = false;
             if page == Page::Sessions {
                 phone.reveal = Some(if phone.query.text.is_empty() {
-                    Reveal::Current
+                    Reveal::current(clock, phone.sessions_scroll.get())
                 } else {
                     Reveal::Kept(phone.sessions_scroll.get())
                 });
@@ -189,47 +182,6 @@ impl Desk {
         if let Some(phone) = &mut self.phone {
             phone.query.clear();
         }
-    }
-
-    /// The Sessions list's first layout after opening: back where it was
-    /// for a kept search, else just far enough to show the pane on screen
-    /// (nowhere, when it already shows). At the large text sizes search
-    /// scrolls with the list, so the list opens at its top, where search
-    /// leads, rather than scroll it away.
-    pub fn reveal_phone_sessions(&mut self, large_text: bool, tx: &mut Tx) {
-        const LIST: &str = "phone-session-list";
-        let Some(reveal) = self.phone.as_mut().and_then(|p| p.reveal.take()) else {
-            // A later resize (the keyboard) changes nothing the view reads.
-            tx.live_only();
-            return;
-        };
-        match reveal {
-            Reveal::Kept(kept) => tx.scroll_to_instant(LIST, 0.0, kept),
-            Reveal::Current if large_text => {}
-            Reveal::Current => {
-                if let Some(row) = self.current_session_row() {
-                    tx.scroll_into_view_in(LIST, row);
-                    tx.instant();
-                }
-            }
-        }
-    }
-
-    /// The row that says where you are: the current pane, or its session's
-    /// header while that session is folded.
-    fn current_session_row(&self) -> Option<String> {
-        let shown = self.connection.shown.as_ref()?;
-        let name = self.selected_session_name()?;
-        let session = self.connection.topology.as_ref()?.session_named(&name)?.id;
-        let folded = self
-            .phone
-            .as_ref()
-            .is_some_and(|p| p.folded.contains(&session));
-        Some(if folded {
-            format!("phone-session-{session}")
-        } else {
-            format!("phone-session-pane-{}", shown.resource)
-        })
     }
 
     /// Hiding search preserves the filter and the terminal's keyboard choice.

@@ -83,7 +83,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
         p,
     )
     .key(format!("{}-glyph-{}", place.key(), resource.id));
-    control(&row_key, &label, p, move |d, _| {
+    let row = control(&row_key, &label, p, move |d, _| {
         d.close_phone_sessions_picked();
         d.show(id.clone(), &session);
     })
@@ -122,7 +122,18 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
                     .a11y_hidden()
             })),
     )
-    .child(grid::trail_slot(check, line, p))
+    .child(grid::trail_slot(check, line, p));
+    if current && place == Place::Session {
+        where_you_are(row)
+    } else {
+        row
+    }
+}
+
+/// The row that says where you are reports its layout, so Sessions can
+/// open on it when it is out of sight. Scrolling runs no view for it.
+pub(super) fn where_you_are(row: El) -> El {
+    row.on_layout_tx(|d: &mut Desk, rect, tx| d.reveal_phone_current(rect, tx))
 }
 
 /// Session membership is already the group heading. Spend the second line on

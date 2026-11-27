@@ -335,7 +335,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
             stick_bottom: false,
         })
         .on_scroll_offset(phone.sessions_scroll.follow())
-        .on_layout_tx(move |d: &mut Desk, _, tx| d.reveal_phone_sessions(large_text, tx));
+        .on_layout_tx(move |d: &mut Desk, rect, tx| d.reveal_phone_sessions(large_text, rect, tx));
     // At large text sizes these controls can each be taller than the
     // ordinary list viewport. Let the whole body scroll, including search
     // and New session, rather than pinning oversized chrome over the list.

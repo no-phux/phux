@@ -22,6 +22,11 @@ impl Desk {
     }
 
     pub fn show(&mut self, terminal: ResourceId, session_name: &str) {
+        // Choosing a pane is where the user is going: a page a child was
+        // opened from does not come back over it.
+        if let Some(phone) = &mut self.phone {
+            phone.return_to = None;
+        }
         self.link.creating = None;
         self.link.created = None;
         self.link.uncertain_session = None;

@@ -109,7 +109,7 @@ fn needs_you(desk: &Desk, all: &[Addressable], p: &Look) -> Option<El> {
     if waiting.is_empty() {
         return None;
     }
-    let label = format!("Needs you, {} · Open Inbox", waiting.len());
+    let label = format!("Needs you, {}", waiting.len());
     Some(
         col()
             .key("phone-needs-you")
