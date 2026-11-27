@@ -1,6 +1,11 @@
 [
   {
     "date": "2026-11-26",
+    "title": "Phone pulls and swipes follow your finger",
+    "body": "In Rune 0.1.61: deliberate phone pulls and swipes follow the latest finger position when moves arrive together."
+  },
+  {
+    "date": "2026-11-26",
     "title": "Polish the mobile sessions drawer",
     "body": "In Rune 0.1.60."
   },
