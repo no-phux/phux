@@ -119,6 +119,12 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
     );
     rt.frame(0.0);
     let strip = rt.presented("phone-tabs").expect("the strip").0;
+    let row = rt.presented("phone-tab-strip").expect("the strip's row").0;
+    assert!(
+        (row[3] - 44.0).abs() < 0.5,
+        "the tab row is one touch target tall, not {}",
+        row[3]
+    );
     let before = rt.presented("phone-tab-5").expect("the last tab").0;
     assert!(
         before[0] + before[2] > strip[0] + strip[2],
