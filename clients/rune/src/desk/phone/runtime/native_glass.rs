@@ -168,3 +168,19 @@ fn more_carries_whats_new_unread_dot_natively() {
     assert_eq!(more["label"], "Terminal actions, What's new has updates");
     assert_eq!(more["badge"].as_array().map(Vec::len), Some(3));
 }
+
+/// The system keyboard has its own return: while it shows, the accessory
+/// bar gives Return's width to its keys, and pins Return again once the
+/// keyboard is down and nothing else sends one.
+#[test]
+fn the_system_keyboard_owns_return_while_it_shows() {
+    let (_client, mut rt) = native();
+    for (keyboard, pinned) in [(true, false), (false, true)] {
+        rt.update(move |d, tx| {
+            d.phone.as_mut().unwrap().keyboard = keyboard;
+            tx.instant();
+        });
+        settle(&mut rt);
+        assert_eq!(rt.find("phone-key-Enter").is_some(), pinned, "{keyboard}");
+    }
+}
