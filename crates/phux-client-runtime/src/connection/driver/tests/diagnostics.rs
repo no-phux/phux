@@ -6,7 +6,10 @@ use phux_protocol::wire::info::SessionSnapshot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Clone, Default)]
-struct Recorded(Arc<Mutex<Vec<serde_json::Value>>>);
+pub(super) struct Recorded(
+    pub(super) Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(super) Arc<Mutex<Vec<AttemptTrace>>>,
+);
 
 #[derive(Default)]
 struct Fields(serde_json::Map<String, serde_json::Value>);
@@ -30,6 +33,9 @@ impl tracing::Subscriber for Recorded {
             let mut fields = Fields::default();
             event.record(&mut fields);
             self.0.lock().unwrap().push(fields.0.into());
+            if let Some(current) = AttemptTrace::current() {
+                self.1.lock().unwrap().push(current);
+            }
         }
     }
     fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
@@ -60,7 +66,7 @@ fn inventory_request(peer: &mut tokio::io::DuplexStream) -> u32 {
     panic!("HELLO must lead to the inventory read");
 }
 
-async fn inventory_attempt(connection: u64, answer: bool) -> Shared {
+pub(super) async fn inventory_attempt(connection: u64, answer: bool) -> Shared {
     let WriteFixture {
         mut io,
         mut peer,

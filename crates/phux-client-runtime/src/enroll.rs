@@ -277,9 +277,10 @@ impl std::fmt::Debug for DeviceTlsSigner {
 
 impl rustls::sign::Signer for DeviceTlsSigner {
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
-        self.0
-            .sign(message)
-            .map_err(|reason| rustls::Error::General(format!("device key: {reason}")))
+        crate::connection::trace::phase("tls_sign_started");
+        let result = self.0.sign(message);
+        crate::connection::trace::phase("tls_sign_returned");
+        result.map_err(|reason| rustls::Error::General(format!("device key: {reason}")))
     }
 
     fn scheme(&self) -> SignatureScheme {

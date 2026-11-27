@@ -63,3 +63,16 @@ impl AttemptTrace {
 pub(crate) fn phase(phase: &'static str) {
     let _ = CURRENT.try_with(|current| current.record(phase));
 }
+
+/// Translate the dial module's closed vocabulary without carrying dial data.
+pub(super) fn ws_phase(observed: phux_dial::ws::WsPhase) {
+    use phux_dial::ws::WsPhase;
+    phase(match observed {
+        WsPhase::Resolve => "ws_resolve",
+        WsPhase::TcpConnect => "ws_tcp_connect",
+        WsPhase::TlsConfig => "ws_tls_config",
+        WsPhase::TlsHandshake => "ws_tls_handshake",
+        WsPhase::Upgrade => "ws_upgrade",
+        WsPhase::Upgraded => "ws_upgraded",
+    });
+}
