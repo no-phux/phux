@@ -236,6 +236,7 @@ fn map_swipes_do_not_also_tap_and_picker_reaches_document_and_tiny_leaves() {
 #[test]
 fn modal_blocks_map_handle_picker_and_tabs_without_terminal_input() {
     let (client, mut rt) = fixture(true);
+    show_tabs(&mut rt);
     rt.update(|d, _| d.pending = Some(crate::desk::Pending::Close(id(1))));
     settle(&mut rt);
     for key in [
@@ -383,6 +384,7 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
         "layout change cancels in-flight navigation"
     );
     assert_eq!(rt.state.phone.as_ref().unwrap().travel, [0.0; 2]);
+    show_tabs(&mut rt);
     tap(&mut rt, "phone-tab-1");
     poll(&mut rt);
     settle(&mut rt);

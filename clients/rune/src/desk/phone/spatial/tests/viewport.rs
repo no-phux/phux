@@ -101,6 +101,7 @@ fn phone_sizes_reserve_toolbar_and_header_space_so_the_last_prompt_stays_visible
 fn a_single_terminal_keeps_more_and_gives_its_whole_stage_to_the_terminal() {
     let (client, mut rt) = fixture(true);
     rt.poll = Some(Desk::poll);
+    show_tabs(&mut rt);
     tap(&mut rt, "phone-tab-1");
     poll(&mut rt);
     settle(&mut rt);
