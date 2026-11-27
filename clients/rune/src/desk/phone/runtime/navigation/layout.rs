@@ -144,7 +144,7 @@ fn editing_a_filter_resets_the_old_scroll_offset_to_the_first_result() {
     let list = element(&rt, "phone-session-list").rect;
     let first = element(&rt, "phone-session-1").rect;
     // The list's top inset, and nothing of the old offset.
-    let inset = phux_design::tokens::SPACE.s4;
+    let inset = phux_design::tokens::SPACE.s2;
     assert!(
         first[1] >= list[1] && first[1] - list[1] < inset + 1.0,
         "{first:?} vs {list:?}"

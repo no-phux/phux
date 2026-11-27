@@ -484,7 +484,7 @@ fn native_session_filter_returns_to_the_first_result_after_scrolling() {
     // The list's top inset, none of the old offset.
     let space = phux_design::tokens::SPACE;
     assert!(
-        first[1] >= list[1] && first[1] - list[1] < space.s4 + 1.0,
+        first[1] >= list[1] && first[1] - list[1] < space.s2 + 1.0,
         "{first:?} vs {list:?}"
     );
     assert_eq!(bridge.snapshot(&rt).text, "session");

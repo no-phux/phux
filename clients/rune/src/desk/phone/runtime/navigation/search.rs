@@ -133,7 +133,7 @@ fn session_search_clear_reopens_a_blurred_filter_and_resets_the_old_scroll() {
     let first = element(&rt, "phone-needs-you");
     let space = phux_design::tokens::SPACE;
     assert!(first.rect[1] >= list.rect[1]);
-    assert!(first.rect[1] - list.rect[1] < space.s4 + 1.0);
+    assert!(first.rect[1] - list.rect[1] < space.s2 + 1.0);
     no_terminal_input(&client);
 }
 

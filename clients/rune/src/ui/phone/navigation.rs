@@ -436,15 +436,17 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .grow(1.0)
         .min_h(0.0)
         .pb(s.s3)
-        .child(el().w_full().px(margin).child(search))
+        // The list scrolls under a fade that starts clear of the search
+        // capsule, so a card is never cut flush along the field's edge.
+        .child(el().w_full().px(margin).pb(s.s2).child(search))
         .child(
             scroller
                 .grow(1.0)
                 .scroll_edge_fade(s.s4)
                 .scroll_margin(s.s2)
-                .child(list.px(margin).py(s.s4)),
+                .child(list.px(margin).py(s.s2)),
         )
-        .child(el().w_full().px(margin).child(footer))
+        .child(el().w_full().px(margin).pt(s.s2).child(footer))
 }
 
 /// An inset hairline between touch rows, from the text column to the
