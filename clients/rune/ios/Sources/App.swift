@@ -288,7 +288,25 @@ final class RuneController: UIViewController, UIAdaptivePresentationControllerDe
             surface.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor)])
         self.surface = surface
         if let link = pendingCard { pendingCard = nil; surface.openLink(link) }
+        // Only once there is a computer to send to; a run before waits here.
+        if probe == nil { DictationCenter.shared.present = { [weak self] in self?.dictate(to: $0) } }
         showNotice()
+    }
+
+    /// The Action Button: listen for `session`, or send if already listening.
+    private func dictate(to session: String) {
+        // Over whatever is in front (an alert, the attachment picker), not instead of it.
+        var top: UIViewController = self
+        while let next = top.presentedViewController { top = next }
+        let sheet = DictationSheet(session: session)
+        sheet.send = { [weak self] words in self?.surface?.dictate(words, to: session) }
+        if let open = top as? DictationSheet, let under = open.presentingViewController {
+            if open.session == session { open.pressedAgain(); return }
+            // One microphone: another session's sheet replaces this one.
+            open.cancel { under.present(sheet, animated: true) }
+            return
+        }
+        top.present(sheet, animated: true)
     }
 
     private func showNotice() {

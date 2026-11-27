@@ -7,6 +7,7 @@ use rune::{Runtime, TouchPhase};
 use super::*;
 
 mod composer;
+mod dictation;
 mod native_glass;
 mod navigation;
 mod settings;

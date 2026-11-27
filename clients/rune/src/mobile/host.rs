@@ -77,6 +77,15 @@ pub fn open_link(rt: &mut rune::Runtime<State>, url: &str) -> bool {
     true
 }
 
+/// Words the host heard for `session` (the Action Button's dictation):
+/// sent to that session's terminal once it shows, and never elsewhere.
+pub fn dictate(rt: &mut rune::Runtime<State>, session: &str, text: &str) {
+    rt.update(|state, tx| {
+        state.dictate(session, text);
+        tx.instant();
+    });
+}
+
 /// Where the phone's Live Activity gateway takes agent counts for it, and
 /// its grant there; written to every computer it attaches to.
 pub fn set_live(rt: &mut rune::Runtime<State>, device: &str, gateway: &str, grant: &str) {
