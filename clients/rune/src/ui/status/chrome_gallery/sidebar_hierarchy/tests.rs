@@ -2,7 +2,7 @@ use super::*;
 use crate::ui::tokens::Paint;
 use phux_protocol::wire::frame::FrameKind;
 
-fn no_terminal_input(rt: &Runtime<Desk>) {
+pub(super) fn no_terminal_input(rt: &Runtime<Desk>) {
     let client = rt.state.connection.client.as_ref().unwrap();
     for bytes in client.take_outbound() {
         let frame = phux_wire_fixtures::decode_one(&bytes);
