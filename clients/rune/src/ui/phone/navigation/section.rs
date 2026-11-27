@@ -125,9 +125,7 @@ fn session_header(
         Some(summary.join(" · ")),
         p,
     );
-    let header = heading_row(header, p)
-        .child(heading)
-        .children((tally.waiting > 0).then(|| attention_count(tally.waiting, p)));
+    let header = with_count(heading_row(header, p), heading, tally.waiting, p);
     match fold {
         Some(folded) => header.expanded(!folded).child(chevron(folded, p)),
         None => header.child(chevron(true, p)),
@@ -162,6 +160,24 @@ pub(super) fn heading_title(title: String, p: &Look) -> El {
     }
 }
 
+/// Whether a heading's attention count sits under its name rather than on
+/// the trailing column: at the accessibility sizes, where a column beside
+/// the name would break even a two-word name across lines.
+fn count_under(p: &Look) -> bool {
+    p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale
+}
+
+/// `heading` (a [`heading_body`]) in `frame`, with the attention count for
+/// `waiting` panes, if any: on its own column, or under the name.
+pub(super) fn with_count(frame: El, heading: El, waiting: usize, p: &Look) -> El {
+    let count = (waiting > 0).then(|| attention_count(waiting, p));
+    if count_under(p) {
+        frame.child(heading.children(count))
+    } else {
+        frame.child(heading).children(count)
+    }
+}
+
 /// A heading's name over its optional one-line summary in quiet ink; the
 /// summary wraps, never cut, at the largest text sizes (audit row 25).
 pub(super) fn heading_body(title: El, summary: Option<String>, p: &Look) -> El {
@@ -186,7 +202,7 @@ pub(super) fn chevron(points_right: bool, p: &Look) -> El {
     } else {
         &icons::CHEVRON
     };
-    let mark = rune::icon(icon, p.icon.size.md).color(p.roles.text.dim.paint());
+    let mark = rune::icon(icon, grid::trail_mark(p)).color(p.roles.text.dim.paint());
     grid::trail_slot(Some(mark), grid::trail_w(p), p)
 }
 
@@ -213,15 +229,24 @@ pub(super) fn attention_count(count: usize, p: &Look) -> El {
 
 /// A band's heading over its card, set as every section heading is: its
 /// name, and the count as the sessions' headings mark attention, on their
-/// column, with the disclosure's column left empty.
-pub(super) fn band_heading(key: &str, title: &str, count: usize, p: &Look) -> El {
+/// column, with the disclosure's column left empty. At the accessibility
+/// sizes the count sits under the name and the name takes the full measure.
+pub(super) fn band_heading(key: &str, title: &str, count: usize, label: String, p: &Look) -> El {
     // Not a control, so no touch height: it sits on its card as the
     // sessions' names do on theirs.
-    heading_row(row().key(key.to_owned()), p)
+    let frame = heading_row(row().key(key.to_owned()), p)
         .min_h(0.0)
         .role("heading")
-        .label(format!("{title}, {count}"))
-        .child(heading_body(heading_title(title.to_owned(), p), None, p))
-        .child(attention_count(count, p))
-        .child(grid::trail_slot(None, grid::trail_w(p), p))
+        .label(label);
+    with_count(
+        frame,
+        heading_body(
+            heading_title(title.to_owned(), p).key(format!("{key}-title")),
+            None,
+            p,
+        ),
+        count,
+        p,
+    )
+    .children((!count_under(p)).then(|| grid::trail_slot(None, grid::trail_w(p), p)))
 }

@@ -179,11 +179,11 @@ fn assert_ring_inside(rt: &Runtime<Desk>, key: &str) {
     }
 }
 
-/// One grid, measured: every leading mark on one centre line, every title
-/// on one text column, section names on the content inset, the check on
-/// the trailing column, the search text on its field's centre line, and
-/// the page title on Done's, at both phone widths, the default text size
-/// and XXL, desktop-hosted and native.
+/// One grid, measured: every leading mark on one centre line and on the
+/// section names' edge, every title on one text column, section names on
+/// the content inset, the check on the trailing column, the search text on
+/// its field's centre line, and the page title on Done's, at both phone
+/// widths, the default text size and XXL, desktop-hosted and native.
 #[test]
 fn the_sessions_page_keeps_one_grid_at_every_width_and_text_size() {
     for width in [320.0, 393.0] {
@@ -203,6 +203,57 @@ fn the_sessions_page_keeps_one_grid_at_every_width_and_text_size() {
                 assert_one_grid(&rt);
             }
         }
+    }
+}
+
+/// At the largest text size the leading marks, their state badges and the
+/// trailing check keep pace with the text, as symbols do with Dynamic Type:
+/// none shrinks to a speck beside a headline-sized title.
+#[test]
+fn sessions_marks_follow_the_largest_text() {
+    for width in [320.0, 393.0] {
+        let (_, mut rt) = fixture();
+        detailed_inventory(&mut rt);
+        rt.set_viewport((width, 852.0), 2.0);
+        rt.update(|d, _| {
+            d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+            d.open_phone_sessions();
+        });
+        settle(&mut rt);
+        let at = |key: &str| element(&rt, key).rect;
+        let line = at("phone-needs-you-pane-title-@4")[3];
+        let glyph = at("phone-needs-you-pane-glyph-@4");
+        assert!(
+            glyph[3] >= 0.5 * line,
+            "mark {glyph:?} beside a {line} line"
+        );
+        near(
+            mid_x(at("phone-session-search-mark")),
+            mid_x(at("phone-needs-you-pane-mark-@4")),
+            "magnifier and pane marks share a column",
+        );
+        // The badge is the first one after its pane's mark.
+        let all = rt.elements();
+        let from = all
+            .iter()
+            .position(|e| e.key.as_deref() == Some("phone-needs-you-pane-glyph-@4"))
+            .expect("glyph");
+        let badge = all[from..]
+            .iter()
+            .find(|e| e.key.as_deref() == Some("state-badge"))
+            .expect("a waiting pane wears a badge");
+        assert!(badge.rect[2] >= 8.0 && badge.rect[3] >= 8.0, "{badge:?}");
+        assert!(badge.rect[2] >= 0.5 * glyph[2], "{badge:?} on {glyph:?}");
+        // The heading's count moves under its name, so "Needs you" is whole.
+        let band = at("phone-needs-you-heading-title");
+        let one_line = at("phone-session-title-1")[3];
+        assert!(band[3] < 1.5 * one_line, "Needs you broke: {band:?}");
+        let check = at("phone-session-current-@1");
+        let title = at("phone-session-pane-title-@1")[3];
+        assert!(
+            check[3] >= 0.5 * title,
+            "check {check:?} beside a {title} line"
+        );
     }
 }
 
@@ -246,6 +297,14 @@ fn assert_one_grid(rt: &Runtime<Desk>) {
         card[0] + inset,
         "section name",
     );
+    // The drawn mark, not only its column, starts on the section names'
+    // edge, as an inset grouped list's header aligns with its rows.
+    for key in [
+        "phone-session-pane-glyph-@1",
+        "phone-needs-you-pane-glyph-@4",
+    ] {
+        near(at(key)[0], at("phone-session-title-1")[0], key);
+    }
     let text = at("phone-session-query")[0];
     for key in [
         "phone-connections-title",

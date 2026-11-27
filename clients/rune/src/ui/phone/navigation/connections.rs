@@ -79,13 +79,7 @@ pub(super) fn view(desk: &Desk, p: &Look) -> El {
                                 .grow(1.0)
                                 .min_w(0.0),
                         )
-                        .child(
-                            rune::icon(
-                                &icons::CHEVRON_RIGHT,
-                                phux_design::tokens::ICON.size.md,
-                            )
-                            .color(dim),
-                        ),
+                        .child(super::section::chevron(true, p)),
                     )
                     .a11y_hidden(),
             )],

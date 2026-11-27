@@ -158,6 +158,7 @@ pub(in crate::ui) fn state_badge(
     let ring = glyph + edge;
     let out = -(ring / 2.0 - edge);
     el().pin(None, None, Some(out), Some(out))
+        .key("state-badge")
         .size(ring, ring)
         .radius(t.radius.full)
         .fill(ground)

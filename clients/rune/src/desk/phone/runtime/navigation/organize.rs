@@ -74,13 +74,14 @@ fn needs_you_leads_and_quiet_sessions_fold_under_their_names() {
             .label
             .unwrap_or_default()
     };
-    assert!(waiting(&rt).contains("Needs you, 1"), "{}", waiting(&rt));
+    // The spoken heading still counts every pane asking, not only those shown.
+    assert_eq!(waiting(&rt), "Needs you, 1, 2 in all");
     assert!(rt.find("phone-needs-you-pane-@4").is_some());
     assert!(rt.find("phone-needs-you-pane-@2").is_none());
     assert!(rt.find("phone-session-pane-@2").is_some());
     rt.update(|d, _| d.toggle_phone_fold(1));
     settle(&mut rt);
-    assert!(waiting(&rt).contains("Needs you, 2"), "{}", waiting(&rt));
+    assert_eq!(waiting(&rt), "Needs you, 2");
     assert!(rt.find("phone-needs-you-pane-@2").is_some());
     rt.update(|d, _| d.toggle_phone_fold(1));
     settle(&mut rt);

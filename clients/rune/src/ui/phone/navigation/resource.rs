@@ -70,7 +70,7 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
     // Location has the one native cue: an accent check at the trailing
     // edge, a shape as well as a colour. No resting slab, no bar.
     let check = current.then(|| {
-        rune::icon(&icons::CHECK, p.icon.size.md)
+        rune::icon(&icons::CHECK, grid::trail_mark(p))
             .key(format!("{}-current-{}", place.current_key(), resource.id))
             .color(p.roles.accent.accent_text.paint())
             .inert()
@@ -81,7 +81,8 @@ pub(super) fn resource_row(desk: &Desk, resource: &Addressable, place: Place, p:
         grid::card_fill(p),
         grid::glyph(p),
         p,
-    );
+    )
+    .key(format!("{}-glyph-{}", place.key(), resource.id));
     control(&row_key, &label, p, move |d, _| {
         d.close_phone_navigation();
         d.show(id.clone(), &session);

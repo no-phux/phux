@@ -327,7 +327,7 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     // The line sits on the field's centre line, with the magnifier: equal
     // room above and below it at every text size.
     let line = p.ty.lead.line_px();
-    let magnifier = p.icon.grid * p.type_scale;
+    let magnifier = grid::glyph(p);
     let search = text_input(&phone.query, p.ty.lead)
         .key("phone-session-query")
         .single_line()
@@ -361,15 +361,11 @@ fn sessions(desk: &Desk, p: &Look) -> El {
         .radius(p.radius.full)
         .continuous_corners()
         .fill(grid::card_fill(p))
-        // The magnifier sits in the leading column the rows' marks use,
-        // and the text starts where their titles do. Past the grid's cap it
-        // keeps growing with the field's text, which would otherwise leave
-        // a speck beside a headline-sized placeholder, and widens its slot.
+        // The magnifier sits in the leading column the rows' marks use, at
+        // their size, and the text starts where their titles do.
         .child(
-            el().size(grid::lead_w(p).max(magnifier), line)
-                .center()
+            grid::lead_slot(rune::icon(&icons::SEARCH, magnifier).color(dim), line, p)
                 .key("phone-session-search-mark")
-                .child(rune::icon(&icons::SEARCH, magnifier).color(dim))
                 .a11y_hidden(),
         )
         .child(search)
