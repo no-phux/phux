@@ -22,8 +22,9 @@ pub(crate) struct Overlay {
     pub(crate) paths_w: f32,
     pub(crate) paths_h: f32,
     /// How tall the palette's rows may grow before they scroll: the list's
-    /// insets and eleven and a half 32 pt rows, the half saying more lies
-    /// below.
+    /// insets and eleven and a half 32 pt rows. The palette moves it up to
+    /// the middle of the row it ends in, past whatever headings took, so
+    /// half a row says more lies below.
     pub(crate) palette_rows_h: f32,
     pub(crate) paths_rows_h: f32,
     /// The inbox drawer.

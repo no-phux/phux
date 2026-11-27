@@ -57,8 +57,10 @@ impl Grid {
                 // cells do: the row pads its mark in.
                 inset: super::tokens::phone::page_margin(),
                 pad: s.s3 + s.s1,
-                // The marks' column widens as Dynamic Type grows its glyphs.
-                slot: s.s6.max(t.icon.size.md + s.s1),
+                // The Sessions page's leading column: its step up to the
+                // grid's text cap, then as wide as the grown mark and a step.
+                slot: ((s.s5 + s.s1) * t.type_scale.min(crate::desk::accessibility::GRID_CAP))
+                    .max(t.icon.size.md + s.s1),
                 gap: s.s2,
                 row_h: s.row_h_touch,
                 ty: super::tokens::phone::ty(t.type_scale),
@@ -97,6 +99,16 @@ impl Grid {
         }
     }
 
+    /// The marks' column cell for `mark`: centred on a desktop; on a phone
+    /// at the column's leading edge, as the Sessions page sets its marks.
+    pub(super) fn mark_cell(&self, key: String, mark: El) -> El {
+        if self.phone {
+            row().key(key).w(self.slot).items_center().child(mark)
+        } else {
+            el().key(key).w(self.slot).center().child(mark)
+        }
+    }
+
     /// A row's corners, nested in what holds it by the list's inset. A
     /// phone's rows are square: their card's corners clip them.
     pub(super) fn row_radius(&self, t: &Tokens) -> f32 {
@@ -108,42 +120,68 @@ impl Grid {
     }
 }
 
-/// A section's heading, in the Sessions page's voice: on the marks'
-/// column, never a row the arrows land on. Needs you counts its rows in
-/// its tone, as the Sessions page's heading does.
+/// A section's heading on the marks' column, never a row the arrows land
+/// on. A desktop's is a quiet caption over its flat rows; a phone's is set
+/// as the Sessions page sets a section's name over its card. Needs you
+/// counts its rows in its tone, with its mark, as that page's heading does.
 fn heading(title: &'static str, rows: Range<usize>, g: &Grid, t: &Tokens) -> El {
     let s = &t.space;
     let at = rows.start;
     let count = (title == crate::palette::sections::NEEDS_YOU).then(|| rows.len());
     let label = count.map_or_else(|| title.to_owned(), |n| format!("{title}, {n}"));
-    let tone = t.status.state(phux_design::State::NeedsYou).tone.ink;
+    let needs = t.status.state(phux_design::State::NeedsYou);
+    let (font, ink) = if g.phone {
+        (g.ty.lead.semibold(), t.roles.text.text.paint())
+    } else {
+        (g.ty.caption.semibold(), t.roles.text.dim.paint())
+    };
+    let name = text(title).font(font).color(ink).grow(1.0).min_w(0.0);
+    // Whole, wrapped, at the accessibility sizes, as the Sessions page
+    // sets a section's name; one line otherwise.
+    let name = if g.phone && t.type_scale >= super::tokens::layout::PHONE.stacked_title_scale {
+        name.wrap()
+    } else {
+        name.truncate()
+    };
     row()
         .key(format!("palette-section-{at}"))
         .w_full()
         .pl(g.pad)
         .pr(g.pad)
-        .pt(if g.phone || at > 0 { s.s3 } else { s.s1 })
+        .pt(heading_top(at, g, t))
         .pb(s.s1)
         .gap(s.s2)
         .items_center()
         .role("heading")
         .label(label)
-        .child(
-            text(title)
-                .font(g.ty.caption.semibold())
-                .color(t.roles.text.dim.paint())
-                .grow(1.0)
-                .min_w(0.0)
-                .truncate()
-                .a11y_hidden(),
-        )
+        .child(name.a11y_hidden())
         .children(count.map(|n| {
-            text(n.to_string())
+            row()
                 .key("palette-needs-you-count")
-                .font(g.ty.caption.figures())
-                .color(tone)
+                .gap(s.s1)
+                .items_center()
                 .a11y_hidden()
+                .children(
+                    g.phone
+                        .then(|| rune::icon(needs.icon, t.icon.size.xs).color(needs.tone.ink)),
+                )
+                .child(
+                    text(n.to_string())
+                        .font(g.ty.caption.semibold().figures())
+                        .color(needs.tone.ink),
+                )
         }))
+}
+
+/// The phone's grouped cards and search bar, as the Sessions page fills
+/// its own: one step up from the page, so a card reads as a card on dark
+/// as it does on light.
+pub(super) fn card_fill(t: &Tokens) -> rune::Color {
+    if t.dark() {
+        t.roles.layer.overlay.paint()
+    } else {
+        t.roles.layer.raised.paint()
+    }
 }
 
 /// The list's runs: each heading's title and the rows under it, or one
@@ -163,8 +201,9 @@ fn runs(
         .collect()
 }
 
-/// A phone's run of rows: one grouped card, a hairline between rows on
-/// the titles' column. A picked row fills to the card's edges, its
+/// A phone's run of rows: one grouped card, a hairline between rows from
+/// the titles' column to the card's trailing edge, as an iOS grouped
+/// list's separators run. A picked row fills to the card's edges, its
 /// corners the card's.
 fn card(rows: &Rows<'_>, hits: &[Hit], range: Range<usize>) -> El {
     let t = rows.t;
@@ -175,14 +214,13 @@ fn card(rows: &Rows<'_>, hits: &[Hit], range: Range<usize>) -> El {
         .radius(t.radius.xl)
         .continuous_corners()
         .clip_rounded(t.radius.xl)
-        .fill(t.roles.layer.raised.paint());
+        .fill(card_fill(t));
     let first = range.start;
     for index in range {
         if index > first {
             card = card.child(
                 el().w_full()
                     .pl(g.pad + g.slot + g.gap)
-                    .pr(g.pad)
                     .child(
                         el().w_full()
                             .h(s.hairline)
@@ -277,7 +315,7 @@ fn rows<'a>(desk: &'a Desk, t: &'a Tokens, g: Grid, hits: &[Hit], bare_themes: b
         picked: desk.palette_picked.min(hits.len().saturating_sub(1)),
         wash: desk.palette_pick_shown(),
         ground: if g.phone {
-            t.roles.layer.raised.paint()
+            card_fill(t)
         } else {
             t.roles.layer.overlay.paint()
         },
@@ -306,7 +344,53 @@ fn scroller(content: El, g: &Grid, cap: f32, t: &Tokens) -> El {
     if g.phone {
         list.grow(1.0).scroll_edge_fade(t.space.s8)
     } else {
-        list.max_h(cap).scroll_edge_fade(t.space.s6)
+        // The fade spans the half row the cap leaves, so it reads as a
+        // row going on, not a smudge.
+        list.max_h(cap).scroll_edge_fade(t.space.s4)
+    }
+}
+
+/// The desktop list's height: `base`, moved up to the middle of the row
+/// it would end in, so half a row always says more lies below, whatever
+/// the headings above it took.
+fn half_row_cap(
+    base: f32,
+    hits: &[Hit],
+    headings: &[(usize, &'static str)],
+    g: &Grid,
+    t: &Tokens,
+) -> f32 {
+    let s = &t.space;
+    let row_h = g.row_h.max(g.ty.body.line_px() + 2.0 * s.s1);
+    let mut y = g.inset;
+    let mut last_mid = None;
+    for (title, range) in runs(headings, hits.len()) {
+        if title.is_some() {
+            y += heading_top(range.start, g, t) + g.ty.caption.line_px() + s.s1;
+        }
+        for _ in range {
+            let mid = y + row_h / 2.0;
+            if y + row_h > base {
+                // A heading the cut would split gives way to the row above.
+                return if mid <= base {
+                    mid
+                } else {
+                    last_mid.unwrap_or(base)
+                };
+            }
+            last_mid = Some(mid);
+            y += row_h;
+        }
+    }
+    base
+}
+
+/// The room over a section's heading: less over the list's first.
+fn heading_top(at: usize, g: &Grid, t: &Tokens) -> f32 {
+    if g.phone || at > 0 {
+        t.space.s3
+    } else {
+        t.space.s1
     }
 }
 
@@ -320,7 +404,9 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
     let mode = desk.palette_mode;
     let g = Grid::new(t, phone);
     let hits = desk.palette_hits();
-    let hits = &hits[..hits.len().min(crate::palette::ROWS)];
+    // Counted before the list is cut to its rows.
+    let found = hits.len();
+    let hits = &hits[..found.min(crate::palette::ROWS)];
     let headings = desk.palette_headings(hits);
     let bare = mode == Mode::Themes || !headings.is_empty();
     let rows = rows(desk, t, g, hits, bare);
@@ -330,6 +416,7 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
     } else {
         (EXTENTS.palette_w, EXTENTS.palette_rows_h)
     };
+    let cap = half_row_cap(cap, hits, &headings, &g, t);
     let rule = |key: &'static str| {
         rune::rule(s.hairline, r.border.base.paint())
             .w_full()
@@ -366,7 +453,7 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
         .clip_rounded(t.radius.lg)
         .border(s.hairline, r.border.base.paint())
         .transition(pop(t))
-        .child(desktop_header(desk, t, &g, hits.len()))
+        .child(desktop_header(desk, t, &g, found))
         .child(rule("palette-header-rule"))
         .child(scroller(results, &g, cap, t))
         .child(rule("palette-footer-rule"))

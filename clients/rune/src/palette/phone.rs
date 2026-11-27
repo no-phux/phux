@@ -55,21 +55,31 @@ fn action(command: &Command, native: bool, kind: &'static str) -> Item {
     }
 }
 
-/// A phone's empty-query order: its first commands (suggested), terminals, sessions,
-/// the remaining commands, `extra` (the desk's own rows), then themes.
+/// How many of [`FIRST`] lead the list as suggested: few enough that the
+/// terminals and sessions still show above the fold on a small phone.
+const SUGGESTED: usize = 4;
+
+/// A phone's empty-query order: its first few commands (suggested),
+/// terminals, sessions, the rest of its first commands and then the
+/// remaining ones, `extra` (the desk's own rows), then themes.
 pub fn items(
     topology: Option<&Topology>,
     order: &[SessionKey],
     native: bool,
     extra: Vec<Item>,
 ) -> Vec<Item> {
-    let mut out: Vec<Item> = FIRST
-        .iter()
-        .filter_map(|shortcut| command(*shortcut))
+    let first = || FIRST.iter().filter_map(|shortcut| command(*shortcut));
+    let mut out: Vec<Item> = first()
+        .take(SUGGESTED)
         .map(|command| action(command, native, super::sections::SUGGESTED_KIND))
         .collect();
     out.extend(terminal_items(topology));
     out.extend(session_items(topology, order));
+    out.extend(
+        first()
+            .skip(SUGGESTED)
+            .map(|command| action(command, native, "action")),
+    );
     let rest = COMMANDS.iter().filter(|command| {
         command.listed && !FIRST.contains(&command.action) && !DESKTOP.contains(&command.action)
     });
@@ -88,6 +98,15 @@ mod tests {
         let list = items(None, &[], true, Vec::new());
         let titles: Vec<&str> = list.iter().map(|item| item.title.as_str()).collect();
         assert_eq!(&titles[..3], ["New tab", "Paste", "Find in terminal"]);
+        // A short Suggested, so terminals and sessions follow it on screen.
+        let suggested =
+            (list.iter()).filter(|item| item.kind == super::super::sections::SUGGESTED_KIND);
+        assert_eq!(suggested.count(), SUGGESTED);
+        assert!(
+            list[..SUGGESTED]
+                .iter()
+                .all(|item| item.kind == "suggested")
+        );
         assert!(titles.contains(&"Change computer"));
         assert!(!titles.contains(&"Switch or Add Machine"));
         for desktop in ["Toggle Sidebar", "Keyboard Shortcuts", "Check for Updates"] {

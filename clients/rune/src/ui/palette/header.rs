@@ -144,11 +144,12 @@ pub(super) fn phone_header(desk: &Desk, t: &Tokens, g: &Grid) -> El {
     let s = &t.space;
     let margin = crate::ui::tokens::phone::page_margin();
     let dim = t.roles.text.dim.paint();
-    let edge = if t.increased_contrast {
-        t.roles.border.control
-    } else {
-        t.roles.border.muted
-    };
+    // The lead role: an iOS field under 16 points zooms the page. A field
+    // sets its line from its top padding, so the padding is what centres
+    // it: equal room above and below the line, on the magnifier's centre,
+    // at every text size.
+    let font = bar_type(t).lead;
+    let line = font.line_px();
     let search = row()
         .key("palette-search")
         .grow(1.0)
@@ -157,28 +158,30 @@ pub(super) fn phone_header(desk: &Desk, t: &Tokens, g: &Grid) -> El {
         .pr(s.s2)
         .gap(g.gap)
         .items_center()
-        .radius(t.radius.lg)
+        // The Sessions page's search capsule: a fill alone reads as a
+        // field, as a system search field does.
+        .radius(t.radius.full)
         .continuous_corners()
-        .fill(t.roles.layer.raised.paint())
-        .border(s.hairline, edge.paint())
-        .child(
-            el().key("palette-glyph")
-                .w(g.slot)
-                .center()
-                .child(
-                    rune::icon(&icons::SEARCH, t.icon.grid * bar_scale(t))
-                        .color(dim)
-                        .a11y_hidden(),
-                ),
-        )
+        .fill(super::card_fill(t))
+        .child(g.mark_cell(
+            "palette-glyph".to_owned(),
+            rune::icon(&icons::SEARCH, t.icon.grid * bar_scale(t))
+                .color(dim)
+                .a11y_hidden(),
+        ))
         // No mode chip: at large text it would take the field's room, and
         // the hint already says what is searched.
-        // The lead role: an iOS field under 16 points zooms the page.
         .child(
-            field(desk, t, bar_type(t).lead, true)
+            field(desk, t, font, true)
                 .min_h(s.touch_min)
-                .py(s.s2),
+                .py(((s.touch_min - line) / 2.0).max(s.s2)),
         );
+    // Increased contrast keeps the field's edge.
+    let search = if t.increased_contrast {
+        search.border(s.hairline, t.roles.border.control.paint())
+    } else {
+        search
+    };
     let cancel = t
         .kit
         .interactive(

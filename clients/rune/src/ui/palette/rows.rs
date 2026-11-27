@@ -85,12 +85,7 @@ impl Rows<'_> {
             .interactive(base)
             .cursor(Cursor::Pointer)
             .on_press_tx(move |d: &mut Desk, tx| d.palette_run_target(target.clone(), tx))
-            .child(
-                el().key(format!("palette-mark-{index}"))
-                    .w(g.slot)
-                    .center()
-                    .child(self.mark(hit, washed)),
-            );
+            .child(g.mark_cell(format!("palette-mark-{index}"), self.mark(hit, washed)));
         if g.phone {
             return base
                 .child(self.lines(hit, index))

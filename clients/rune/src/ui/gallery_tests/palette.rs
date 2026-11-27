@@ -246,3 +246,57 @@ fn the_trailing_column_ends_at_one_x() {
         }
     }
 }
+
+/// The phone's search line sits on the bar's centre line, level with the
+/// magnifier, at the default text size and at the largest.
+#[test]
+fn the_phone_search_line_centres_on_its_magnifier() {
+    for size in [(393.0, 852.0), (320.0, 568.0)] {
+        for largest in [false, true] {
+            for state in ["empty", "typed", "themes"] {
+                let mut rt = palette_window(size, true, true, state, false);
+                if largest {
+                    rt.update(|d, _| {
+                        d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+                    });
+                    settle(&mut rt);
+                }
+                let tag = format!("{size:?} {state} largest={largest}");
+                let field = crate::ui::element(&rt, "palette-query");
+                let caret = field.caret.unwrap_or_else(|| panic!("{tag}: no caret"));
+                let glyph = rt.presented("palette-glyph").expect("glyph").0;
+                let mid = |r: [f32; 4]| r[1] + r[3] / 2.0;
+                assert!(
+                    (mid(caret) - mid(glyph)).abs() <= 1.0,
+                    "{tag}: line {caret:?} off the magnifier {glyph:?}"
+                );
+                assert!(
+                    (mid(caret) - mid(field.rect)).abs() <= 1.0,
+                    "{tag}: line {caret:?} off the field {:?}",
+                    field.rect
+                );
+            }
+        }
+    }
+}
+
+/// However many headings the list holds, the desktop list ends through
+/// the middle of a row, so half a row says more lies below.
+#[test]
+fn the_desktop_list_ends_through_half_a_row() {
+    for state in ["empty", "typed", "themes"] {
+        let rt = palette_window((1100.0, 720.0), false, true, state, false);
+        let list = rt.presented("palette-scroll").expect("list").0;
+        let bottom = list[1] + list[3];
+        let cut = (0..crate::palette::ROWS)
+            .filter_map(|i| rt.presented(&format!("palette-row-{i}")))
+            .map(|(r, ..)| r)
+            .find(|r| r[1] < bottom && r[1] + r[3] > bottom)
+            .unwrap_or_else(|| panic!("{state}: no row under the edge at {bottom}"));
+        let shown = (bottom - cut[1]) / cut[3];
+        assert!(
+            (0.4..=0.6).contains(&shown),
+            "{state}: {shown} of {cut:?} shows above {bottom}"
+        );
+    }
+}
