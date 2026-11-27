@@ -1,5 +1,10 @@
 [
   {
+    "date": "2026-11-27",
+    "title": "Re-read developer mode and labs when settings opens",
+    "body": "In Rune 0.1.62."
+  },
+  {
     "date": "2026-11-26",
     "title": "Phone pulls and swipes follow your finger",
     "body": "In Rune 0.1.61: deliberate phone pulls and swipes follow the latest finger position when moves arrive together."
