@@ -8,7 +8,7 @@
 
 use rune::Runtime;
 
-use super::{Locale, fixture, settle, window_on};
+use super::{Locale, settle, window_on};
 use crate::desk::Desk;
 use crate::keys::Shortcut;
 
@@ -109,8 +109,10 @@ fn palette_visual_review_frames() {
                     &format!("{tag}-{state}-keyboard-{tone}"),
                 );
                 let mut rt = palette_window(size, phone, dark, state, false);
+                // The phone takes the system's largest Dynamic Type, as the
+                // native host reports it.
                 rt.update(|d, _| {
-                    d.set_text_scale(fixture::LARGEST_TEXT);
+                    d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
                 });
                 snap(
                     &gpu,
@@ -118,6 +120,64 @@ fn palette_visual_review_frames() {
                     size,
                     &format!("{tag}-{state}-largest-{tone}"),
                 );
+            }
+        }
+    }
+}
+
+/// Within half a point.
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.5
+}
+
+/// One column grid, measured in the real tree: the query starts where the
+/// row titles do, the field's glyph centres on the rows' marks, every row
+/// has a mark and is a full row (a touch target on the phone).
+#[test]
+fn the_palette_keeps_one_column_grid() {
+    for (size, phone) in WINDOWS {
+        for state in ["empty", "typed", "themes"] {
+            let rt = palette_window(size, phone, true, state, false);
+            let rect = |key: &str| rt.presented(key).unwrap_or_else(|| panic!("{key}")).0;
+            let tag = format!("{size:?} {state}");
+            let query = rect("palette-query");
+            let glyph = rect("palette-glyph");
+            let rows: Vec<usize> = (0..crate::palette::ROWS)
+                .take_while(|i| rt.presented(&format!("palette-row-{i}")).is_some())
+                .collect();
+            assert!(rows.len() > 2, "{tag}: {} rows", rows.len());
+            let tall = if phone { 44.0 } else { 32.0 };
+            for &i in &rows {
+                let row = rect(&format!("palette-row-{i}"));
+                let mark = rect(&format!("palette-mark-{i}"));
+                let title = rect(&format!("palette-title-{i}"));
+                assert!(row[3] >= tall - 0.01, "{tag}: row {i} is {row:?}");
+                assert!(mark[2] > 0.0 && title[0] > mark[0], "{tag}: row {i}");
+                // A pane under its tab sits a column in; the rest share one.
+                if rt.state.palette_hits()[i].item.kind == "pane" {
+                    continue;
+                }
+                assert!(
+                    near(title[0], query[0]) || state == "themes",
+                    "{tag}: title {i} at {} under the query at {}",
+                    title[0],
+                    query[0]
+                );
+                let centre = |r: [f32; 4]| r[0] + r[2] / 2.0;
+                assert!(
+                    near(centre(mark), centre(glyph)),
+                    "{tag}: mark {i} {mark:?} under the glyph {glyph:?}"
+                );
+            }
+            if !phone {
+                // A short window's panel drops a share of its height, a
+                // tall one its usual drop.
+                let extents = crate::ui::tokens::layout::OVERLAY;
+                let top = (extents.palette_top)
+                    .min(size.1 * extents.palette_top_share)
+                    .max(extents.palette_top_min);
+                let panel = rect("palette");
+                assert!(near(panel[1], top), "{tag}: {panel:?} not at {top}");
             }
         }
     }

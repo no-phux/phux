@@ -68,3 +68,25 @@ fn only_chords_are_drawn_as_key_caps() {
         assert!(!super::details_keys(&item), "{item:?}");
     }
 }
+
+/// Every listed command has a glyph of its own, and none borrows the
+/// terminal's prompt: a command must not read as a terminal.
+#[test]
+fn every_listed_command_has_its_own_glyph() {
+    let listed = crate::keys::COMMANDS.iter().filter(|c| c.listed);
+    for command in listed {
+        let glyph = super::rows::action_mark(command.action);
+        assert_ne!(
+            glyph.name,
+            super::icons::PROMPT.name,
+            "{:?}",
+            command.action
+        );
+        assert_ne!(
+            glyph.name,
+            super::icons::COMMAND.name,
+            "{:?} falls back to the command key",
+            command.action
+        );
+    }
+}

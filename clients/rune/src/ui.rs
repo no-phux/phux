@@ -293,15 +293,9 @@ fn surface_view(
         Surface::Popup => popup::view(desk, p),
         Surface::Rename => tabs::rename_sheet(desk, p),
         Surface::Chief => Some(chief::view(desk, p, tokens::layout::OVERLAY.palette_top)),
-        Surface::Palette => Some(palette::view(
-            desk,
-            p,
-            if desk.phone.is_some() {
-                tokens::layout::OVERLAY.palette_top_phone
-            } else {
-                tokens::layout::OVERLAY.palette_top
-            },
-        )),
+        // A phone's page starts under its top inset; a desktop's panel
+        // finds its own drop.
+        Surface::Palette => Some(palette::view(desk, p, top)),
         // A terminal's or a tab's menu at the pointer; it mounts itself in
         // the kit layer (`kit_overlay`).
         Surface::ContextMenu => desk
