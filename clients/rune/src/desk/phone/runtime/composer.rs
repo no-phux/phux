@@ -225,3 +225,16 @@ fn multiline_draft_requires_a_separate_confirmation_and_cancel_keeps_it() {
     tap(&mut rt, "phone-compose", 0.5);
     assert_eq!(bridge.snapshot(&rt).text, "printf first\nprintf second");
 }
+
+/// An empty draft is one row, as Messages draws it: the field beside its
+/// send button, no taller than a touch target and its inset.
+#[test]
+fn an_empty_composer_is_one_row() {
+    let (_client, mut rt) = phone((393.0, 480.0), false);
+    tap(&mut rt, "phone-compose", 0.1);
+    let card = element(&rt, "phone-composer").rect;
+    let send = element(&rt, "phone-compose-send").rect;
+    let inset = phux_design::tokens::SPACE.s0_5;
+    assert!(card[3] <= 44.0 + 2.0 * inset + 0.5, "{card:?}");
+    assert!((send[1] + send[3] - (card[1] + card[3] - inset)).abs() < 0.5);
+}

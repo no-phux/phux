@@ -1,10 +1,10 @@
 //! Staged input, on its own surface below the last terminal row.
-use rune::{El, col, el, row, text, text_input};
+use rune::{El, el, row, text_input};
 
 use super::{Look, glyph, icons, surface, touchable};
 use crate::desk::Desk;
 use crate::desk::phone::composer::{Draft, FIELD, Owner};
-use crate::ui::tokens::{Paint, Voice};
+use crate::ui::tokens::Paint;
 
 pub(super) fn view(desk: &Desk, p: &Look) -> Option<El> {
     let owner = desk.active_composer()?.clone();
@@ -77,30 +77,27 @@ fn editor(desk: &Desk, owner: Owner, draft: &Draft, hint: String, p: &Look) -> E
                 draft.edit.insert("\n");
             }
         });
-    let footer = row()
-        .w_full()
-        .items_center()
-        .gap(s.s2)
-        .child(
-            text("Draft")
-                .grow(1.0)
-                .min_w(0.0)
-                .pl(s.s2)
-                .truncate()
-                .font(p.ty.caption.medium())
-                .color(r.text.dim.paint()),
-        )
-        .child(send(desk, draft, p));
-    let card = col()
+    // One row, as Messages draws it: the draft beside its send button,
+    // growing from one line to five before it scrolls. No footer: the
+    // placeholder names the pane and the button says what it does.
+    let card = row()
         .key("phone-composer")
         .w_full()
-        .padding(s.s2)
+        .pl(s.s2)
+        .pr(s.s0_5)
+        .py(s.s0_5)
         .gap(s.s1)
+        .items_end()
         .radius(p.radius.xl)
         .transition(rune::Transition::none())
         .preserve_focus_on_press(true)
-        .child(el().w_full().px(s.s2).child(rune::auto_grow(field, 2, 3)))
-        .child(footer);
+        .child(
+            el().grow(1.0)
+                .min_w(0.0)
+                .px(s.s2)
+                .child(rune::auto_grow(field, 1, 5)),
+        )
+        .child(send(desk, draft, p));
     surface(card, p)
 }
 
