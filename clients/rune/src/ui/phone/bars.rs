@@ -285,16 +285,24 @@ pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
     for (index, tab) in desk.connection.tabs.list.iter().enumerate() {
         pills = pills.child(tab_pill(desk, index, tab, p));
     }
-    let new = floating_round(
-        desk,
-        "phone-tab-new",
-        "New tab",
-        &icons::PLUS,
-        "plus",
-        None,
+    // New tab is a chip the tabs' size, not a round button twice their
+    // weight: a 32-point disc inside its 44-point touch target.
+    let new = touchable(
+        el().key("phone-tab-new")
+            .size(s.touch_min, s.touch_min)
+            .radius(p.radius.full)
+            .center()
+            .label("New tab")
+            .on_press(Desk::new_tab)
+            .child(
+                surface(el().size(s.s8, s.s8).radius(p.radius.full).center(), p).child(glyph(
+                    &icons::PLUS,
+                    p.icon.size.md,
+                    p.roles.text.text.paint(),
+                )),
+            ),
         p,
-    )
-    .on_press(Desk::new_tab);
+    );
     // One touch target tall: the strip spends no rows the terminal could.
     let strip = row()
         .key("phone-tab-strip")
