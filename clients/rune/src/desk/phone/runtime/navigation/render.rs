@@ -5,6 +5,7 @@ mod accessory;
 mod canvas;
 mod connections;
 mod header;
+mod inventory;
 mod menu;
 mod reconnect;
 mod search;
