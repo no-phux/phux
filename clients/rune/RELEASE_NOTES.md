@@ -1,4 +1,3 @@
-**Phux Rune 0.1.63**: 2 changes since 0.1.61.
+**Phux Rune 0.1.64**: 1 change since 0.1.63.
 
-- Identify the current split pane without relying on colour (#3055).
-- Refresh Developer mode and Labs when Settings opens (#3045).
+- Ios action button dictates to a phux session (#3057)
