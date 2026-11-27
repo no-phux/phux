@@ -18,6 +18,16 @@ const PHASES: &[&str] = &[
     "dial_started",
     "dial_connected",
     "dial_deadline",
+    "dial_plan_started",
+    "dial_plan_ready",
+    "ws_resolve",
+    "ws_tcp_connect",
+    "ws_tls_config",
+    "ws_tls_handshake",
+    "ws_upgrade",
+    "ws_upgraded",
+    "tls_sign_started",
+    "tls_sign_returned",
     "hello_sent",
     "hello_received",
     "hello_accepted",
@@ -218,6 +228,66 @@ mod enrollment_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn establishment_stages_keep_the_closed_five_field_capture_and_seal() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rune-stages-{}-{nonce}.jsonl", std::process::id()));
+        let capture = Capture::new(private_file(&path).unwrap(), &path);
+        let state = Arc::clone(&capture.state);
+        let phases = [
+            "dial_plan_started",
+            "dial_plan_ready",
+            "ws_resolve",
+            "ws_tcp_connect",
+            "ws_tls_config",
+            "ws_tls_handshake",
+            "ws_upgrade",
+            "ws_upgraded",
+            "tls_sign_started",
+            "tls_sign_returned",
+        ];
+        tracing::subscriber::with_default(capture, || {
+            for phase in phases {
+                tracing::debug!(target: TARGET, connection = 3_u64, attempt = 2_u64,
+                    elapsed_ms = 1_u64, phase,
+                    message = "private-sign-message", error = "private-sign-error",
+                    key = "private-key", signature = "private-signature");
+            }
+            tracing::debug!(target: TARGET, connection = 3_u64, attempt = 2_u64,
+                elapsed_ms = 1_u64, phase = "private-unknown-stage");
+            tracing::debug!(target: "other", phase = "ws_upgrade");
+        });
+        finish_capture(&state).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("private-"));
+        let rows: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), phases.len());
+        for (row, expected) in rows.iter().zip(phases) {
+            assert_eq!(row["phase"], expected);
+            assert_eq!(row["connection"], 3);
+            assert_eq!(row["attempt"], 2);
+            assert_eq!(row["elapsed_ms"], 1);
+            assert!(row["process_elapsed_ms"].is_u64());
+            assert_eq!(row.as_object().unwrap().len(), 5);
+        }
+        let seal: Value =
+            serde_json::from_slice(&std::fs::read(path.with_extension("status.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            seal,
+            json!({"complete": true, "failed": false, "events": 10})
+        );
+        std::fs::remove_file(path.with_extension("status.json")).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn only_allowlisted_connection_fields_reach_disk() {

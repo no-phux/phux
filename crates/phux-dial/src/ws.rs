@@ -22,6 +22,9 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 use crate::DialError;
 use crate::tls::{CertTrust, TlsClientIdentity};
 
+mod phase;
+pub use phase::WsPhase;
+
 /// How often an otherwise silent WebSocket sends a client-initiated ping.
 /// Every RFC 6455 peer answers with a pong, so this needs no server support.
 const WS_PING_INTERVAL: Duration = Duration::from_secs(10);
@@ -151,7 +154,20 @@ impl<T> ByteStream for T where
 /// [`DialError::Io`] on tungstenite-level socket I/O failures during the
 /// upgrade.
 pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
-    dial_inner(d, d.identity.as_ref()).await
+    dial_observed(d, |_| {}).await
+}
+
+/// [`dial`] with synchronous, payload-free establishment observations.
+///
+/// The observer must not block. A failed or cancelled operation leaves its
+/// before-operation phase last; only a successful upgrade emits `Upgraded`.
+/// Plain WS omits the TLS phases. Timeout ownership remains with the caller.
+///
+/// # Errors
+///
+/// Returns the same establishment errors as [`dial`].
+pub async fn dial_observed(d: &WsDial, observe: impl Fn(WsPhase) + Sync) -> Result<Ws, DialError> {
+    dial_inner(d, d.identity.as_ref(), &observe).await
 }
 
 /// [`dial`] with an explicit TLS identity, overriding [`WsDial::identity`];
@@ -162,22 +178,28 @@ pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
 /// Returns the same establishment errors as [`dial`], plus explicit identity
 /// file parse/read failures.
 pub async fn dial_with_identity(d: &WsDial, identity: &TlsClientIdentity) -> Result<Ws, DialError> {
-    dial_inner(d, Some(identity)).await
+    dial_inner(d, Some(identity), &|_| {}).await
 }
 
-async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<Ws, DialError> {
+async fn dial_inner(
+    d: &WsDial,
+    identity: Option<&TlsClientIdentity>,
+    observe: &(impl Fn(WsPhase) + Sync),
+) -> Result<Ws, DialError> {
     let target = WsTarget::parse(&d.url)?;
     // URI authorities retain IPv6 brackets, but tuple-based DNS/TCP lookup
     // expects a bare address (the port is already a separate argument).
     let host = target.host.trim_matches(['[', ']']);
     // Resolve first so a name that does not resolve (MagicDNS down) is
     // classified as unreachable; the connect re-resolves from cache.
+    observe(WsPhase::Resolve);
     if let Err(err) = tokio::net::lookup_host((host, target.port)).await {
         return Err(DialError::Unreachable(format!(
             "dial {}: name resolution failed: {err}",
             target.addr_label()
         )));
     }
+    observe(WsPhase::TcpConnect);
     let tcp = TcpStream::connect((host, target.port))
         .await
         .map_err(|err| {
@@ -192,11 +214,12 @@ async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<
     // peer's delayed ACK. A failure costs latency, not correctness.
     let _ = tcp.set_nodelay(true);
     let stream: ClientStream = if target.secure {
-        Box::new(tls_connect(tcp, &target, d, identity).await?)
+        Box::new(tls_connect(tcp, &target, d, identity, observe).await?)
     } else {
         Box::new(tcp)
     };
 
+    observe(WsPhase::Upgrade);
     let mut req = d
         .url
         .as_str()
@@ -211,10 +234,9 @@ async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<
         );
     }
 
-    client_async(req, stream)
-        .await
-        .map(|(ws, _)| ws)
-        .map_err(ws_error)
+    let (ws, _) = client_async(req, stream).await.map_err(ws_error)?;
+    observe(WsPhase::Upgraded);
+    Ok(ws)
 }
 
 async fn tls_connect(
@@ -222,7 +244,9 @@ async fn tls_connect(
     target: &WsTarget,
     dial: &WsDial,
     identity: Option<&TlsClientIdentity>,
+    observe: &(impl Fn(WsPhase) + Sync),
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, DialError> {
+    observe(WsPhase::TlsConfig);
     let (config, refusal) = crate::tls::client_config_reporting(&dial.trust, identity, None)?;
     let config = Arc::new(config);
     let connector = tokio_rustls::TlsConnector::from(config);
@@ -232,6 +256,7 @@ async fn tls_connect(
         .unwrap_or_else(|| target.server_name.clone());
     let server_name = rustls::pki_types::ServerName::try_from(server_name)
         .map_err(|err| DialError::Connect(format!("invalid TLS server name: {err}")))?;
+    observe(WsPhase::TlsHandshake);
     connector.connect(server_name, tcp).await.map_err(|err| {
         crate::tls::authority_refusal(&refusal).unwrap_or_else(|| {
             DialError::Connect(format!("TLS handshake with {}: {err}", target.host))
