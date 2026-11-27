@@ -153,7 +153,17 @@ fn whole_control(rt: &Runtime<Desk>, key: &str) {
         contained(text.rect, text.visible),
         "{key}: incomplete text {text:?}"
     );
-    let viewport = geometry(rt, "phone-pane-list").visible;
+    // A pinned Done sits under the list, in the panel; the rows scroll in it.
+    let pinned = !button.path.contains("phone-pane-list");
+    let viewport = geometry(
+        rt,
+        if pinned {
+            "phone-pane-panel"
+        } else {
+            "phone-pane-list"
+        },
+    )
+    .visible;
     let margin = phux_design::tokens::SPACE.s2;
     assert!(
         button.rect[1] >= viewport[1] + margin - 0.5
