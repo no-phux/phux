@@ -4,8 +4,21 @@ import UIKit
 @MainActor
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     static func main() {
+        configHome()
         EarlierApp.forgetScenes() // Before UIKit reads its saved sessions.
         UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(Self.self))
+    }
+
+    /// phux keeps config.toml (developer mode, Labs) under
+    /// `$XDG_CONFIG_HOME`, else `$HOME/.config`. A device's `$HOME` is the
+    /// app container, whose root an app may not write, so Settings could
+    /// not save a switch there. Application Support is the app's own.
+    /// Set once, before Rust or any other thread starts; an inherited
+    /// value (a qualification run) is kept.
+    private static func configHome() {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                      in: .userDomainMask).first else { return }
+        setenv("XDG_CONFIG_HOME", support.path, 0)
     }
 
     func application(_ application: UIApplication,

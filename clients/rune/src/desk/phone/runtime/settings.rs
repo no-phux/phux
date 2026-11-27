@@ -272,3 +272,36 @@ fn enlarged_theme_row_touch_and_keyboard_keep_preview_and_terminal_input_ownersh
         no_terminal_input(&client);
     }
 }
+
+/// The native phone reaches Labs the desktop's way: Developer, then
+/// Developer mode, then the Labs category and its flags. Each drill-in
+/// finishes its slide before the next tap.
+#[test]
+fn a_native_phone_reaches_labs_through_developer_mode() {
+    let (_client, mut rt) = open(true);
+    rt.update(|d, tx| {
+        d.native = Some(crate::mobile::Platform::test());
+        tx.instant();
+    });
+    settle(&mut rt);
+    let mut at = 0.0;
+    let mut step = |rt: &mut Runtime<Desk>, key: &str| {
+        tap(rt, key, at);
+        for frame in 1..=60 {
+            rt.frame(at + f64::from(frame) / 60.0);
+        }
+        at += 1.1;
+    };
+    assert!(
+        rt.find("settings-labs").is_none(),
+        "hidden until developer mode"
+    );
+    step(&mut rt, "settings-developer");
+    step(&mut rt, "set-developer-mode");
+    assert!(rt.state.developer_mode);
+    step(&mut rt, "settings-back");
+    step(&mut rt, "settings-labs");
+    let echo = phux_config_core::labs::PREDICTIVE_ECHO;
+    step(&mut rt, &format!("set-lab-{echo}"));
+    assert_eq!(rt.state.labs.get(echo), Some(true));
+}
