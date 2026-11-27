@@ -1,6 +1,6 @@
-//! The phone's top bar (back, the place capsule, news, more or the
-//! minimap) and its tab pills: 44-point touch targets on opaque surfaces,
-//! or the native host's Liquid Glass for the floating round buttons.
+//! The phone's top bar (back, where you are, more or the minimap) and its
+//! tab pills: 44-point touch targets, on opaque surfaces or the native
+//! host's Liquid Glass for the floating round buttons.
 
 use crate::ui::tokens::Voice;
 use crate::ui::tokens::layout::PHONE;
@@ -8,8 +8,7 @@ use phux_design::State;
 use rune::{Color, El, col, el, row, text};
 
 use super::{
-    Look, badge, floating_round, glyph, hosted, icons, mark_ink, native_glass, news, spatial,
-    surface, touchable,
+    Look, badge, floating_round, glyph, hosted, icons, mark_ink, news, spatial, surface, touchable,
 };
 use crate::desk::Desk;
 use crate::ui::tokens::Paint;
@@ -20,126 +19,43 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         .selected_session_name()
         .unwrap_or_else(|| "phux".to_owned());
     // With no terminal on screen the window title is only the app's name:
-    // the capsule names the computer instead.
+    // the title names the computer instead.
     let title = if desk.connection.shown.is_some() {
         pane_title(desk)
     } else {
         desk.machines.label().to_owned()
-    };
-    // Spend the capsule's width on where the person is. A decorative terminal
-    // tile left both names as ellipses beside the small phone's split map.
-    let capsule = row()
-        .key("phone-place")
-        .grow(1.0)
-        .min_w(0.0)
-        .min_h(s.s12)
-        .pl(s.s3)
-        .pr(s.s4)
-        .gap(s.s3)
-        .radius(p.radius.full)
-        .items_center();
-    let name = if desk.connection.shown.is_some() {
-        "Switch session"
-    } else {
-        "Connections"
     };
     let detail = place_detail(desk, &session);
     let detail = match native_machine(desk) {
         Some(machine) => format!("{detail} · {machine}"),
         None => detail,
     };
-    let tone = focused_tone(desk, p);
-    let pressed = |d: &mut Desk| {
-        if d.connection.shown.is_some() {
-            d.open_phone_switcher();
-        } else {
-            d.toggle_machines();
-        }
-    };
-    // The capsule is glass with the round buttons beside it, so the bar
-    // reads as one material on the native host.
-    let place = if native_glass(desk, p) {
-        let control = crate::mobile::Control {
-            key: "phone-place".to_owned(),
-            label: name.to_owned(),
-            title: Some(title),
-            subtitle: Some((detail, tone)),
-            leading: true,
-            symbol: "chevron.down",
-            enabled: true,
-            dark: p.dark(),
-            ink: p.roles.text.text.paint(),
-            badge: None,
-            painted: false,
-        };
-        hosted(desk, capsule.label(name), control).on_press(pressed)
-    } else {
-        touchable(surface(capsule, p), p)
-            .label(name)
-            .on_press(pressed)
-            .child(
-                col()
-                    .min_w(0.0)
-                    .grow(1.0)
-                    .child(
-                        text(title)
-                            .w_full()
-                            .font(p.ty.lead.semibold())
-                            .color(p.roles.text.text.paint())
-                            .truncate(),
-                    )
-                    .child(
-                        row()
-                            .w_full()
-                            .gap(s.s1)
-                            .items_center()
-                            .min_w(0.0)
-                            .child(
-                                text(detail)
-                                    .min_w(0.0)
-                                    .shrink()
-                                    .font(p.ty.caption)
-                                    .color(tone)
-                                    .truncate(),
-                            )
-                            .child(glyph(
-                                &icons::CHEVRON,
-                                p.icon.size.sm,
-                                p.roles.text.dim.paint(),
-                            )),
-                    ),
-            )
-    };
+    let place = place(desk, title, detail, p);
+    // What's new lives behind ⋯ (Terminal actions); its unread dot rides
+    // on ⋯, so the bar is back, where you are, and more: nothing else.
+    let unread = desk.news.unread.then(|| news::unread_tone(p));
     let trailing = spatial::minimap(desk, p).unwrap_or_else(|| {
         floating_round(
             desk,
             "phone-more",
-            "Terminal actions",
+            if unread.is_some() {
+                "Terminal actions, What's new has updates"
+            } else {
+                "Terminal actions"
+            },
             &icons::MORE,
             "ellipsis",
-            None,
+            unread,
             p,
         )
         .on_press(Desk::open_phone_actions)
     });
-    let unread = desk.news.unread.then(|| news::unread_tone(p));
-    let bell = floating_round(
-        desk,
-        "phone-news",
-        news::bell_name(desk),
-        &icons::BELL,
-        "bell",
-        unread,
-        p,
-    )
-    .expanded(desk.news.open)
-    .on_press(Desk::toggle_news);
     row()
         .key("phone-top")
         .w_full()
         .px(s.s3)
-        .pb(s.s2)
-        .gap(s.s2)
+        .pb(s.s1)
+        .gap(s.s1)
         .items_center()
         .window_drag()
         .child(
@@ -155,8 +71,85 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
             .on_press(Desk::open_phone_sessions),
         )
         .child(place)
-        .child(bell)
         .child(trailing)
+}
+
+/// Where you are, as an iOS navigation title: the pane over its session,
+/// state and computer, plain on the terminal's ground rather than boxed.
+/// One touch target tall; a tap opens the session switcher (Connections
+/// with no pane on screen).
+fn place(desk: &Desk, title: String, detail: String, p: &Look) -> El {
+    let s = &p.space;
+    let name = if desk.connection.shown.is_some() {
+        "Switch session"
+    } else {
+        "Connections"
+    };
+    let tone = focused_tone(desk, p);
+    // A pane with no title of its own leads with the line below it.
+    let (title, detail) = if title.trim().is_empty() {
+        (detail, None)
+    } else {
+        (title, Some(detail))
+    };
+    let lines = col()
+        .min_w(0.0)
+        .shrink()
+        .child(
+            row()
+                .w_full()
+                .gap(s.s1)
+                .items_center()
+                .min_w(0.0)
+                .child(
+                    text(title)
+                        .min_w(0.0)
+                        .shrink()
+                        .font(p.ty.lead.semibold())
+                        .color(p.roles.text.text.paint())
+                        .truncate(),
+                )
+                .children(detail.is_none().then(|| chevron(p))),
+        )
+        .children(detail.map(|detail| {
+            row()
+                .w_full()
+                .gap(s.s1)
+                .items_center()
+                .min_w(0.0)
+                .child(
+                    text(detail)
+                        .min_w(0.0)
+                        .shrink()
+                        .font(p.ty.caption)
+                        .color(tone)
+                        .truncate(),
+                )
+                .child(chevron(p))
+        }));
+    let place = row()
+        .key("phone-place")
+        .grow(1.0)
+        .min_w(0.0)
+        .min_h(p.round())
+        .px(s.s2)
+        .radius(p.radius.md)
+        .continuous_corners()
+        .items_center()
+        .label(name)
+        .on_press(|d: &mut Desk| {
+            if d.connection.shown.is_some() {
+                d.open_phone_switcher();
+            } else {
+                d.toggle_machines();
+            }
+        })
+        .child(lines);
+    touchable(place, p)
+}
+
+fn chevron(p: &Look) -> El {
+    glyph(&icons::CHEVRON, p.icon.size.sm, p.roles.text.dim.paint())
 }
 
 pub(super) fn pane_title(desk: &Desk) -> String {

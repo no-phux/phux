@@ -327,12 +327,13 @@ fn native_accessory_overflow_cue_tracks_scroll_without_covering_keys() {
             .max(strip.rect[3])
             .max(element(&rt, "phone-native-done").rect[3]);
         assert!(
-            (element(&rt, "phone-accessory").rect[3] - maximum - phux_design::tokens::SPACE.s2)
+            (element(&rt, "phone-accessory").rect[3] - maximum - phux_design::tokens::SPACE.s1)
                 .abs()
                 < 0.5,
-            "the cue must use the existing bottom inset, not add more height"
+            "the cue sits inside the strip, adding no height to the bar"
         );
-        assert!(cue.rect[1] >= strip.rect[1] + strip.rect[3] - 0.5);
+        assert!(cue.rect[1] >= strip.rect[1] - 0.5);
+        assert!((cue.rect[1] + cue.rect[3] - strip.rect[1] - strip.rect[3]).abs() < 0.5);
         let before = element(&rt, "phone-strip-thumb").rect;
         inside(before, cue.rect);
         assert!(

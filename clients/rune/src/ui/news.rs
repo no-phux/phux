@@ -115,7 +115,8 @@ mod tests {
 
         for (phone, size, bell) in [
             (false, (1100.0, 720.0), "news-button"),
-            (true, (393.0, 852.0), "phone-news"),
+            // A phone keeps What's new in ⋯'s Terminal actions.
+            (true, (393.0, 852.0), "phone-action-news"),
         ] {
             let mut desk = crate::test_support::settings_window().with_phone(phone);
             desk.settings_open = false;
@@ -127,6 +128,12 @@ mod tests {
                 rune::Env::new(false, 1.0),
             );
             rt.frame(0.0);
+            if phone {
+                assert!(rt.accessibility_action("phone-more", Action::Click, None));
+                for frame in 1..=60 {
+                    rt.frame(f64::from(frame) / 60.0);
+                }
+            }
             assert!(rt.accessibility_action(bell, Action::Click, None), "{bell}");
             rt.frame(0.0);
             assert!(rt.state.news.open && !rt.state.news.unread, "{bell}");

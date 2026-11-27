@@ -27,7 +27,7 @@ class GlassReportTests(unittest.TestCase):
 
     def test_rejects_missing_covered_undersized_hidden_or_disabled_glass(self):
         def without_more(g):
-            g["terminal"] = g["terminal"][:3]
+            g["terminal"] = [c for c in g["terminal"] if c["id"] != "phone-more"]
 
         def bar_over_page(g):
             g["sessions"].append(g["terminal"][0])
@@ -83,13 +83,13 @@ final class Probe {
     func frame() throws { try recordGlass() }
 }
 func controls(_ ids: [String]) -> [[String: Any]] { ids.map { ["id": $0] } }
-let top = ["phone-back", "phone-place", "phone-news", "phone-more"]
+let top = ["phone-back", "phone-more"]
 let sessions = ["phone-session-new", "phone-navigation-close"]
 let probe = Probe()
 probe.glassBefore = controls(top)
 // A moving drawer can uncover each old control in turn. None is ready,
-// including the observed frame where Back is gone but News/More remain.
-for remaining in [top, ["phone-news", "phone-more"]] + top.map({ [$0] }) {
+// including the observed frame where Back is gone but More remains.
+for remaining in [top] + top.map({ [$0] }) {
     probe.surface!.glassEvidence = controls(sessions + remaining)
     try probe.frame()
     precondition(!probe.glassRecorded && probe.writes == 0,

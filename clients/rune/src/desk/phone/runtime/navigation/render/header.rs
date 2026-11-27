@@ -16,8 +16,8 @@ fn phone_header_allocates_its_inner_width_to_the_current_pane_name() {
             .find(|e| e.text.as_deref() == Some("editor"))
             .expect("the focused pane's title");
         let space = phux_design::tokens::SPACE;
-        assert!((name.rect[0] - capsule[0] - space.s3).abs() < 0.5);
-        assert!((name.rect[2] - (capsule[2] - space.s3 - space.s4)).abs() < 0.5);
+        assert!((name.rect[0] - capsule[0] - space.s2).abs() < 0.5);
+        assert!(name.rect[0] + name.rect[2] <= capsule[0] + capsule[2] - space.s2 + 0.5);
         assert_eq!(
             name.visible, name.rect,
             "the title's full allocation is visible"

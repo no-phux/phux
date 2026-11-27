@@ -73,7 +73,7 @@ pub(crate) struct Control {
     pub dark: bool,
     /// Its symbol and title colour, linear.
     pub ink: rune::Color,
-    /// A dot on its upper trailing shoulder (the bell's unread news).
+    /// A dot on its upper trailing shoulder (⋯ carrying What's new's unread dot).
     pub badge: Option<rune::Color>,
     /// The surface paints this control; UIKit hosts its touch and AX target.
     pub painted: bool,

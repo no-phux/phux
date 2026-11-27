@@ -9,7 +9,7 @@ import shutil
 import time
 
 SIGNAL = "sh.phux.rune.qualification.glass"
-TOP_BAR = ("phone-back", "phone-place", "phone-news", "phone-more")
+TOP_BAR = ("phone-back", "phone-more")
 DOCK = "phone-session-new"
 DONE = "phone-navigation-close"
 

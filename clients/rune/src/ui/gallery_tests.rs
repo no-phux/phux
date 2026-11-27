@@ -183,6 +183,33 @@ fn the_gallery_paints() {
     surfaces(&gpu, || window(DESKTOP, true, mocha, Locale::En), "mocha");
 }
 
+/// The phone's terminal with three tabs and the keyboard up: its chrome is
+/// three rows, painted under `RUNE_GALLERY_SNAP` as `phone-terminal-tabs`.
+#[test]
+fn the_phone_terminal_keeps_its_chrome_to_three_rows() {
+    let gpu = rune::render::Gpu::headless();
+    let mut rt = window_on(PHONE, true, None, Locale::En, true);
+    rt.update(|d, _| {
+        d.connection.tabs.list = (0..3u8)
+            .map(|i| crate::desk::Tab {
+                locked: false,
+                id: [i; 16],
+                name: ["claude", "zsh", "tests"][usize::from(i)].to_owned(),
+                resources: Vec::new(),
+                active: i == 0,
+            })
+            .collect();
+    });
+    settle(&mut rt);
+    let height = |key: &str| rt.presented(key).expect(key).0[3];
+    // Back, where you are and more on one touch-target row; the tabs one
+    // row; the keys one row: every other point is the terminal's.
+    assert!(height("phone-top") <= 48.5, "{}", height("phone-top"));
+    assert!(height("phone-tab-strip") <= 44.5);
+    assert!(height("phone-accessory") <= 48.5);
+    paint(&gpu, &mut rt, PHONE, "phone-terminal-tabs");
+}
+
 /// Folding and unfolding the sidebar over one pane, stepped at 60 Hz: the
 /// drawer and the pane move together over frames, never in one, and land
 /// where they started.

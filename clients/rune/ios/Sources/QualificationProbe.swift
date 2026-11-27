@@ -147,7 +147,7 @@ final class QualificationProbe {
         guard let before = glassBefore, !glassRecorded, let surface else { return }
         let after = surface.glassEvidence
         let ids = Set(after.compactMap { $0["id"] as? String })
-        let topBar: Set<String> = ["phone-back", "phone-place", "phone-news", "phone-more"]
+        let topBar: Set<String> = ["phone-back", "phone-more"]
         guard ids.contains("phone-session-new"), ids.contains("phone-navigation-close"),
               ids.isDisjoint(with: topBar) else { return }
         try write(["schema": 1, "tapped": "phone-back", "terminal": before, "sessions": after],

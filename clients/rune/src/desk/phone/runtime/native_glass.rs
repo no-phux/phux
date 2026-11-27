@@ -6,7 +6,7 @@ use super::*;
 use crate::desk::phone::navigation::Page;
 use serde_json::Value;
 
-const TOP: [&str; 4] = ["phone-back", "phone-place", "phone-news", "phone-more"];
+const TOP: [&str; 2] = ["phone-back", "phone-more"];
 
 fn native() -> (std::sync::Arc<Client>, Runtime<Desk>) {
     let (client, mut rt) = fixture();
@@ -77,17 +77,16 @@ fn the_top_bar_is_native_glass_at_rune_layout_with_no_rune_paint() {
         assert!(info.label.is_some(), "{id} keeps its accessibility name");
     }
     assert_eq!(control(&rt, "phone-back")["symbol"], "chevron.left");
-    let place = control(&rt, "phone-place");
-    assert_eq!(place["leading"], true);
-    assert!(place["title"].is_string());
-    assert_eq!(place["subtitle_ink"].as_array().map(Vec::len), Some(3));
-    // The computer rides in the subtitle; no pill row takes the terminal's.
+    // Where you are is a plain navigation title Rune draws, not glass, and
+    // its line names the computer; no pill row takes the terminal's.
+    assert!(element(&rt, "phone-place").label.is_some());
     let machine = rt.state.machines.label().to_owned();
+    let suffix = format!(" · {machine}");
     assert!(
-        place["subtitle"]
-            .as_str()
-            .is_some_and(|s| s.ends_with(&format!(" · {machine}"))),
-        "{place}"
+        rt.elements()
+            .iter()
+            .any(|e| e.text.as_deref().is_some_and(|t| t.ends_with(&suffix))),
+        "the title's line names {machine}"
     );
     assert!(rt.find("phone-connection").is_none());
 }
@@ -151,21 +150,21 @@ fn a_native_tap_runs_the_controls_press_and_a_covering_page_hides_it() {
 }
 
 #[test]
-fn the_bell_carries_its_unread_dot_natively() {
+fn more_carries_whats_new_unread_dot_natively() {
     let (_client, mut rt) = native();
     rt.update(|d, tx| {
         d.news.unread = false;
         tx.instant();
     });
     settle(&mut rt);
-    assert_eq!(control(&rt, "phone-news")["label"], "What's new");
-    assert_eq!(control(&rt, "phone-news")["badge"], Value::Null);
+    assert_eq!(control(&rt, "phone-more")["label"], "Terminal actions");
+    assert_eq!(control(&rt, "phone-more")["badge"], Value::Null);
     rt.update(|d, tx| {
         d.news.unread = true;
         tx.instant();
     });
     settle(&mut rt);
-    let bell = control(&rt, "phone-news");
-    assert_eq!(bell["label"], "What's new, unread");
-    assert_eq!(bell["badge"].as_array().map(Vec::len), Some(3));
+    let more = control(&rt, "phone-more");
+    assert_eq!(more["label"], "Terminal actions, What's new has updates");
+    assert_eq!(more["badge"].as_array().map(Vec::len), Some(3));
 }
