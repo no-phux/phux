@@ -4,7 +4,7 @@ import unittest
 
 import test_visual_review as fixtures
 import visual_review as review
-from visual_motion import batched_swipe_inventory
+from visual_motion import DISMISS_FRAMES, batched_swipe_inventory, dismiss_inventory, motion_frames
 
 
 class MotionReview(unittest.TestCase):
@@ -60,3 +60,18 @@ class MotionReview(unittest.TestCase):
         path.write_text(json.dumps(data))
         with self.assertRaisesRegex(ValueError, "wrong motion frame"):
             review.case_record(self.fixture.root, self.fixture.root / relative)
+
+    def test_dismiss_swipes_bind_both_let_goes_and_name_their_own_stage(self):
+        inventory = dismiss_inventory()
+        self.assertEqual(len(inventory), 432)
+        self.fixture.populate(inventory)
+        for case in self.fixture.produce()["cases"]:
+            if not case["png"].startswith("navigation/dismiss-"):
+                continue
+            self.assertEqual(case["exporter"], "dismiss_motion_visual_review_frames")
+            self.assertIn("motionSha256", case)
+        # A stage that ends like another still resolves to its own frame.
+        stem = "dismiss-sessions-left-dark-393x852-2x-reduced-false-short-release"
+        frames = motion_frames(stem)
+        stage = next(stage for stage in frames if stem.endswith(f"-{stage}"))
+        self.assertEqual(frames[stage], DISMISS_FRAMES["short-release"])

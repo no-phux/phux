@@ -4,6 +4,7 @@ use super::*;
 mod accessory;
 mod canvas;
 mod connections;
+mod dismiss;
 mod header;
 mod inventory;
 mod menu;

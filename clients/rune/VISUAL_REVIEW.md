@@ -221,6 +221,10 @@ behavior tests also cover tabs, session boundaries, withdrawal, cancellation
 and untimed velocity accumulation. These cases do not establish physical
 touch feel or a velocity estimate for moves with no elapsed app time.
 
+Dismiss cases swipe each page away through `mobile::touch` on both widths,
+light/dark and reduced motion; they assert one-to-one drawing and no commit
+per move, and sidecars record the drawn values.
+
 Pane-picker cases compare long, similarly named panes at standard and AX5
 text sizes, light/dark, both phone widths and native keyboard-reduced 2×
 viewports. Retain top, keyboard-focused row and scrolled final-action frames.

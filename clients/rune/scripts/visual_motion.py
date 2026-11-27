@@ -11,11 +11,25 @@ ACCESSORY_RESIZE_FRAMES = {"first": 1, "middle": 6, "settled": 60}
 BATCHED_SWIPE_FRAMES = {
     "idle": 0, "start": 1, "release": 2, "release-plus-100ms": 8, "settled": 128,
 }
+# A short let-go springs home, then a long one leaves. Stages that end like
+# another ("short-release", "release") are listed first, so a stem matches
+# its own.
+DISMISS_FRAMES = {
+    "idle": 0, "mid-drag": 1, "short-release": 2, "short-release-plus-100ms": 8,
+    "short-settled": 68, "past-commit": 69, "release": 70, "release-plus-100ms": 76,
+    "settled": 136,
+}
+DISMISS_GESTURES = (
+    "sessions-left", "actions-down", "switcher-down", "inbox-down", "palette-down",
+    "settings-back",
+)
 
 
 def motion_frames(stem):
     if stem.startswith("batched-swipe-"):
         return BATCHED_SWIPE_FRAMES
+    if stem.startswith("dismiss-"):
+        return DISMISS_FRAMES
     return ACCESSORY_RESIZE_FRAMES if stem.startswith("accessory-resize-") else MOTION_FRAMES
 
 
@@ -26,6 +40,16 @@ def batched_swipe_inventory(themes=("dark", "light")):
         for theme, (width, height), reduced, stage in product(
             themes, ((393, 852), (320, 568), (393, 480), (320, 340)),
             ("false", "true"), BATCHED_SWIPE_FRAMES)
+    }
+
+
+def dismiss_inventory(themes=("dark", "light")):
+    return {
+        f"navigation/dismiss-{gesture}-{theme}-{width}x{height}-2x-reduced-{reduced}-{stage}.png":
+            (width, height, 2)
+        for gesture, theme, (width, height), reduced, stage in product(
+            DISMISS_GESTURES, themes, ((393, 852), (320, 568)), ("false", "true"),
+            DISMISS_FRAMES)
     }
 
 
