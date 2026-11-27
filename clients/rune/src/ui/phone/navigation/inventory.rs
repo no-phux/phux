@@ -49,8 +49,6 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
     let all = desk.addressable();
     let current = desk.selected_session_name();
     let mut sections = Vec::new();
-    // The session whose card opens right under Needs you, if unfolded.
-    let mut below = None;
     let mut count = 0;
     let mut quiet = Vec::new();
     for session in desk.ordered_sessions() {
@@ -70,19 +68,12 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
             continue;
         }
         let fold = (!searching).then(|| phone.folded.contains(&session.id));
-        if sections.is_empty() && fold == Some(false) {
-            below = Some(session.id);
-        }
         sections.push(session_section(desk, session, &members, &filtered, fold, p));
     }
     let mut list = col()
         .w_full()
         .gap(grid::block_gap(p))
-        .children(
-            (!searching)
-                .then(|| needs_you(desk, &all, below, p))
-                .flatten(),
-        )
+        .children((!searching).then(|| needs_you(desk, &all, p)).flatten())
         .children(sections);
     if !quiet.is_empty() {
         list = list.child(quiet_band(desk, &quiet, phone.quiet_shown, p));
@@ -108,29 +99,17 @@ pub(super) fn session_list(desk: &Desk, p: &Look) -> El {
     other_hosts(list, desk, query, p)
 }
 
-/// Every pane asking for you, ahead of the map: the question a person
-/// opens the app with. The card unfolded right under the band (`below`)
-/// already lists its own, so the band names only what that card does not.
-fn needs_you(desk: &Desk, all: &[Addressable], below: Option<u32>, p: &Look) -> Option<El> {
-    let asking: Vec<_> = all
+/// Every pane asking for you, across sessions, ahead of the map: the
+/// question a person opens the app with. Their sessions still list them.
+fn needs_you(desk: &Desk, all: &[Addressable], p: &Look) -> Option<El> {
+    let waiting: Vec<_> = all
         .iter()
         .filter(|r| r.id.host().is_none() && desk.activities.mark(&r.id).needs_you())
-        .collect();
-    let waiting: Vec<_> = asking
-        .iter()
-        .copied()
-        .filter(|r| Some(r.session_id) != below)
         .collect();
     if waiting.is_empty() {
         return None;
     }
-    // The heading counts what its card lists; the spoken label also says
-    // how many ask in all, so VoiceOver never under-reports.
-    let label = if waiting.len() == asking.len() {
-        format!("Needs you, {}", waiting.len())
-    } else {
-        format!("Needs you, {}, {} in all", waiting.len(), asking.len())
-    };
+    let label = format!("Needs you, {}", waiting.len());
     Some(
         col()
             .key("phone-needs-you")
