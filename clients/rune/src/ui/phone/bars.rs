@@ -170,10 +170,7 @@ pub(super) fn pane_title(desk: &Desk) -> String {
 /// The computer's pill, shown in the session switcher: tapping it opens
 /// Connections. The terminal screen spends no row on it; the top bar's
 /// subtitle names the computer instead.
-pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
-    if !in_switcher && desk.link_word() != "connected" {
-        return None;
-    }
+pub(super) fn computer(desk: &Desk, p: &Look) -> El {
     let machine = desk.machines.label();
     let s = &p.space;
     let dot = s.s2;
@@ -210,11 +207,7 @@ pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
             p.roles.text.dim.paint(),
         ));
     let label = format!("Connections · {machine} · {}", desk.link_word());
-    let key = if in_switcher {
-        "phone-switcher-computer"
-    } else {
-        "phone-connection"
-    };
+    let key = "phone-switcher-computer";
     let hit = el()
         .key(key)
         .min_h(p.round())
@@ -222,17 +215,15 @@ pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
         .center()
         .label(&label)
         .on_press(move |d: &mut Desk| {
-            if in_switcher {
-                d.close_phone_navigation();
-            }
+            d.close_phone_navigation();
             d.toggle_machines();
         })
         .child(surface(pill, p));
-    Some(row().w_full().center().child(hosted(
+    row().w_full().center().child(hosted(
         desk,
         touchable(hit, p),
         crate::mobile::Control::painted(key, &label, true),
-    )))
+    ))
 }
 
 /// The computer a native host is attached to, once a terminal is on screen.
