@@ -11,6 +11,7 @@ use crate::addressable::Addressable;
 use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 
 pub mod phone;
+pub mod sections;
 
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]

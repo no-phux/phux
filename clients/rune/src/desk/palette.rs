@@ -190,7 +190,7 @@ impl Desk {
                     native,
                     self.resource_items(),
                 );
-                palette::rank(items, query)
+                self.sectioned(palette::rank(items, query))
             }
             Mode::All => {
                 // The quick terminal's own action leads; then terminals,
@@ -202,7 +202,7 @@ impl Desk {
                     .then(|| palette::Item {
                         title: "Move to a Tab".to_owned(),
                         detail: "into the main window".to_owned(),
-                        kind: "action",
+                        kind: palette::sections::SUGGESTED_KIND,
                         target: Target::MoveToTab,
                     })
                     .into_iter()
@@ -229,7 +229,8 @@ impl Desk {
                 items.push(super::size_lock::item(self.connection.size_locked));
                 items.extend(self.resource_items());
                 let listed: Vec<_> = shown.into_iter().map(|r| r.id).collect();
-                palette::rank_grouped(items, &self.palette_tabs(&listed), query)
+                let tabs = self.palette_tabs(&listed);
+                self.sectioned(palette::rank_grouped(items, &tabs, query))
             }
             Mode::Mirror(source) => self.mirror_items(source, query),
             Mode::Screens => self.screen_hits(query),
@@ -271,6 +272,37 @@ impl Desk {
                 palette::rank(items.collect(), "")
             }
         }
+    }
+
+    /// Whether a palette row is a terminal asking for you.
+    fn palette_urgent(&self, item: &palette::Item) -> bool {
+        match &item.target {
+            Target::Terminal { id, .. } => self.activities.mark(id).needs_you(),
+            _ => false,
+        }
+    }
+
+    /// The general palette's `hits` in sections (`palette::sections`).
+    fn sectioned(&self, hits: Vec<Hit>) -> Vec<Hit> {
+        let query = &self.palette_query.text;
+        palette::sections::arrange(hits, query, |item| self.palette_urgent(item))
+    }
+
+    /// Where the palette's section headings sit in `hits`, as
+    /// `palette_hits` arranged them: the general list's and the session
+    /// picker's (its sessions, then what typing would create).
+    pub fn palette_headings(&self, hits: &[Hit]) -> Vec<(usize, &'static str)> {
+        if !matches!(self.palette_mode, Mode::All | Mode::Sessions) {
+            return Vec::new();
+        }
+        let query = &self.palette_query.text;
+        palette::sections::headings(hits, query, |item| self.palette_urgent(item))
+    }
+
+    /// The theme the palette keeps on Escape: the one it opened over while
+    /// the highlight previews others.
+    pub fn kept_theme(&self) -> Option<&'static crate::theme::Theme> {
+        self.theme_before.unwrap_or(self.settings.theme)
     }
 
     /// The point under the focused pane's cursor, in window points, where

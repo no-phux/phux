@@ -41,7 +41,7 @@ const DESKTOP: [Shortcut; 11] = [
 
 /// A command's row with no chord beside it. A native phone pairs with one
 /// computer at a time, so its machines command says what it does there.
-fn action(command: &Command, native: bool) -> Item {
+fn action(command: &Command, native: bool, kind: &'static str) -> Item {
     let title = if native && command.action == Shortcut::Machines {
         "Change computer".to_owned()
     } else {
@@ -50,12 +50,12 @@ fn action(command: &Command, native: bool) -> Item {
     Item {
         title,
         detail: String::new(),
-        kind: "action",
+        kind,
         target: Target::Action(command.action),
     }
 }
 
-/// A phone's empty-query order: its first commands, terminals, sessions,
+/// A phone's empty-query order: its first commands (suggested), terminals, sessions,
 /// the remaining commands, `extra` (the desk's own rows), then themes.
 pub fn items(
     topology: Option<&Topology>,
@@ -66,14 +66,14 @@ pub fn items(
     let mut out: Vec<Item> = FIRST
         .iter()
         .filter_map(|shortcut| command(*shortcut))
-        .map(|command| action(command, native))
+        .map(|command| action(command, native, super::sections::SUGGESTED_KIND))
         .collect();
     out.extend(terminal_items(topology));
     out.extend(session_items(topology, order));
     let rest = COMMANDS.iter().filter(|command| {
         command.listed && !FIRST.contains(&command.action) && !DESKTOP.contains(&command.action)
     });
-    out.extend(rest.map(|command| action(command, native)));
+    out.extend(rest.map(|command| action(command, native, "action")));
     out.extend(extra);
     out.extend(theme_items());
     out
@@ -93,7 +93,7 @@ mod tests {
         for desktop in ["Toggle Sidebar", "Keyboard Shortcuts", "Check for Updates"] {
             assert!(!titles.contains(&desktop), "{desktop}");
         }
-        let actions = list.iter().filter(|item| item.kind == "action");
+        let actions = (list.iter()).filter(|item| matches!(item.kind, "action" | "suggested"));
         assert!(actions.clone().all(|item| item.detail.is_empty()));
         let mut seen = std::collections::HashSet::new();
         assert!(actions.into_iter().all(|item| seen.insert(&item.title)));
