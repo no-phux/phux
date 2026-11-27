@@ -75,7 +75,7 @@ fn only_chords_are_drawn_as_key_caps() {
 fn every_listed_command_has_its_own_glyph() {
     let listed = crate::keys::COMMANDS.iter().filter(|c| c.listed);
     for command in listed {
-        let glyph = super::rows::action_mark(command.action);
+        let glyph = super::marks::action_mark(command.action);
         assert_ne!(
             glyph.name,
             super::icons::PROMPT.name,

@@ -69,6 +69,7 @@ impl Desk {
             self.refresh_plugin_actions();
         }
         self.palette_picked = 0;
+        self.palette_keyed = false;
         self.palette_query.clear();
         // Ask once; the runtime keeps the field's focus from here.
         self.palette_query.focused = true;
@@ -338,6 +339,11 @@ impl Desk {
         // Only the rendered rows can be highlighted.
         let count = self.palette_hits().len().min(palette::ROWS);
         match event.key {
+            // The first press on a phone's touch list shows the row Return
+            // runs before it moves anything.
+            Key::Down | Key::Tab | Key::Up if count > 0 && !self.palette_pick_shown() => {
+                self.palette_keyed = true;
+            }
             Key::Down | Key::Tab if count > 0 => {
                 self.palette_picked = (self.palette_picked + 1) % count
             }
@@ -353,8 +359,24 @@ impl Desk {
         true
     }
 
-    /// Run the highlighted row, or the row at `index`.
+    /// Whether the picked row is drawn as picked. A phone's touch list
+    /// shows none until a query, an arrow or the Themes preview makes one
+    /// the row Return runs.
+    pub fn palette_pick_shown(&self) -> bool {
+        self.phone.is_none()
+            || self.palette_keyed
+            || self.palette_mode == Mode::Themes
+            || !self.palette_query.text.trim().is_empty()
+    }
+
+    /// Run the highlighted row, or the row at `index`. Return never runs a
+    /// row nobody can see picked: on a phone's untouched list it shows the
+    /// first one instead, and a second Return runs it.
     pub fn palette_run(&mut self, index: Option<usize>, tx: &mut Tx) {
+        if index.is_none() && !self.palette_pick_shown() {
+            self.palette_keyed = true;
+            return;
+        }
         let hits = self.palette_hits();
         let picked = self.palette_picked.min(hits.len().saturating_sub(1));
         let Some(hit) = hits.get(index.unwrap_or(picked)).cloned() else {

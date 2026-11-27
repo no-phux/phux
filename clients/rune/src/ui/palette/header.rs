@@ -126,6 +126,17 @@ pub(super) fn desktop_header(desk: &Desk, t: &Tokens, g: &Grid, count: usize) ->
         }))
 }
 
+/// The search bar's type: the phone's, stopped at the grid's text cap as
+/// iOS stops a bar's, so the field keeps room for its hint beside Cancel
+/// at the largest text.
+fn bar_type(t: &Tokens) -> Type {
+    crate::ui::tokens::phone::ty(bar_scale(t))
+}
+
+fn bar_scale(t: &Tokens) -> f32 {
+    t.type_scale.min(crate::desk::accessibility::GRID_CAP)
+}
+
 /// The phone's search bar, as the Sessions page draws its own: the
 /// magnifier in the marks' column and the query on the titles', with
 /// Cancel beside it.
@@ -155,7 +166,7 @@ pub(super) fn phone_header(desk: &Desk, t: &Tokens, g: &Grid) -> El {
                 .w(g.slot)
                 .center()
                 .child(
-                    rune::icon(&icons::SEARCH, t.icon.grid * t.type_scale)
+                    rune::icon(&icons::SEARCH, t.icon.grid * bar_scale(t))
                         .color(dim)
                         .a11y_hidden(),
                 ),
@@ -164,7 +175,7 @@ pub(super) fn phone_header(desk: &Desk, t: &Tokens, g: &Grid) -> El {
         // the hint already says what is searched.
         // The lead role: an iOS field under 16 points zooms the page.
         .child(
-            field(desk, t, g.ty.lead, true)
+            field(desk, t, bar_type(t).lead, true)
                 .min_h(s.touch_min)
                 .py(s.s2),
         );
@@ -190,7 +201,7 @@ pub(super) fn phone_header(desk: &Desk, t: &Tokens, g: &Grid) -> El {
         })
         .child(
             text("Cancel")
-                .font(g.ty.body)
+                .font(bar_type(t).body)
                 .color(t.roles.accent.accent_text.paint())
                 .a11y_hidden(),
         );

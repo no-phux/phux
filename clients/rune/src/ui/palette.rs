@@ -18,6 +18,7 @@ use crate::palette::{Hit, Mode};
 use crate::ui::Cover;
 
 mod header;
+mod marks;
 mod menu;
 mod rows;
 use header::{desktop_header, phone_header, verb_and_glyph};
@@ -52,8 +53,10 @@ impl Grid {
         let s = &t.space;
         if phone {
             Self {
-                inset: super::tokens::phone::page_margin() + s.s1,
-                pad: s.s3,
+                // A card's rows run to its edges, as an iOS grouped list's
+                // cells do: the row pads its mark in.
+                inset: super::tokens::phone::page_margin(),
+                pad: s.s3 + s.s1,
                 // The marks' column widens as Dynamic Type grows its glyphs.
                 slot: s.s6.max(t.icon.size.md + s.s1),
                 gap: s.s2,
@@ -94,10 +97,11 @@ impl Grid {
         }
     }
 
-    /// A row's corners, nested in what holds it by the list's inset.
+    /// A row's corners, nested in what holds it by the list's inset. A
+    /// phone's rows are square: their card's corners clip them.
     pub(super) fn row_radius(&self, t: &Tokens) -> f32 {
         if self.phone {
-            t.nested(t.radius.xl, t.space.s1)
+            0.0
         } else {
             t.nested(t.radius.lg, self.inset)
         }
@@ -105,25 +109,41 @@ impl Grid {
 }
 
 /// A section's heading, in the Sessions page's voice: on the marks'
-/// column, never a row the arrows land on.
-fn heading(title: &'static str, at: usize, g: &Grid, t: &Tokens) -> El {
+/// column, never a row the arrows land on. Needs you counts its rows in
+/// its tone, as the Sessions page's heading does.
+fn heading(title: &'static str, rows: Range<usize>, g: &Grid, t: &Tokens) -> El {
     let s = &t.space;
-    let inset = if g.phone { g.pad + s.s1 } else { g.pad };
-    el().key(format!("palette-section-{at}"))
+    let at = rows.start;
+    let count = (title == crate::palette::sections::NEEDS_YOU).then(|| rows.len());
+    let label = count.map_or_else(|| title.to_owned(), |n| format!("{title}, {n}"));
+    let tone = t.status.state(phux_design::State::NeedsYou).tone.ink;
+    row()
+        .key(format!("palette-section-{at}"))
         .w_full()
-        .pl(inset)
+        .pl(g.pad)
         .pr(g.pad)
         .pt(if g.phone || at > 0 { s.s3 } else { s.s1 })
         .pb(s.s1)
+        .gap(s.s2)
+        .items_center()
         .role("heading")
-        .label(title)
+        .label(label)
         .child(
             text(title)
                 .font(g.ty.caption.semibold())
                 .color(t.roles.text.dim.paint())
+                .grow(1.0)
+                .min_w(0.0)
                 .truncate()
                 .a11y_hidden(),
         )
+        .children(count.map(|n| {
+            text(n.to_string())
+                .key("palette-needs-you-count")
+                .font(g.ty.caption.figures())
+                .color(tone)
+                .a11y_hidden()
+        }))
 }
 
 /// The list's runs: each heading's title and the rows under it, or one
@@ -144,16 +164,17 @@ fn runs(
 }
 
 /// A phone's run of rows: one grouped card, a hairline between rows on
-/// the titles' column.
+/// the titles' column. A picked row fills to the card's edges, its
+/// corners the card's.
 fn card(rows: &Rows<'_>, hits: &[Hit], range: Range<usize>) -> El {
     let t = rows.t;
     let s = &t.space;
     let g = &rows.grid;
     let mut card = col()
         .w_full()
-        .padding(s.s1)
         .radius(t.radius.xl)
         .continuous_corners()
+        .clip_rounded(t.radius.xl)
         .fill(t.roles.layer.raised.paint());
     let first = range.start;
     for index in range {
@@ -188,17 +209,19 @@ fn list(rows: &Rows<'_>, hits: &[Hit], headings: &[(usize, &'static str)]) -> El
         .w_full();
     results = if g.phone {
         let margin = super::tokens::phone::page_margin();
-        results
-            .px(margin)
-            .pt(t.space.s1)
-            .pb(t.space.s4)
-            .gap(t.space.s1)
+        // An unsectioned list (Themes) keeps a heading's room above it.
+        let top = if headings.is_empty() {
+            t.space.s4
+        } else {
+            t.space.s1
+        };
+        results.px(margin).pt(top).pb(t.space.s4).gap(t.space.s1)
     } else {
         results.padding(g.inset)
     };
     for (title, range) in runs(headings, hits.len()) {
         if let Some(title) = title {
-            results = results.child(heading(title, range.start, g, t));
+            results = results.child(heading(title, range.clone(), g, t));
         }
         if g.phone {
             results = results.child(card(rows, hits, range));
@@ -216,7 +239,7 @@ fn notes(desk: &Desk, results: El, hits: &[Hit], g: &Grid, t: &Tokens) -> El {
     let search = desk.connection.paths.as_ref();
     let query = desk.palette_query.text.trim();
     if hits.is_empty() && search.is_none() && !query.is_empty() {
-        return results.child(no_results(query, g, t));
+        return results.child(no_results(query, desk.palette_mode, g, t));
     }
     if hits.is_empty() {
         let empty = match search {
@@ -247,14 +270,12 @@ fn notes(desk: &Desk, results: El, hits: &[Hit], g: &Grid, t: &Tokens) -> El {
 
 fn rows<'a>(desk: &'a Desk, t: &'a Tokens, g: Grid, hits: &[Hit], bare_themes: bool) -> Rows<'a> {
     let current_terminal = desk.connection.shown.as_ref().map(|s| s.resource.clone());
-    let typed = !desk.palette_query.text.trim().is_empty();
     Rows {
         desk,
         t,
         grid: g,
         picked: desk.palette_picked.min(hits.len().saturating_sub(1)),
-        // Themes preview as the highlight moves, so it shows there too.
-        wash: !g.phone || typed || desk.palette_mode == Mode::Themes,
+        wash: desk.palette_pick_shown(),
         ground: if g.phone {
             t.roles.layer.raised.paint()
         } else {
@@ -265,6 +286,7 @@ fn rows<'a>(desk: &'a Desk, t: &'a Tokens, g: Grid, hits: &[Hit], bare_themes: b
         current_terminal,
         current_session: desk.selected_session_name(),
         kept_theme: desk.kept_theme().map(|theme| theme.id),
+        checks: hits.iter().any(|hit| rows::can_be_current(&hit.item)),
     }
 }
 
@@ -356,8 +378,9 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
                 .py(s.s2)
                 .gap(s.s4)
                 .items_center()
-                .child(key_hint("↑↓", "move", t))
-                .child(key_hint("↩", verb, t))
+                // Nothing to move to or open: only Escape does anything.
+                .children((!hits.is_empty()).then(|| key_hint("↑↓", "move", t)))
+                .children((!hits.is_empty()).then(|| key_hint("↩", verb, t)))
                 .child(key_hint("esc", "close", t)),
         );
     let panel = t.elevate(
@@ -409,9 +432,24 @@ fn at_cursor(desk: &Desk, panel: El, x: f32, y: f32, t: &Tokens) -> El {
     panel.absolute(fit(x, EXTENTS.paths_w, window_w, gap), y)
 }
 
+/// What a mode lists, for the hint under a search that found nothing.
+const fn try_hint(mode: Mode) -> &'static str {
+    match mode {
+        Mode::All => "Try a command, session or terminal name.",
+        Mode::Sessions => "Try another session name, or Return to make it.",
+        Mode::Themes => "Try a theme name.",
+        Mode::Shortcuts | Mode::Essentials => "Try a command name or a key.",
+        Mode::Playground => "Try a scene name.",
+        Mode::Paths => "Try another file or folder name.",
+        Mode::Screens => "Try a display or window name.",
+        Mode::Mirror(_) => "Try a terminal name.",
+        Mode::Popup => "Try a command to run.",
+    }
+}
+
 /// A search that found nothing: what was looked for, quoted, and what the
 /// list holds, so the next try is a better one.
-fn no_results(query: &str, g: &Grid, t: &Tokens) -> El {
+fn no_results(query: &str, mode: Mode, g: &Grid, t: &Tokens) -> El {
     let s = &t.space;
     let r = &t.roles;
     col()
@@ -435,7 +473,8 @@ fn no_results(query: &str, g: &Grid, t: &Tokens) -> El {
         )
         .child(
             text(format!(
-                "Nothing matches \u{201c}{query}\u{201d}. Try a command, session or terminal name."
+                "Nothing matches \u{201c}{query}\u{201d}. {}",
+                try_hint(mode)
             ))
             .font(g.ty.body)
             .color(r.text.dim.paint())

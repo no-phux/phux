@@ -1,21 +1,22 @@
 //! One ranked result, in the same anatomy on every row: a mark in a fixed
 //! column (an agent's glyph and state for a terminal, a swatch for a
 //! theme, a glyph for everything else), the title with its matched
-//! characters lit, then on the trailing edge what the row is up to, its
-//! detail or its keys, and a check where you already are.
+//! characters lit, then on the trailing edge its detail or its keys,
+//! what the row is up to (last, as the Sessions page says it), and a
+//! check where you already are, in a slot every row of the list keeps.
 
 use phux_protocol::ids::{ResourceId, ResourceKind};
-use rune::{Cursor, El, Icon, Span, col, el, rich, row, text};
+use rune::{Cursor, El, Span, col, el, rich, row, text};
 
 use super::super::sidebar::face;
 use super::super::tile::{tells, tile};
 use super::super::tokens::{Paint, Tokens};
 use super::super::{icons, keycap};
 use super::Grid;
+use super::marks::{glyph, swatch};
 use crate::activity::Mark;
 use crate::addressable::{Addressable, Identity};
 use crate::desk::Desk;
-use crate::keys::Shortcut;
 use crate::palette::{Hit, Item, Target};
 use crate::ui::tokens::Voice;
 
@@ -38,6 +39,9 @@ pub(super) struct Rows<'a> {
     pub current_terminal: Option<ResourceId>,
     pub current_session: Option<String>,
     pub kept_theme: Option<&'static str>,
+    /// Whether any row of the list can be where you are: then every row
+    /// keeps the check's slot, so their trailing edges line up.
+    pub checks: bool,
 }
 
 impl Rows<'_> {
@@ -90,11 +94,11 @@ impl Rows<'_> {
         if g.phone {
             return base
                 .child(self.lines(hit, index))
-                .children(self.current(&hit.item).then(|| self.check()));
+                .children(self.check_slot(&hit.item, index));
         }
         base.child(self.title(hit, index))
             .child(el().grow(1.0))
-            .child(self.trailing(hit, washed))
+            .child(self.trailing(hit, index, washed))
     }
 
     /// The title, then on a phone what a desktop puts on the trailing
@@ -108,11 +112,12 @@ impl Rows<'_> {
             .children(self.subtitle(&hit.item))
     }
 
-    /// A phone row's second line: its state in its tone, then its detail,
-    /// one text that wraps at large sizes rather than running off the card.
+    /// A phone row's second line: its detail, then its state in its tone,
+    /// in the Sessions page's order; one text that wraps at large sizes
+    /// rather than running off the card.
     fn subtitle(&self, item: &Item) -> Option<El> {
         let status = self.status(item);
-        let words: Vec<&str> = [status.map(|(word, _)| word), Some(item.detail.as_str())]
+        let words: Vec<&str> = [Some(item.detail.as_str()), status.map(|(word, _)| word)]
             .into_iter()
             .flatten()
             .filter(|w| !w.is_empty())
@@ -120,11 +125,12 @@ impl Rows<'_> {
         if words.is_empty() {
             return None;
         }
+        let line = words.join(" · ");
         let spans = status
-            .map(|(word, ink)| vec![Span::new(0, word.len()).color(ink)])
+            .map(|(word, ink)| vec![Span::new(line.len() - word.len(), line.len()).color(ink)])
             .unwrap_or_default();
         Some(
-            rich(words.join(" · "), spans)
+            rich(line, spans)
                 .font(self.grid.ty.caption)
                 .color(self.t.roles.text.dim.paint())
                 .wrap()
@@ -183,9 +189,9 @@ impl Rows<'_> {
         }
     }
 
-    /// What the row is up to and where it is, keys for a command, then a
-    /// check where you are.
-    fn trailing(&self, hit: &Hit, washed: bool) -> El {
+    /// Where the row is (keys for a command), what it is up to, then the
+    /// check's slot.
+    fn trailing(&self, hit: &Hit, index: usize, washed: bool) -> El {
         let s = &self.t.space;
         // Faint never sits on a wash: the picked row's detail reads dim.
         let ink = if washed {
@@ -209,23 +215,34 @@ impl Rows<'_> {
                     crate::host_color::dot(host, s.s2, self.t.roles.layer.overlay.paint())
                 }),
             )
+            .children((!detail.is_empty()).then(|| self.detail(&hit.item, ink.paint())))
+            .children(
+                (status.is_some() && !detail.is_empty()).then(|| self.words("·", ink.paint())),
+            )
             .children(status.map(|(word, ink)| {
                 text(word)
                     .font(self.grid.ty.caption.medium())
                     .color(ink)
                     .a11y_hidden()
             }))
-            .children(
-                (status.is_some() && !detail.is_empty()).then(|| self.words("·", ink.paint())),
-            )
-            .children((!detail.is_empty()).then(|| self.detail(&hit.item, ink.paint())))
-            .children(self.current(&hit.item).then(|| self.check()))
+            .children(self.check_slot(&hit.item, index))
     }
 
-    fn check(&self) -> El {
-        rune::icon(&icons::CHECK, self.t.icon.size.md)
-            .color(self.t.roles.accent.accent_text.paint())
-            .a11y_hidden()
+    /// The check where you are, in a slot every row of a list that can
+    /// hold one keeps, empty or not.
+    fn check_slot(&self, item: &Item, index: usize) -> Option<El> {
+        let size = self.t.icon.size.md;
+        let slot = el().key(format!("palette-check-{index}")).w(size).center();
+        if self.current(item) {
+            return Some(
+                slot.child(
+                    rune::icon(&icons::CHECK, size)
+                        .color(self.t.roles.accent.accent_text.paint())
+                        .a11y_hidden(),
+                ),
+            );
+        }
+        self.checks.then_some(slot.a11y_hidden())
     }
 
     fn words(&self, words: &str, ink: rune::Color) -> El {
@@ -257,12 +274,12 @@ impl Rows<'_> {
         (!word.is_empty()).then_some((word, f.ink))
     }
 
-    /// The detail a screen reader hears: the row's state, then its detail.
+    /// The detail a screen reader hears, in the order it is drawn.
     fn spoken_detail(&self, item: &Item) -> String {
         let status = self.status(item).map(|(word, _)| word);
         let current = self.current(item).then_some("current");
         let detail = (!item.detail.is_empty()).then_some(item.detail.as_str());
-        let parts: Vec<&str> = [status, detail, current].into_iter().flatten().collect();
+        let parts: Vec<&str> = [detail, status, current].into_iter().flatten().collect();
         parts.join(" · ")
     }
 
@@ -334,139 +351,19 @@ fn grey(ink: phux_design::Rgba8) -> bool {
     ink.r.max(ink.g).max(ink.b) - ink.r.min(ink.g).min(ink.b) <= SPREAD
 }
 
+/// Whether a row can be where you are: a terminal, a session or a theme.
+pub(super) fn can_be_current(item: &Item) -> bool {
+    match &item.target {
+        Target::Terminal { .. } => item.kind != "tab",
+        Target::Session(_) | Target::Theme(_) => true,
+        _ => false,
+    }
+}
+
 fn terminal_id(item: &Item) -> Option<&ResourceId> {
     match &item.target {
         Target::Terminal { id, .. } if item.kind != "tab" => Some(id),
         _ => None,
-    }
-}
-
-/// A theme's swatch: its ground with its accent beside it, ringed so a
-/// ground like the panel's still has an edge, at a line icon's weight.
-fn swatch(id: Option<&'static str>, size: f32, t: &Tokens) -> El {
-    let theme = id.and_then(crate::theme::find);
-    let (fill, accent) = theme.map_or(
-        (t.roles.layer.ground.paint(), t.roles.text.dim.paint()),
-        |t| {
-            (
-                crate::theme::color(t.background),
-                crate::theme::color(t.accent),
-            )
-        },
-    );
-    let half = size / 2.0;
-    el().size(size, size)
-        .radius(t.radius.full)
-        .clip_rounded(half)
-        .fill(fill)
-        .border(t.space.hairline, t.roles.border.control.paint())
-        .child(
-            el().pin(Some(half), Some(0.0), Some(0.0), Some(0.0))
-                .fill(accent)
-                .inert(),
-        )
-        .a11y_hidden()
-}
-
-/// The glyph for a row that is not a terminal or a theme. Every row has
-/// one, so the column the marks keep never has a hole in it.
-fn glyph(target: &Target, item: &Item) -> &'static Icon {
-    match target {
-        Target::Action(action) => action_mark(*action),
-        Target::Session(_) => &icons::WINDOW,
-        Target::NewSession(_) => &icons::PLUS,
-        Target::NewWorktree(_) => &icons::BRANCH,
-        Target::Path(path) if path.ends_with('/') || item.title.ends_with('/') => &icons::FOLDER,
-        Target::Path(_) => &icons::DOCUMENT,
-        Target::Mirror(_) | Target::StartMirror(..) | Target::Screens | Target::Screen(..) => {
-            &icons::WINDOW
-        }
-        Target::MoveToTab => &icons::BRING,
-        Target::KeepAwake(_) => &icons::AWAKE,
-        Target::SizeLock(_) => &icons::LOCK,
-        Target::Popup(_) => &icons::BOLT,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        Target::Extension(_) => &icons::PUZZLE,
-        Target::Terminal { .. } | Target::Theme(_) => &icons::COMMAND,
-    }
-}
-
-/// A command's own glyph. The terminal's prompt is never one: a command
-/// must not read as a terminal. A command with no glyph of its own takes
-/// the command key's.
-pub(super) fn action_mark(action: Shortcut) -> &'static Icon {
-    use Shortcut as S;
-    match action {
-        S::NewTerminal | S::NewSession => &icons::PLUS,
-        S::Paste | S::Copy | S::CopyConfig | S::CopyDiagnostics | S::CopyMode | S::SelectAll => {
-            &icons::CLIPBOARD
-        }
-        S::Find | S::FindNext | S::FindPrevious | S::FindSelection | S::Palette => &icons::SEARCH,
-        S::SwitchSession | S::DisplayPanes | S::ZoomPane | S::ToggleFullScreen | S::Bare => {
-            &icons::WINDOW
-        }
-        S::SplitRight => &icons::SPLIT_RIGHT,
-        S::SplitDown => &icons::SPLIT_DOWN,
-        S::ZoomIn
-        | S::ZoomOut
-        | S::ZoomReset
-        | S::InterfaceBigger
-        | S::InterfaceSmaller
-        | S::InterfaceReset => &icons::TEXT_SIZE,
-        S::Settings => &icons::SETTINGS,
-        S::Machines | S::PairPhone => &icons::MACHINES,
-        S::CloseTerminal | S::CloseTab | S::CloseSession | S::ClearSelection => &icons::CLOSE,
-        S::Inbox => &icons::INBOX,
-        S::JumpToAttention => &icons::BELL,
-        S::ChangeTheme => &icons::PALETTE,
-        S::RenameSession | S::RenameTab => &icons::PENCIL,
-        S::LockTab => &icons::LOCK,
-        S::ToggleSidebar | S::FocusSidebar => &icons::SIDEBAR,
-        S::RestoreSessions | S::RetryConnection | S::CheckForUpdates => &icons::REFRESH,
-        S::Screenshot => &icons::CAMERA,
-        S::KeyboardShortcuts | S::EssentialShortcuts | S::SyncPanes => &icons::KEYBOARD,
-        S::InsertPath => &icons::FOLDER,
-        S::ReviewRawRelaunch | S::Changes | S::QuickLook => &icons::DOCUMENT,
-        S::Popup => &icons::BOLT,
-        S::GetStarted | S::WhatWorksHere => &icons::HAND,
-        S::Galaxy | S::Reef | S::Pitch | S::Kitchen | S::PitLane | S::Hive | S::Playground => {
-            &icons::PUZZLE
-        }
-        _ => arrow_mark(action),
-    }
-}
-
-/// Moving, scrolling and stepping commands: the way they go.
-fn arrow_mark(action: Shortcut) -> &'static Icon {
-    use Shortcut as S;
-    match action {
-        S::ScrollToTop
-        | S::ScrollPageUp
-        | S::ScrollHalfPageUp
-        | S::PromptUp
-        | S::FocusUp
-        | S::PreviousSession => &icons::ARROW_UP,
-        S::ScrollToBottom
-        | S::ScrollPageDown
-        | S::ScrollHalfPageDown
-        | S::PromptDown
-        | S::FocusDown
-        | S::NextSession
-        | S::InstallUpdate => &icons::ARROW_DOWN,
-        S::PreviousTerminal
-        | S::PreviousTerminalInSession
-        | S::PreviousTab
-        | S::PreviousSlotTab
-        | S::LastPane
-        | S::LastTab
-        | S::FocusLeft => &icons::ARROW_LEFT,
-        S::NextTerminal
-        | S::NextTerminalInSession
-        | S::NextTab
-        | S::NextSlotTab
-        | S::FocusRight
-        | S::Tab(_) => &icons::ARROW_RIGHT,
-        _ => &icons::COMMAND,
     }
 }
 

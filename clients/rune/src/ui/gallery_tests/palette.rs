@@ -182,3 +182,67 @@ fn the_palette_keeps_one_column_grid() {
         }
     }
 }
+
+fn press(rt: &mut Runtime<Desk>, key: rune::Key) {
+    rt.update(move |d, tx| {
+        let event = rune::KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        };
+        d.palette_key(&event, tx);
+    });
+    settle(rt);
+}
+
+fn washed(rt: &Runtime<Desk>, index: usize) -> bool {
+    crate::ui::element(rt, &format!("palette-row-{index}"))
+        .fill
+        .a
+        > 0.001
+}
+
+/// A phone's untouched list shows no picked row, so the keyboard never
+/// moves or runs one nobody can see: the first arrow shows the first row,
+/// the next moves on, and Return on an untouched list only shows it.
+#[test]
+fn a_phone_shows_the_row_the_keyboard_picks() {
+    for size in [(393.0, 852.0), (320.0, 568.0)] {
+        let mut rt = palette_window(size, true, true, "empty", false);
+        assert!(!washed(&rt, 0), "{size:?}: untouched");
+        press(&mut rt, rune::Key::Down);
+        assert_eq!(rt.state.palette_picked, 0, "{size:?}");
+        assert!(washed(&rt, 0), "{size:?}: the first arrow shows row 0");
+        press(&mut rt, rune::Key::Down);
+        assert!(washed(&rt, 1) && !washed(&rt, 0), "{size:?}: then it moves");
+        assert!(rt.state.palette_open);
+
+        let mut rt = palette_window(size, true, true, "empty", false);
+        rt.update(|d, tx| d.palette_run(None, tx));
+        settle(&mut rt);
+        assert!(rt.state.palette_open, "{size:?}: Return ran an unseen row");
+        assert!(
+            washed(&rt, 0),
+            "{size:?}: Return shows the row it would run"
+        );
+    }
+}
+
+/// Every row of a list that can hold a check keeps its slot, so the
+/// trailing column ends at one x whether a row is current or not.
+#[test]
+fn the_trailing_column_ends_at_one_x() {
+    for (size, phone) in WINDOWS {
+        for state in ["empty", "themes"] {
+            let rt = palette_window(size, phone, true, state, false);
+            let slots: Vec<f32> = (0..crate::palette::ROWS)
+                .filter_map(|i| rt.presented(&format!("palette-check-{i}")))
+                .map(|(r, ..)| r[0])
+                .collect();
+            assert!(slots.len() > 2, "{size:?} {state}: {slots:?}");
+            assert!(
+                slots.iter().all(|x| near(*x, slots[0])),
+                "{size:?} {state}: {slots:?}"
+            );
+        }
+    }
+}
