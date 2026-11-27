@@ -9,7 +9,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub(super) struct Recorded(
     pub(super) Arc<Mutex<Vec<serde_json::Value>>>,
     pub(super) Arc<Mutex<Vec<AttemptTrace>>>,
+    Option<Duration>,
 );
+
+impl Recorded {
+    pub(super) fn delaying_dial(delay: Duration) -> Self {
+        Self(Arc::default(), Arc::default(), Some(delay))
+    }
+}
 
 #[derive(Default)]
 struct Fields(serde_json::Map<String, serde_json::Value>);
@@ -32,6 +39,11 @@ impl tracing::Subscriber for Recorded {
         if self.enabled(event.metadata()) {
             let mut fields = Fields::default();
             event.record(&mut fields);
+            if fields.0["phase"] == "dial_started"
+                && let Some(delay) = self.2
+            {
+                std::thread::sleep(delay);
+            }
             self.0.lock().unwrap().push(fields.0.into());
             if let Some(current) = AttemptTrace::current() {
                 self.1.lock().unwrap().push(current);
