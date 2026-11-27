@@ -185,6 +185,20 @@ fn member(member: &Member, session: &str, disabled: bool, t: &Tokens) -> El {
                 )
                 .truncate(),
         );
+    // Forced colours can give current and neighbouring captions identical ink.
+    // Mark the actual shown member without changing its pitch or hit bounds.
+    let base = if member.selected {
+        base.description_static("Current pane").child(
+            el().key("sidebar-current-member")
+                .pin(Some(0.0), None, Some(0.0), Some(0.0))
+                .h(t.space.hairline)
+                .fill(t.roles.text.text.paint())
+                .inert()
+                .a11y_hidden(),
+        )
+    } else {
+        base
+    };
     if disabled {
         base.inert()
     } else {

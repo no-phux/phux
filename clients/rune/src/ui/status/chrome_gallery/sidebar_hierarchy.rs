@@ -2,6 +2,7 @@
 use super::*;
 use phux_client_runtime::project_identity::SessionProject;
 
+mod current_member;
 mod tests;
 
 fn inventory() -> phux_client_runtime::control::Topology {
@@ -54,7 +55,20 @@ fn machines(desk: &mut Desk) {
 }
 
 fn window(size: (u16, u16), dark: bool, mode: &str) -> Runtime<Desk> {
-    let mut replica = crate::test_support::terminal::Replica::new(120, 40, 5);
+    window_with_replica(
+        size,
+        dark,
+        mode,
+        crate::test_support::terminal::Replica::new(120, 40, 5),
+    )
+}
+
+fn window_with_replica(
+    size: (u16, u16),
+    dark: bool,
+    mode: &str,
+    mut replica: crate::test_support::terminal::Replica,
+) -> Runtime<Desk> {
     replica.feed("\x1b[2J\x1b[H$ cargo test --locked\r\n   Compiling phux-rune\r\n".to_owned());
     let mut desk = replica.window();
     desk.connection.shown = Some(crate::desk::Shown {

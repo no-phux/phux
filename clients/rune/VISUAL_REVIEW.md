@@ -162,6 +162,11 @@ keep-awake controls, independent session/resource drag ownership, Left/Right spl
 focus, and unchanged terminal input and arrangement. A retained but covered
 sidebar element is not a valid pointer target: open the narrow drawer through
 its handler after initial layout and verify the actual hit path.
+The current inline split member must remain identifiable when forced colours
+make every caption the same ink: retain its quiet underline and accessible
+"Current pane" description. A pending or cancelled selection must not move
+that cue before the shown resource changes. Keep the containing row's single
+keyboard stop and the members' existing hit bounds.
 
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled
