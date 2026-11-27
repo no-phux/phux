@@ -44,6 +44,10 @@ pub(super) fn top_bar(desk: &Desk, p: &Look) -> El {
         "Connections"
     };
     let detail = place_detail(desk, &session);
+    let detail = match native_machine(desk) {
+        Some(machine) => format!("{detail} · {machine}"),
+        None => detail,
+    };
     let tone = focused_tone(desk, p);
     let pressed = |d: &mut Desk| {
         if d.connection.shown.is_some() {
@@ -163,19 +167,10 @@ pub(super) fn pane_title(desk: &Desk) -> String {
         .to_owned()
 }
 
-/// The computer is separate from the pane and session. Reconnection keeps
-/// its existing full-width recovery banner instead of competing with this.
-pub(super) fn connection(desk: &Desk, p: &Look) -> Option<El> {
-    if desk.native.is_none() || desk.connection.shown.is_none() || desk.modal().is_some() {
-        return None;
-    }
-    computer(desk, p, false)
-}
-
-pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
-    if !in_switcher && desk.link_word() != "connected" {
-        return None;
-    }
+/// The computer's pill, shown in the session switcher: tapping it opens
+/// Connections. The terminal screen spends no row on it; the top bar's
+/// subtitle names the computer instead.
+pub(super) fn computer(desk: &Desk, p: &Look) -> El {
     let machine = desk.machines.label();
     let s = &p.space;
     let dot = s.s2;
@@ -212,11 +207,7 @@ pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
             p.roles.text.dim.paint(),
         ));
     let label = format!("Connections · {machine} · {}", desk.link_word());
-    let key = if in_switcher {
-        "phone-switcher-computer"
-    } else {
-        "phone-connection"
-    };
+    let key = "phone-switcher-computer";
     let hit = el()
         .key(key)
         .min_h(p.round())
@@ -224,17 +215,21 @@ pub(super) fn computer(desk: &Desk, p: &Look, in_switcher: bool) -> Option<El> {
         .center()
         .label(&label)
         .on_press(move |d: &mut Desk| {
-            if in_switcher {
-                d.close_phone_navigation();
-            }
+            d.close_phone_navigation();
             d.toggle_machines();
         })
         .child(surface(pill, p));
-    Some(row().w_full().center().child(hosted(
+    row().w_full().center().child(hosted(
         desk,
         touchable(hit, p),
         crate::mobile::Control::painted(key, &label, true),
-    )))
+    ))
+}
+
+/// The computer a native host is attached to, once a terminal is on screen.
+/// The desktop-hosted phone is the computer it runs on.
+fn native_machine(desk: &Desk) -> Option<&str> {
+    (desk.native.is_some() && desk.connection.shown.is_some()).then(|| desk.machines.label())
 }
 
 fn focused_tone(desk: &Desk, p: &Look) -> Color {
@@ -268,7 +263,6 @@ pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
             .key("phone-tabs")
             .shrink()
             .min_w(0.0)
-            .padding(s.s0_5)
             .gap(s.s0_5)
             .radius(p.radius.full)
             .items_center()
@@ -292,10 +286,11 @@ pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
         p,
     )
     .on_press(Desk::new_tab);
+    // One touch target tall: the strip spends no rows the terminal could.
     let strip = row()
+        .key("phone-tab-strip")
         .w_full()
         .px(s.s3)
-        .py(s.s1)
         .gap(s.s2)
         .center()
         .child(pills)

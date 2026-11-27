@@ -81,6 +81,15 @@ fn the_top_bar_is_native_glass_at_rune_layout_with_no_rune_paint() {
     assert_eq!(place["leading"], true);
     assert!(place["title"].is_string());
     assert_eq!(place["subtitle_ink"].as_array().map(Vec::len), Some(3));
+    // The computer rides in the subtitle; no pill row takes the terminal's.
+    let machine = rt.state.machines.label().to_owned();
+    assert!(
+        place["subtitle"]
+            .as_str()
+            .is_some_and(|s| s.ends_with(&format!(" · {machine}"))),
+        "{place}"
+    );
+    assert!(rt.find("phone-connection").is_none());
 }
 
 #[test]

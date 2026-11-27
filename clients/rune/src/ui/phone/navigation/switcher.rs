@@ -222,7 +222,7 @@ fn pager(desk: &Desk, name: &str, index: usize, count: usize, p: &Look) -> El {
         .w_full()
         .gap(s.s2)
         .items_center()
-        .children(super::super::bars::computer(desk, p, true))
+        .child(super::super::bars::computer(desk, p))
         .child(
             row()
                 .w_full()

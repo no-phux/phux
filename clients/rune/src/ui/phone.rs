@@ -99,7 +99,6 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .h_full()
         .pt(top)
         .children((!desk.settings_open).then(|| top_bar(desk, controls)))
-        .children(bars::connection(desk, controls))
         .child(stage)
         .children(
             (!desk.settings_open)
