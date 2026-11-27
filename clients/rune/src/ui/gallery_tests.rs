@@ -12,6 +12,7 @@ use crate::test_support::server::{self, agent, pane, session, settle};
 use crate::theme::Theme;
 
 mod fixture;
+mod palette;
 mod states;
 
 use fixture::{Locale, Look};

@@ -15,7 +15,7 @@ if [[ -e "$out" || -L "$out" ]]; then
 fi
 # mkdir, without -p, also rejects concurrent claims of this exact output.
 mkdir "$out"
-mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/resources" "$out/prefs"
+mkdir "$out/logs" "$out/inbox" "$out/settings" "$out/navigation" "$out/palette" "$out/resources" "$out/prefs"
 cd "$repo/clients/rune"
 
 # Do not inherit a production server address or another run's export paths.
@@ -25,6 +25,7 @@ done
 export RUNE_INBOX_SNAP="$out/inbox"
 export RUNE_SETTINGS_SNAP="$out/settings"
 export RUNE_NAVIGATION_SNAP="$out/navigation"
+export RUNE_PALETTE_SNAP="$out/palette"
 export RUNE_RESOURCE_SNAP="$out/resources/mixed.png"
 export RUNE_PREFS_DIR="$out/prefs"
 
@@ -57,6 +58,7 @@ render phone_session_search_visual_review_frames
 render retina_navigation_renders_in_native_safe_area_and_desktop_phone_viewports
 render phone_header_visual_review_frames
 render phone_states_visual_review_frames
+render palette_visual_review_frames
 render reconnect_feedback_visual_review_frames
 render phone_connections_visual_review_frames
 render phone_connections_keyboard_visual_review_frames
