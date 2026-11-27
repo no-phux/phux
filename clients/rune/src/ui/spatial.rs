@@ -394,7 +394,15 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
             stick_bottom: false,
         })
         .scroll_margin(s.s2);
-    let mut directions = row().w_full();
+    // Done and the arrows stay under the thumb below the list, however long
+    // it scrolls, in one row that takes no more height than the arrows did
+    // at the list's top, so the list keeps its room above a keyboard. At
+    // the accessibility sizes they could not share a row, and a pinned
+    // footer would leave too little room for one whole row on the smallest
+    // phone: there the arrows open the list and Done ends it, as Sessions'
+    // New session does.
+    let pinned = p.type_scale < PHONE.stacked_title_scale;
+    let mut directions = row().w_full().gap(if pinned { s.s1 } else { 0.0 });
     for (label, dir) in [
         ("←", Direction::Left),
         ("↑", Direction::Up),
@@ -413,7 +421,10 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
             .px(0.0),
         );
     }
-    list = list.child(directions);
+    if !pinned {
+        list = list.child(directions);
+        directions = row();
+    }
     for (id, _) in all {
         let target = id.clone();
         let name = pane_name(desk, id);
@@ -451,17 +462,11 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         "Done",
         p,
         Desk::close_phone_picker,
-    )
-    .w_full();
-    // Done stays under the thumb below the list, however long it scrolls.
-    // At the accessibility sizes a pinned row would leave the list too
-    // little room to show one whole row above a keyboard, so there it ends
-    // the list, as Sessions' New session does.
-    let pinned = p.type_scale < PHONE.stacked_title_scale;
+    );
     let (done, foot) = if pinned {
-        (None, Some(done))
+        (None, Some(directions.child(done.grow(1.5).px(0.0))))
     } else {
-        (Some(done), None)
+        (Some(done.w_full()), None)
     };
     // A real scroll tail lets the last focus ring clear the viewport too.
     let list = list.children(done).child(el().w_full().h(s.s2));
@@ -473,11 +478,11 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         .clip_rounded(p.radius.md)
         .fill(p.roles.layer.overlay.paint())
         .child(list)
-        .children(foot.map(|done| {
+        .children(foot.map(|controls| {
             col()
                 .w_full()
                 .child(rune::rule(s.hairline, p.roles.border.muted.paint()).w_full())
-                .child(el().w_full().padding(s.s2).child(done))
+                .child(el().w_full().padding(s.s2).child(controls))
         }));
     let panel = p.elevate(panel, Tier::Floating);
     el().key("phone-picker-modal")

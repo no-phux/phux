@@ -86,12 +86,13 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
     assert!(rt.state.modal().unwrap().takes_pointer());
     assert_eq!(focus(&rt), id(1));
     no_input(&client);
-    key(&mut rt, Key::Tab);
+    // The arrows sit with Done under the list, after the rows in order.
+    rt.update(|_, tx| tx.focus("phone-direction-Left", true));
     key(&mut rt, Key::Enter);
     assert_eq!(
         focus(&rt),
         id(1),
-        "Tab/Return activates the left boundary action"
+        "Return activates the left boundary action"
     );
     assert!(rt.state.phone.as_ref().unwrap().picker);
     key(&mut rt, Key::Right);

@@ -184,6 +184,15 @@ fn picker_rows_fit_and_reveal_whole_targets_without_shrinking_requested_text() {
             for large in [false, true] {
                 let (client, mut rt) = prepare(size, scale, native, dark, large);
                 let before = stored(&client);
+                if !large {
+                    // Done and the arrows pinned under the list still leave
+                    // a whole row to pick as it opens, keyboard or not.
+                    let first = geometry(&rt, "phone-pick-@1");
+                    assert!(
+                        contained(first.rect, first.visible),
+                        "{size:?}: no whole row above the pinned controls: {first:?}"
+                    );
+                }
                 let label = geometry(&rt, "phone-pick-@1").label.unwrap();
                 assert_eq!(label, format!("{LONG_NAME} · @1 · current"));
                 assert_eq!(
