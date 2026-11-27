@@ -213,6 +213,12 @@ pub fn focus(rt: &Runtime<Desk>) -> ResourceId {
 
 pub use crate::ui::element as geometry;
 
+/// Lower the keyboard so the tab strip shows: typing tucks it away.
+pub fn show_tabs(rt: &mut Runtime<Desk>) {
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = false);
+    settle(rt);
+}
+
 pub fn tap(rt: &mut Runtime<Desk>, key: &str) {
     let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no {key}"));
     touch(rt, rune::TouchPhase::Started, x, y);
