@@ -55,6 +55,71 @@ fn swipe(rt: &Runtime<Desk>) -> &crate::desk::phone::swipe::Swipe {
 }
 
 #[test]
+fn batched_moves_release_at_the_last_position_for_sessions_and_the_drawer() {
+    for edge in [false, true] {
+        let (client, mut rt) = scene();
+        let first = rt.state.selected_session_name();
+        let next = rt.state.session_beside(1);
+        let (middle, y) = middle(&rt);
+        let x = if edge { 4.0 } else { middle };
+        let sign = if edge { 1.0 } else { -1.0 };
+        rt.touch(9, Started, x, y, 1.0);
+        tick(&mut rt, 1.0);
+        // Both moves reach the handlers in one frame, sharing Desk::clock.
+        rt.touch(9, Moved, x + sign * 20.0, y, 1.016);
+        rt.touch(9, Moved, x + sign * 240.0, y, 1.020);
+        rt.touch(9, Ended, x + sign * 240.0, y, 1.024);
+        tick(&mut rt, 1.032);
+        if edge {
+            assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
+            assert_eq!(rt.state.selected_session_name(), first);
+        } else {
+            assert_eq!(rt.state.selected_session_name(), next);
+            assert_ne!(rt.state.selected_session_name(), first);
+        }
+        no_terminal_input(&client);
+    }
+}
+
+#[test]
+fn batched_withdrawals_and_cancelled_swipes_do_not_navigate() {
+    for edge in [false, true] {
+        for cancelled in [false, true] {
+            let (client, mut rt) = scene();
+            let first = rt.state.selected_session_name();
+            let (middle, y) = middle(&rt);
+            let x = if edge { 4.0 } else { middle };
+            let sign = if edge { 1.0 } else { -1.0 };
+            at_batched_release(&mut rt, x, y, sign, cancelled);
+            assert_eq!(rt.state.selected_session_name(), first);
+            assert_eq!(rt.state.phone_page(), None);
+            assert_eq!(swipe(&rt).pull, None);
+            assert!(!swipe(&rt).paging);
+            no_terminal_input(&client);
+        }
+    }
+}
+
+fn at_batched_release(rt: &mut Runtime<Desk>, x: f32, y: f32, sign: f32, cancelled: bool) {
+    rt.touch(9, Started, x, y, 1.0);
+    tick(rt, 1.0);
+    let (first, last) = if cancelled {
+        (20.0, 240.0)
+    } else {
+        (240.0, 20.0)
+    };
+    rt.touch(9, Moved, x + sign * first, y, 1.016);
+    rt.touch(9, Moved, x + sign * last, y, 1.020);
+    let phase = if cancelled {
+        rune::TouchPhase::Cancelled
+    } else {
+        Ended
+    };
+    rt.touch(9, phase, x + sign * last, y, 1.024);
+    tick(rt, 1.032);
+}
+
+#[test]
 fn past_the_last_tab_a_heavier_pull_steps_over_into_the_next_session() {
     let (client, mut rt) = scene();
     let first = rt.state.selected_session_name().unwrap();

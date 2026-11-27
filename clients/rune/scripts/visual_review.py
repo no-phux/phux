@@ -304,7 +304,7 @@ def case_record(root, png):
         "physical": physical, "logical": logical, "scale": tree["scale"],
         "elementCount": len(tree["elements"]),
     }
-    if png.stem.startswith(("pane-motion-", "accessory-resize-")):
+    if png.stem.startswith(("pane-motion-", "accessory-resize-", "batched-swipe-")):
         case.update(motion_record(root, png, tree))
     return case
 

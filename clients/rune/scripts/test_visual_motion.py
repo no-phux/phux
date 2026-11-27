@@ -4,6 +4,7 @@ import unittest
 
 import test_visual_review as fixtures
 import visual_review as review
+from visual_motion import batched_swipe_inventory
 
 
 class MotionReview(unittest.TestCase):
@@ -41,3 +42,21 @@ class MotionReview(unittest.TestCase):
         case = next(case for case in self.fixture.produce()["cases"] if case["png"] == relative)
         self.assertEqual(len(case["motionSha256"]), 64)
         self.assertEqual(case["motion"], path.relative_to(self.fixture.root).as_posix())
+
+    def test_batched_swipes_bind_the_final_move_and_release_timeline(self):
+        inventory = batched_swipe_inventory()
+        self.assertEqual(len(inventory), 80)
+        self.fixture.populate(inventory)
+        cases = self.fixture.produce()["cases"]
+        for case in cases:
+            if not case["png"].startswith("navigation/batched-swipe-"):
+                continue
+            self.assertEqual(case["exporter"], "batched_swipe_visual_review_frames")
+            self.assertIn("motionSha256", case)
+        relative = next(iter(inventory))
+        path = (self.fixture.root / relative).with_suffix(".motion.json")
+        data = json.loads(path.read_text())
+        data["frame"] = 999
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "wrong motion frame"):
+            review.case_record(self.fixture.root, self.fixture.root / relative)
