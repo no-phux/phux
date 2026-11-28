@@ -42,7 +42,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let p = &super::page_look(desk);
     let s = &p.space;
     if page == Page::Switcher {
-        return Some(layer(desk, switcher::view(desk, top, p), page, p));
+        return Some(layer(desk, switcher::view(desk, top, p), page, top, p));
     }
     let title = match page {
         Page::Sessions => "Sessions",
@@ -57,18 +57,25 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .wrap()
         .min_w(0.0)
         .shrink();
-    let glass_done = super::native_glass(desk, p);
-    let done = done(desk, p);
-    // The title starts on the cards' edge; Done ends on it, as a bar
-    // button does: the glass circle itself, or the accent word inside its
-    // touch box.
+    // Sessions, a drawer, is Done; Terminal actions, a sheet, closes with
+    // the round ✕ every sheet ends its header with.
+    let round = page == Page::Actions || super::native_glass(desk, p);
+    let done = match page {
+        Page::Actions => super::close_button(desk, "phone-navigation-close", "Close", p)
+            .on_press(Desk::close_phone_navigation),
+        _ => done(desk, p),
+    };
+    // The title starts on the cards' edge; the close ends on it, as a bar
+    // button does: the circle itself, or the accent word inside its touch
+    // box.
     let margin = grid::margin();
     let header = row()
         .w_full()
         .max_w(column_max())
         .min_h(s.touch_min + s.s2)
+        .pt(if page == Page::Actions { s.s2 } else { 0.0 })
         .pl(margin)
-        .pr(if glass_done { margin } else { margin - s.s3 })
+        .pr(if round { margin } else { margin - s.s3 })
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
     // Done. Searching borrows that large title's room above the keyboard;
@@ -115,7 +122,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
             .on_paste(|_: &mut Desk, _, _| {}),
     };
-    Some(layer(desk, sheet, page, p))
+    Some(layer(desk, sheet, page, top, p))
 }
 
 /// Done closes the page: a glass checkmark like the top bar's buttons on

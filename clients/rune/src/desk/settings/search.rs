@@ -16,7 +16,7 @@ impl Desk {
     /// offset. Shared by hardware, drawn and UIKit editing and by clearing;
     /// a caret move changes no text and keeps the place.
     pub fn settings_search_edited(&mut self, tx: &mut Tx) {
-        tx.scroll_to_instant("settings-content", 0.0, 0.0);
+        tx.scroll_to_instant(self.settings_scroller(), 0.0, 0.0);
         tx.instant();
     }
 

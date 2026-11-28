@@ -79,6 +79,45 @@ impl Way {
     }
 }
 
+/// A sheet resting on the bottom edge above the key bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bottom {
+    /// The desktop-hosted phone's Machines.
+    Machines,
+    /// What's new.
+    News,
+    /// Renaming a tab or session.
+    Rename,
+}
+
+impl Bottom {
+    /// The sheet's key.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Machines => "machines",
+            Self::News => "news",
+            Self::Rename => "rename",
+        }
+    }
+
+    /// Its scrolling body's key.
+    pub const fn body(self) -> &'static str {
+        match self {
+            Self::Machines => "machines-body",
+            Self::News => "news-body",
+            Self::Rename => "rename-body",
+        }
+    }
+
+    const fn field(self) -> &'static [&'static str] {
+        match self {
+            Self::Machines => &["machine-field"],
+            Self::News => &[],
+            Self::Rename => &["rename-field"],
+        }
+    }
+}
+
 /// The page on top that a swipe can take away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Away {
@@ -89,13 +128,14 @@ pub enum Away {
     Inbox,
     Palette,
     Settings,
+    Bottom(Bottom),
 }
 
 impl Away {
     pub const fn way(self) -> Way {
         match self {
             Self::Sessions => Way::Left,
-            Self::Sheet(_) | Self::Inbox | Self::Palette => Way::Down,
+            Self::Sheet(_) | Self::Inbox | Self::Palette | Self::Bottom(_) => Way::Down,
             Self::Settings => Way::Back,
         }
     }
@@ -107,6 +147,7 @@ impl Away {
             Self::Sheet(Page::Actions) => Some("phone-actions-list"),
             Self::Inbox => Some("inbox-scroll"),
             Self::Palette => Some("palette-scroll"),
+            Self::Bottom(sheet) => Some(sheet.body()),
             Self::Sessions | Self::Sheet(_) | Self::Settings => None,
         }
     }
@@ -122,6 +163,9 @@ impl Away {
             Self::Inbox => 5.0,
             Self::Palette => 6.0,
             Self::Settings => 7.0,
+            Self::Bottom(Bottom::Machines) => 8.0,
+            Self::Bottom(Bottom::News) => 9.0,
+            Self::Bottom(Bottom::Rename) => 10.0,
         }
     }
 
@@ -132,6 +176,7 @@ impl Away {
             Self::Inbox => &["inbox-reply"],
             Self::Palette => &["palette-search"],
             Self::Settings => &["settings-query"],
+            Self::Bottom(sheet) => sheet.field(),
             Self::Sheet(_) => &[],
         }
     }
@@ -243,6 +288,9 @@ impl Desk {
             Modal::Inbox if self.inbox.reply.text.trim().is_empty() => Away::Inbox,
             Modal::Palette => Away::Palette,
             Modal::Settings => Away::Settings,
+            Modal::Machines => Away::Bottom(Bottom::Machines),
+            Modal::News => Away::Bottom(Bottom::News),
+            Modal::Rename => Away::Bottom(Bottom::Rename),
             _ => return None,
         })
     }
@@ -265,6 +313,15 @@ impl Desk {
             Away::Palette => self.close_palette(),
             Away::Settings if self.settings_ui.category.is_some() => self.settings_back(),
             Away::Settings => self.close_settings(),
+            Away::Bottom(sheet) => {
+                // As its close does: a field it held lets the keyboard go.
+                match sheet {
+                    Bottom::Machines => self.close_machines(),
+                    Bottom::News => self.close_news(),
+                    Bottom::Rename => self.cancel_rename(),
+                }
+                tx.blur();
+            }
         }
     }
 }
@@ -313,13 +370,14 @@ fn land(rt: &mut Runtime<Desk>, id: u64, at: [f32; 2], time: f64) {
         return;
     }
     // The phone's whole surface: a drawer crosses its width, a sheet its
-    // height.
+    // height; one resting on the bottom edge, its own height.
     let Some(([_, _, w, h], _)) = rt.presented("phone") else {
         return;
     };
-    let extent = match away.way() {
-        Way::Left | Way::Back => w,
-        Way::Down => h,
+    let extent = match away {
+        Away::Bottom(sheet) => rt.presented(sheet.key()).map_or(h, |(rect, _)| rect[3]),
+        _ if away.way() == Way::Down => h,
+        _ => w,
     };
     let list_top = rt
         .state

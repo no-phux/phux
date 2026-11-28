@@ -245,16 +245,13 @@ fn toast_card(desk: &Desk, entry: &ToastEntry<Notice>, front: bool, t: &Tokens) 
 
 /// The find bar, top right of the pane find belongs to: a field, the
 /// match count, case and the steps. A query that matches nothing is the
-/// field's invalid state.
+/// field's invalid state. A phone docks its own above the key bar.
 pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], p: &Tokens) -> Option<El> {
     let t = p;
     let s = &t.space;
     let r = &t.roles;
-    let find = desk
-        .connection
-        .find
-        .as_ref()
-        .filter(|f| &f.terminal == id)?;
+    let find =
+        (desk.connection.find.as_ref()).filter(|f| &f.terminal == id && desk.phone.is_none())?;
     let width = EXTENTS.find_w.min(area[0] - s.s2).max(EXTENTS.find_min_w);
     let pad = terminal_padding(desk);
     let left = (pad + area[0] - width - s.s1).max(0.0);

@@ -137,7 +137,8 @@ impl Desk {
         self.inbox.picked = None;
         self.keep_pick(&self.inbox_items());
         self.inbox.clear_reply();
-        self.inbox.reply.focused = true;
+        // A phone shows its questions; the keyboard waits for a tap.
+        self.inbox.reply.focused = self.phone.is_none();
     }
 
     pub fn close_inbox(&mut self) {

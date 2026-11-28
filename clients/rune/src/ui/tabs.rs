@@ -403,27 +403,11 @@ pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
         Renaming::Tab(_) => "Rename tab",
     };
     // A phone has no Return or Esc to name, and takes a thumb.
-    let touch = desk.phone.is_some();
-    let (save_words, cancel_words) = if touch {
-        ("Save", "Cancel")
-    } else {
-        ("Save (Return)", "Cancel (Esc)")
-    };
-    let sized = |e: El| {
-        if touch {
-            e.min_h(s.touch_min).min_w(s.touch_min)
-        } else {
-            e
-        }
-    };
-    let save = Button::new(save_words)
-        .variant(ButtonVariant::Submit)
-        .on_press_tx(|d: &mut Desk, tx| d.submit_rename(tx))
-        .build(&t.kit)
-        .key("rename-save")
-        .label("Save")
-        .default_button();
-    let cancel = Button::new(cancel_words)
+    if desk.phone.is_some() {
+        return Some(phone_rename(desk, title, t));
+    }
+    let save = save_button("Save (Return)", t);
+    let cancel = Button::new("Cancel (Esc)")
         .variant(ButtonVariant::Outline)
         .on_press(Desk::cancel_rename)
         .build(&t.kit)
@@ -434,8 +418,8 @@ pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
         .gap(s.s2)
         .items_center()
         .child(rune::el().grow(1.0))
-        .child(sized(cancel))
-        .child(sized(save));
+        .child(cancel)
+        .child(save);
     let body = rune::col()
         .w_full()
         .px(s.s4)
@@ -452,6 +436,41 @@ pub fn rename_sheet(desk: &Desk, ink: &Tokens) -> Option<El> {
         .child(body)
         .build(&t.kit, &mut layer);
     Some(rune::el().cover().children(layer))
+}
+
+/// Save: the dialog's default button, Return's.
+fn save_button(words: &'static str, t: &Tokens) -> El {
+    Button::new(words)
+        .variant(ButtonVariant::Submit)
+        .on_press_tx(|d: &mut Desk, tx| d.submit_rename(tx))
+        .build(&t.kit)
+        .key("rename-save")
+        .label("Save")
+        .default_button()
+}
+
+/// A phone's rename rests on the bottom edge as every phone sheet does,
+/// right above the keyboard its field raises: the field, then Save the
+/// width of the sheet under the thumb. Its ✕, a swipe down or the scrim
+/// cancels.
+fn phone_rename(desk: &Desk, title: &'static str, t: &Tokens) -> El {
+    let s = &t.space;
+    let save = save_button("Save", t).w_full().min_h(s.touch_min);
+    let body = rune::col()
+        .w_full()
+        .px(s.s4)
+        .pt(s.s1)
+        .gap(s.s3)
+        .child(rename_field(desk, t).min_h(s.touch_min))
+        .child(save);
+    let sheet = super::phone::sheet::BottomSheet {
+        which: crate::desk::phone::dismiss::Bottom::Rename,
+        title,
+        close: Desk::cancel_rename,
+        body,
+        foot: None,
+    };
+    super::phone::sheet::bottom(desk, sheet, t)
 }
 
 #[cfg(test)]

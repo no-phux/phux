@@ -3,53 +3,29 @@ use rune::{El, col, el, row, text};
 
 use super::{Desk, Look, Paint, Voice, icons};
 use crate::ui::Cover;
-use crate::ui::phone::{floating_round, glyph, hosted, touchable};
+use crate::ui::phone::{close_button, floating_round, glyph, hosted, sheet, touchable};
 
 pub(super) fn view(desk: &Desk, top: f32, p: &Look) -> El {
     let s = &p.space;
     let r = &p.roles;
-    // Where you are leads, as every page's title does; its close ends the
-    // row, as every page's Done does, beside the way to the whole list.
-    let header = row()
-        .w_full()
-        .items_center()
-        .gap(s.s3)
-        .child(
-            text("Switch session")
-                .grow(1.0)
-                .min_w(0.0)
-                .truncate()
-                .font(p.ty.lead.semibold())
-                .color(r.text.text.paint())
-                .role("heading"),
-        )
-        .child(
-            floating_round(
-                desk,
-                "phone-switcher-list",
-                "All sessions",
-                &icons::SIDEBAR,
-                "list.bullet",
-                None,
-                p,
-            )
-            .on_press(|d: &mut Desk| {
-                d.close_phone_navigation();
-                d.open_phone_sessions();
-            }),
-        )
-        .child(
-            floating_round(
-                desk,
-                "phone-switcher-close",
-                "Close switcher",
-                &icons::CLOSE,
-                "xmark",
-                None,
-                p,
-            )
-            .on_press(Desk::close_phone_navigation),
-        );
+    // Where you are leads, as every sheet's title does; its close ends the
+    // row, as every sheet's does, beside the way to the whole list.
+    let all = floating_round(
+        desk,
+        "phone-switcher-list",
+        "All sessions",
+        &icons::SIDEBAR,
+        "list.bullet",
+        None,
+        p,
+    )
+    .on_press(|d: &mut Desk| {
+        d.close_phone_navigation();
+        d.open_phone_sessions();
+    });
+    let close = close_button(desk, "phone-switcher-close", "Close switcher", p)
+        .on_press(Desk::close_phone_navigation);
+    let header = sheet::header(sheet::title("Switch session", p), [all, close], p);
     let body = match desk.switcher_selection() {
         Some((session, index, count)) => col()
             .grow(1.0)
@@ -73,16 +49,16 @@ pub(super) fn view(desk: &Desk, top: f32, p: &Look) -> El {
         .key("phone-session-switcher")
         .cover()
         .fill(r.layer.ground.paint())
+        .items_center()
         .pt(top)
-        .px(s.s3)
         .pb(s.s3)
         .gap(s.s3)
         .label("Switch session")
         .modal(true, Desk::close_phone_navigation)
         .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
         .on_paste(|_: &mut Desk, _, _| {})
-        .child(header)
-        .child(body.max_w(super::column_max()))
+        .child(header.max_w(super::column_max()))
+        .child(body.px(super::grid::margin()).max_w(super::column_max()))
 }
 
 fn card(desk: &Desk, p: &Look, current: bool) -> El {
@@ -114,15 +90,11 @@ fn card(desk: &Desk, p: &Look, current: bool) -> El {
             s.hairline,
             if current { r.text.dim } else { r.border.base }.paint(),
         )
-        .offset(page.offset, 0.0)
-        .offset_motion(if page.offset == 0.0 {
-            p.motion.page.enter
-        } else {
-            rune::Spring::NONE
-        })
+        // Follows a finger one to one, and settles on the page spring.
+        .live_offset(page.slide.shift.smooth(p.motion.page.enter))
         .label("Open previewed session")
         .on_press(Desk::confirm_phone_switcher)
-        .on_drag(|d: &mut Desk, drag, _| d.switcher_drag(drag));
+        .on_drag(|d: &mut Desk, drag, tx| d.switcher_drag(drag, tx));
     let ink = if preview { r.text.text } else { r.text.dim };
     col()
         .w_full()

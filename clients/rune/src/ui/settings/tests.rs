@@ -52,7 +52,9 @@ fn phone_categories_search_close_and_back_have_44_point_targets() {
             assert!(y >= 0.0 && y + h <= size.1 + 0.5, "{key} fits vertically");
         }
         assert!(rt.accessibility_action("settings-terminal", Action::Click, None));
+        // The level slides in from the trailing edge: let it land.
         rt.frame(0.0);
+        rt.frame(1.0);
         assert!(rt.find("settings-back").is_some());
         assert!(rt.find("text-size").is_some());
         for key in ["text-smaller", "text-bigger"] {

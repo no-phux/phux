@@ -305,3 +305,44 @@ fn a_native_phone_reaches_labs_through_developer_mode() {
     step(&mut rt, &format!("set-lab-{echo}"));
     assert_eq!(rt.state.labs.get(echo), Some(true));
 }
+
+/// Each Settings level keeps its own place: a category opens at its top
+/// however far down the list was, and back brings the list home where it
+/// was left, not where the category was scrolled.
+#[test]
+fn a_settings_level_opens_at_its_top_and_back_restores_the_list() {
+    let (_client, mut rt) = open(true);
+    rt.set_viewport((320.0, 568.0), 2.0);
+    rt.update(|d, tx| {
+        // Large text, so the category list scrolls on the small phone.
+        d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+        tx.instant();
+    });
+    settle(&mut rt);
+    rt.update(|_, tx| tx.scroll_to_instant("settings-content", 0.0, 160.0));
+    settle(&mut rt);
+    let left = rt.state.settings_ui.list_scroll.get();
+    assert!(left > 100.0, "the list scrolled: {left}");
+    let row = rt.presented("settings-terminal").unwrap().0;
+    let click = rune::accesskit::Action::Click;
+    assert!(rt.accessibility_action("settings-terminal", click, None));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    // The category's first control sits at the top of its own scroller.
+    let scroller = rt.presented(rt.state.settings_scroller()).unwrap().0;
+    let first = rt.presented("text-size").unwrap().0;
+    assert!(
+        first[1] >= scroller[1] && first[1] < scroller[1] + 160.0,
+        "the category opened at its top: {first:?} in {scroller:?}"
+    );
+    rt.update(|d, tx| tx.scroll_to_instant(d.settings_scroller(), 0.0, 400.0));
+    settle(&mut rt);
+    assert!(rt.accessibility_action("settings-back", click, None));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.settings_ui.list_scroll.get(), left);
+    let back = rt.presented("settings-terminal").unwrap().0;
+    assert!((back[1] - row[1]).abs() < 0.5, "{back:?} against {row:?}");
+}

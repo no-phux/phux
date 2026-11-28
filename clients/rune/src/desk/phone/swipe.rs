@@ -151,7 +151,7 @@ fn step_of(dx: f32) -> isize {
 }
 
 impl Desk {
-    fn stage_w(&self) -> f32 {
+    pub(super) fn stage_w(&self) -> f32 {
         self.phone
             .as_ref()
             .map(|phone| phone.stage[0])

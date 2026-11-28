@@ -7,30 +7,54 @@ use rune::{El, el};
 use super::{Desk, Look, Page};
 use crate::desk::phone::dismiss::Away;
 use crate::ui::Cover;
+use crate::ui::phone::motion;
 use crate::ui::tokens::GlassSurface;
 
 /// The page in the layer that comes and goes: it enters and leaves the way
-/// it is swiped away (Sessions toward the left edge it came from, a sheet
-/// downward) and follows a finger swiping it. Under Reduce Motion it lands
-/// at once.
-pub(super) fn layer(desk: &Desk, page_el: El, page: Page, p: &Look) -> El {
-    let drift = p.space.s16;
-    let drawer = p.motion.drawer;
-    let (away, from, springs) = match page {
-        // The list goes ahead of its frost, which clears after it.
-        Page::Sessions => (Away::Sessions, (-drift, 0.0), lagged(drawer, LIST_LEAD)),
-        _ => (Away::Sheet(page), (0.0, drift), drawer),
-    };
-    let layer = el()
-        .key("phone-navigation-layer")
-        .cover()
-        .transition(
-            rune::Transition::offset(from.0, from.1)
+/// it is swiped away and follows a finger swiping it. Sessions drifts in
+/// from the left edge it came from, ahead of its frost; a sheet rises
+/// whole from below under its grabber. Each page has its own layer, so one
+/// giving way to another (the switcher's All sessions) plays both: the
+/// sheet lowers as the drawer comes in. Under Reduce Motion it lands at
+/// once.
+pub(super) fn layer(desk: &Desk, page_el: El, page: Page, top: f32, p: &Look) -> El {
+    let (away, layer) = match page {
+        Page::Sessions => {
+            let drift = p.space.s16;
+            // The list goes ahead of its frost, which clears after it.
+            let springs = lagged(p.motion.drawer, LIST_LEAD);
+            let drawer = rune::Transition::offset(-drift, 0.0)
                 .combined(rune::Transition::opacity())
-                .springs(springs),
-        )
-        .child(page_el);
+                .springs(springs);
+            // Over a sheet it replaces (the switcher's All sessions), which
+            // lowers under the frost rather than across the list.
+            let layer = el().transition(drawer).paint_order(OVER_LEAVING);
+            (Away::Sessions, layer.child(page_el))
+        }
+        _ => {
+            let sheet = el()
+                .transition(motion::sheet(p))
+                .child(page_el)
+                .child(crate::ui::phone::sheet::grabber(top, p));
+            (Away::Sheet(page), sheet)
+        }
+    };
+    let layer = layer.key(layer_key(page)).cover();
     crate::ui::phone::swipeable(desk, layer, away, p)
+}
+
+/// Where Sessions and its frost paint among the phone's surfaces: over a
+/// page leaving as they come in, which Rune otherwise paints over them
+/// where it stood. Nothing else is open beside them.
+const OVER_LEAVING: i16 = 1;
+
+/// The key of `page`'s layer: what moves as it comes, goes and is swiped.
+const fn layer_key(page: Page) -> &'static str {
+    match page {
+        Page::Sessions => "phone-navigation-layer",
+        Page::Actions => "phone-actions-layer",
+        Page::Switcher => "phone-switcher-layer",
+    }
 }
 
 /// Sessions comes in from the left edge, where the thumb pulls it from, as
@@ -83,6 +107,7 @@ pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
     Some(
         frost
             .transition(rune::Transition::opacity().springs(lagged(p.motion.drawer, FROST_LAG)))
+            .paint_order(OVER_LEAVING)
             .inert()
             .a11y_hidden(),
     )

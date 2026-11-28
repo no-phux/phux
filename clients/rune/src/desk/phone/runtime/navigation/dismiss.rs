@@ -5,6 +5,8 @@ use crate::desk::phone::dismiss::Away;
 use crate::desk::phone::navigation::Held;
 use rune::TouchPhase::{Cancelled, Ended, Moved, Started};
 
+mod bottom;
+
 /// The host's touch: what the native bridge calls for every finger.
 fn finger(rt: &mut Runtime<Desk>, phase: rune::TouchPhase, [x, y]: [f32; 2], at: f64) {
     crate::mobile::touch(rt, 7, phase, x, y, at);

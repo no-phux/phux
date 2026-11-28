@@ -25,8 +25,11 @@ use crate::desk::phone::Phone;
 mod accessory;
 mod bars;
 mod composer;
+mod find;
 mod keyboard;
+pub(super) mod motion;
 pub(super) mod navigation;
+pub(super) mod sheet;
 use accessory::accessory;
 use bars::{tab_pills, top_bar};
 use keyboard::keyboard;
@@ -105,7 +108,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .then(|| tab_pills(desk, controls))
                 .flatten(),
         )
-        .children(composer::view(desk, controls));
+        .children(composer::view(desk, controls))
+        // Find docks over the key bar, out of the terminal it searches.
+        .children((!desk.settings_open).then(|| find::view(desk, controls)).flatten());
     // Sessions and Actions are lists, not a terminal: no key bar, and their
     // search keyboard's Return is its Done. Settings keeps the bar only for
     // its search's Done.
@@ -120,7 +125,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // controls as part of the modal: keys remain live while the scrim still
     // blocks the terminal and navigation behind it.
     let content = overlays(
-        el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
+        above_leaving(
+            el().h(0.0).grow(1.0).w_full().min_h(0.0).child(screen),
+            desk,
+        ),
         desk,
         &p,
         top,
@@ -179,6 +187,17 @@ pub(super) fn ground_look(desk: &Desk) -> Look {
     ))
 }
 
+/// The screen's content, painted over the key bar while Settings comes or
+/// goes: the bar it replaces fades where it stood, under the page sliding
+/// over it, never over it. They never overlap otherwise.
+fn above_leaving(content: El, desk: &Desk) -> El {
+    if desk.settings_settling() {
+        content.paint_order(1)
+    } else {
+        content
+    }
+}
+
 fn edge_fill(desk: &Desk, p: &Look) -> Color {
     if desk.settings_open {
         p.roles.layer.sidebar.paint()
@@ -224,9 +243,17 @@ fn top_inset(desk: &Desk, p: &Look, cx: &Cx<Desk>) -> f32 {
 }
 
 /// Modals precede the drawn keyboard so its keys belong to their fields.
+/// While Settings comes or goes, the stage lands where the top bar puts
+/// it at once, so only the page moves.
 fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
-    col()
-        .key("phone-stage")
+    let stage = col().key("phone-stage");
+    let stage = if desk.settings_settling() {
+        // Over the top bar it replaces, too, as that fades where it stood.
+        stage.motion(rune::Spring::NONE).paint_order(1)
+    } else {
+        stage
+    };
+    stage
         .grow(1.0)
         .w_full()
         .min_h(0.0)
@@ -243,7 +270,7 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
 /// An opaque control surface over the terminal's ground: the raised layer
 /// on the raised tier, its ring the edge. Only the session dock is
 /// glass on a phone.
-pub(super) fn surface(e: El, p: &Look) -> El {
+pub(super) fn surface(e: El, p: &Tokens) -> El {
     p.elevate(
         e.continuous_corners().fill(p.roles.layer.raised.paint()),
         Tier::Raised,
@@ -252,7 +279,7 @@ pub(super) fn surface(e: El, p: &Look) -> El {
 
 /// A touch control's hover (an iPad pointer) and press washes, and the
 /// pointer.
-pub(super) fn touchable(e: El, p: &Look) -> El {
+pub(super) fn touchable(e: El, p: &Tokens) -> El {
     p.kit.interactive(e).cursor(Cursor::Pointer)
 }
 
@@ -261,7 +288,7 @@ pub(super) fn touchable(e: El, p: &Look) -> El {
 /// contrast, Reduce Transparency or forced colours Rune paints them opaque,
 /// as on every other host. The phone has no Glass slider (`Desk::glass`
 /// is the desktop's), so the setting is the system's.
-pub(super) fn native_glass(desk: &Desk, p: &Look) -> bool {
+pub(super) fn native_glass(desk: &Desk, p: &Tokens) -> bool {
     desk.native.is_some() && p.glass_allowed()
 }
 
@@ -297,29 +324,9 @@ pub(in crate::ui) fn swipeable(
     let spring = p.motion.drawer.enter;
     let page = page.live_offset(phone.dismiss.shift.smooth(spring));
     match away.way() {
-        // The Inbox, flush under the top bar, carries a sheet's grabber
-        // to say it pulls down; the palette's search and Cancel lead its
-        // top instead, and Actions and the switcher float as cards.
-        Way::Down if away == crate::desk::phone::dismiss::Away::Inbox => page.child(grabber(p)),
         Way::Down => page,
         Way::Left | Way::Back => page.live_opacity(phone.dismiss.shown.smooth(spring)),
     }
-}
-
-/// A sheet's grabber: out of flow at its top centre, drawing only.
-fn grabber(p: &Tokens) -> El {
-    let s = &p.space;
-    el().key("phone-sheet-grabber")
-        .pin(Some(0.0), Some(s.s1 + s.s0_5), Some(0.0), None)
-        .center()
-        .child(
-            el().w(s.s8 + s.s1)
-                .h(s.s1 + s.s0_5 / 2.0)
-                .radius(p.radius.full)
-                .fill(p.roles.border.control.paint()),
-        )
-        .inert()
-        .a11y_hidden()
 }
 
 /// A list a downward swipe defers to until it is at its top: it reports
@@ -340,22 +347,22 @@ pub(in crate::ui) fn swipe_list(
 /// on its upper trailing shoulder.
 fn floating_round(
     desk: &Desk,
-    key: &'static str,
+    key: &str,
     name: &str,
     icon: &'static rune::Icon,
     symbol: &'static str,
     badge: Option<Color>,
-    p: &Look,
+    p: &Tokens,
 ) -> El {
     let ink = p.roles.text.text.paint();
     if !native_glass(desk, p) {
-        let dot = (p.round() - p.space.s4, p.space.s2);
+        let dot = (p.space.touch_min - p.space.s4, p.space.s2);
         return round(key, name, glyph(icon, p.icon.size.lg, ink), p)
             .children(badge.map(|tone| news::dot(p, dot, p.space.s2, tone)));
     }
     let placeholder = el()
         .key(key)
-        .size(p.round(), p.round())
+        .size(p.space.touch_min, p.space.touch_min)
         .radius(p.radius.full)
         .label(name.to_owned());
     let control = crate::mobile::Control {
@@ -375,11 +382,33 @@ fn floating_round(
     hosted(desk, placeholder, control)
 }
 
+/// The close every phone sheet and page ends its header with, on its
+/// trailing edge: one round ✕, the system's Liquid Glass on the native
+/// host as the top bar's buttons are. `name` says what it closes; the
+/// caller gives it its press.
+pub(in crate::ui) fn close_button(desk: &Desk, key: &str, name: &str, p: &Tokens) -> El {
+    floating_round(desk, key, name, &icons::CLOSE, "xmark", None, p)
+}
+
+/// A level's way back, leading its header where there is a level to go
+/// back to: the round ‹ beside the close, made the same way.
+pub(in crate::ui) fn back_button(desk: &Desk, key: &str, name: &str, p: &Tokens) -> El {
+    floating_round(
+        desk,
+        key,
+        name,
+        &icons::CHEVRON_LEFT,
+        "chevron.left",
+        None,
+        p,
+    )
+}
+
 /// A round control around `content`: the 44-point touch target.
-fn round(key: &'static str, name: &str, content: El, p: &Look) -> El {
+fn round(key: &str, name: &str, content: El, p: &Tokens) -> El {
     let circle = el()
         .key(key)
-        .size(p.round(), p.round())
+        .size(p.space.touch_min, p.space.touch_min)
         .radius(p.radius.full)
         .center();
     touchable(surface(circle, p), p)

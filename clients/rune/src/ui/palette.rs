@@ -20,8 +20,9 @@ use crate::ui::Cover;
 mod header;
 mod marks;
 mod menu;
+mod page;
 mod rows;
-use header::{desktop_header, phone_header, verb_and_glyph};
+use header::{desktop_header, verb_and_glyph};
 pub use menu::context_menu;
 use rows::Rows;
 #[cfg(test)]
@@ -394,6 +395,13 @@ fn heading_top(at: usize, g: &Grid, t: &Tokens) -> f32 {
     }
 }
 
+/// A hairline across the palette, keyed `key`.
+fn rule(key: &'static str, t: &Tokens) -> El {
+    rune::rule(t.space.hairline, t.roles.border.base.paint())
+        .w_full()
+        .key(key)
+}
+
 /// `top` is the room above the panel (a phone's top inset); a short window
 /// scrolls its rows.
 pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
@@ -417,38 +425,16 @@ pub fn view(desk: &Desk, p: &Tokens, top: f32) -> El {
         (EXTENTS.palette_w, EXTENTS.palette_rows_h)
     };
     let cap = half_row_cap(cap, hits, &headings, &g, t);
-    let rule = |key: &'static str| {
-        rune::rule(s.hairline, r.border.base.paint())
-            .w_full()
-            .key(key)
-    };
+    if phone {
+        return page::view(desk, t, &g, scroller(results, &g, cap, t), top);
+    }
+    let rule = |key: &'static str| rule(key, t);
     let scrim = el()
         .key("palette-scrim")
         .cover()
         .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
         .transition(rune::Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette());
-    if phone {
-        let page = col()
-            .key("palette")
-            .w_full()
-            .h_full()
-            .pt(top)
-            .fill(r.layer.ground.paint())
-            .transition(rune::Transition::opacity())
-            .child(phone_header(desk, t, &g))
-            .child(rule("palette-header-rule"))
-            .child(super::phone::swipe_list(
-                desk,
-                scroller(results, &g, cap, t),
-                crate::desk::phone::dismiss::Away::Palette,
-            ));
-        // A swipe down, from its top, lowers it as Cancel does, clipped
-        // above the key bar that ends the scrim.
-        let away = crate::desk::phone::dismiss::Away::Palette;
-        let page = super::phone::swipeable(desk, page, away, t);
-        return scrim.clip_rounded(0.0).child(page);
-    }
     let (verb, _) = verb_and_glyph(mode);
     let panel = col()
         .key("palette")

@@ -312,6 +312,9 @@ fn heading(desk: &Desk, t: &Tokens) -> El {
 fn phone_heading(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     let back = desk.phone.is_some() && desk.settings_ui.category.is_some();
+    let close = super::phone::close_button(desk, "settings-close", "Close", t)
+        .focusable(true)
+        .on_press(Desk::close_settings);
     row()
         .w_full()
         .h(s.s16)
@@ -319,23 +322,14 @@ fn phone_heading(desk: &Desk, t: &Tokens) -> El {
         .gap(s.s3)
         .items_center()
         .child(if back {
-            pressable("settings-back", t)
-                .size(s.touch_min, s.touch_min)
-                .radius(t.radius.full)
+            super::phone::back_button(desk, "settings-back", "Back to Settings", t)
                 .focusable(true)
-                .label("Back to Settings")
-                .center()
                 .on_press(Desk::settings_back)
-                .child(
-                    rune::icon(&icons::CHEVRON_LEFT, t.icon.size.lg)
-                        .color(t.roles.text.text.paint())
-                        .a11y_hidden(),
-                )
         } else {
             el().size(s.touch_min, s.touch_min)
         })
         .child(el().grow(1.0).center().child(title(t)))
-        .child(close(t))
+        .child(close)
 }
 
 /// A quieter top edge below the heading, and a stronger cue toward more
@@ -344,10 +338,29 @@ fn overflow_fade(t: &Tokens) -> rune::ScrollFade {
     rune::ScrollFade::strength(t.space.s4).with_end(rune::ScrollFade::strength(t.space.s6).linear())
 }
 
+/// The scroller: on a phone each level is its own, keyed apart, so a
+/// category opens at its top, the list comes back where it was left, and
+/// a level going in slides over the one it leaves.
 fn scroller(desk: &Desk, t: &Tokens) -> El {
+    let content = content(desk, t).key(desk.settings_scroller());
+    if desk.phone.is_none() {
+        return content;
+    }
+    let deeper = desk.settings_ui.category.is_some();
+    let content = content.transition(super::phone::motion::level(deeper, t));
+    if deeper {
+        // A level is a page of its own: opaque, and over the list it
+        // covers as it comes in and as it goes back out.
+        return content.fill(t.roles.layer.sidebar.paint()).paint_order(1);
+    }
+    content
+        .on_scroll_offset(desk.settings_ui.list_scroll.follow())
+        .on_layout_tx(|d: &mut Desk, _, tx| d.restore_settings_list(tx))
+}
+
+fn content(desk: &Desk, t: &Tokens) -> El {
     let s = &t.space;
     col()
-        .key("settings-content")
         .w_full()
         .grow(1.0)
         .min_h(0.0)
@@ -365,6 +378,13 @@ fn scroller(desk: &Desk, t: &Tokens) -> El {
         )
 }
 
+/// A phone's Settings is a level in from the terminal: the page comes
+/// opaque from the trailing edge over the terminal it replaces, and a
+/// swipe from the leading edge, or its close, takes it back out. Its
+/// holder adds no entrance of its own (Rune plays an entering effect only
+/// where its parent's did not), so the page's slide is what plays, while
+/// the stage under it lands in place ([`Desk::settings_settling`]) and what
+/// it replaces fades where it stood.
 fn phone(desk: &Desk, t: &Tokens) -> El {
     let ground = t.roles.layer.sidebar.paint();
     col()
@@ -374,7 +394,11 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
         .min_h(0.0)
         .modal_tx(true, Desk::settings_escape)
         .label("Settings")
-        .fill(ground)
+        // It arrives as nothing, leaving the entrance to the page; the page
+        // goes as part of it, so it leaves as the page would.
+        .transition(super::phone::motion::holding(super::phone::motion::level(true, t)))
+        // Over the terminal it replaces, which fades where it stood.
+        .paint_order(1)
         .child(super::phone::swipeable(
             desk,
             col()
@@ -382,9 +406,10 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
-                .radius(t.radius.xl)
-                .clip_rounded(t.radius.xl)
+                // Square: it fills the screen, and its levels slide inside it.
+                .clip_rounded(0.0)
                 .fill(ground)
+                .transition(super::phone::motion::level(true, t))
                 .child(heading(desk, t))
                 .child(scroller(desk, t))
                 .child(el().w_full().padding(t.space.s3).child(search(desk, t))),

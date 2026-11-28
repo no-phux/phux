@@ -20,6 +20,7 @@ pub fn interface_size(size: Option<u16>) -> u16 {
 
 mod bars;
 mod labs;
+mod levels;
 pub mod pair;
 
 /// Settings destinations, separate from preferences and connection state.
@@ -69,6 +70,20 @@ impl Category {
         }
     }
 
+    /// The phone's scroller for this category's level: each level keeps
+    /// its own place, apart from the list's.
+    pub const fn scroller(self) -> &'static str {
+        match self {
+            Self::Appearance => "settings-content-appearance",
+            Self::Terminal => "settings-content-terminal",
+            Self::Notifications => "settings-content-notifications",
+            Self::RemoteHosts => "settings-content-hosts",
+            Self::Developer => "settings-content-developer",
+            Self::Labs => "settings-content-labs",
+            Self::About => "settings-content-about",
+        }
+    }
+
     /// The destinations Settings lists: [`Self::ALL`], with Labs after
     /// Developer while developer mode is on.
     pub fn shown(developer_mode: bool) -> impl Iterator<Item = Self> {
@@ -87,6 +102,13 @@ pub struct SettingsUi {
     pub return_from_themes: bool,
     /// Pair a phone: the code on screen and the devices that can connect.
     pub pairing: pair::Pairing,
+    /// How far down a phone's category list is, as it reports.
+    pub list_scroll: crate::desk::phone::navigation::Offset,
+    /// Where the list goes back to once it is laid out again: where a
+    /// level's back left it.
+    restore_list: Option<f32>,
+    /// When the page last closed, on the app clock.
+    closed_at: Option<f64>,
 }
 
 /// What the person chose, as stored.
@@ -343,36 +365,6 @@ impl Desk {
         {
             waker();
         }
-    }
-
-    pub fn toggle_settings(&mut self) {
-        self.close_inbox();
-        if self.settings_open {
-            self.close_settings();
-        } else {
-            self.refresh_labs();
-            self.settings_open = true;
-        }
-    }
-
-    pub fn close_settings(&mut self) {
-        self.settings_open = false;
-        self.settings_ui.query.focused = false;
-    }
-
-    pub fn settings_category(&mut self, category: Category) {
-        if category == Category::RemoteHosts && self.phone.is_none() {
-            self.list_devices();
-        }
-        self.settings_ui.category = Some(category);
-        self.settings_ui.query.clear();
-        self.settings_ui.query.focused = false;
-    }
-
-    pub fn settings_back(&mut self) {
-        self.settings_ui.category = None;
-        self.settings_ui.query.clear();
-        self.settings_ui.query.focused = false;
     }
 
     pub fn settings_themes(&mut self) {

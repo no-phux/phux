@@ -60,10 +60,8 @@ fn keyboard_reveal_keeps_auto_clear_of_the_sheet_fade() {
         settle(&mut rt);
         keyboard_focus(&mut rt, &format!("machine-swatch-{LOCAL}-auto"));
         let auto = crate::ui::element(&rt, &format!("machine-swatch-{LOCAL}-auto"));
-        let panel = crate::ui::element(&rt, "machines");
-        // Sheet::build's third child is its scrolling body, after header/rule.
-        let path = format!("{}/#2", panel.path);
-        let viewport = rt.elements().into_iter().find(|e| e.path == path).unwrap();
+        // The phone's bottom sheet keys its scrolling body.
+        let viewport = crate::ui::element(&rt, "machines-body");
         let bottom = viewport.rect[1] + viewport.rect[3];
         let gap = bottom - auto.rect[1] - auto.rect[3];
         assert!(gap >= phux_design::tokens::SPACE.s6, "fade gap {gap}");
