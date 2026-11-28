@@ -416,10 +416,10 @@ impl Desk {
     }
 
     /// Omarchy changed its theme: a window following it repaints.
-    /// Omarchy's theme and Pair a phone's answers. True when either changed
-    /// what is on screen.
+    /// Omarchy's theme, Pair a phone's answers and the end of a closed
+    /// page's exit. True when any changed what is on screen.
     pub(super) fn pump_settings(&mut self, tx: &mut Tx) -> bool {
-        self.follow_omarchy() | self.pump_pairing(tx)
+        self.follow_omarchy() | self.pump_pairing(tx) | self.settle_settings(tx)
     }
 
     fn follow_omarchy(&mut self) -> bool {

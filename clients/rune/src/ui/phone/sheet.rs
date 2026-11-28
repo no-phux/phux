@@ -103,6 +103,15 @@ pub(in crate::ui) fn bottom(desk: &Desk, sheet: BottomSheet, p: &Tokens) -> El {
         .scroll_edge_fade(s.s6)
         .scroll_margin(s.s6)
         .child(sheet.body);
+    // A field opened focused is brought clear of the fade, and kept there
+    // as the keyboard comes and the room above it changes.
+    let scope = sheet.which.body();
+    let body = match sheet.which.typing(desk) {
+        Some(field) => body.on_layout_tx(move |_: &mut Desk, _, tx| {
+            tx.scroll_into_view_in(scope, field);
+        }),
+        None => body,
+    };
     let panel = col()
         .key(key)
         .w_full()

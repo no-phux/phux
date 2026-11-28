@@ -185,7 +185,8 @@ const CHANGES: [Change; 17] = [
 ];
 
 /// Everything a page is drawn as, whichever is on screen.
-const PAGES: [&str; 17] = [
+const PAGES: [&str; 18] = [
+    TERMINAL,
     "phone-navigation-layer",
     "phone-actions-layer",
     "phone-switcher-layer",
@@ -252,6 +253,13 @@ fn frames(
         // The large-text case also has the drawn keyboard up, so a sheet with
         // a field shows where it rests above it.
         d.phone.as_mut().unwrap().keyboard = large;
+        tx.instant();
+    });
+    // The terminal is laid out first, as a page is always opened from it.
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    rt.update(|d, tx| {
         (change.before)(d);
         tx.instant();
     });
@@ -293,12 +301,14 @@ fn frames(
     };
     capture(&mut rt, "idle", 0);
     let idle = rt.presented(change.page).map(|(rect, _)| rect);
+    let idle_terminal = rt.presented(TERMINAL).map(|(rect, _)| rect);
     // The press: a commit an input caused, so its motion plays.
     rt.update(|d, tx| {
         (change.change)(d);
         tx.animated();
     });
     let mut drawn = Vec::new();
+    let mut terminal = Vec::new();
     let mut previous = 0;
     for (stage, frame) in STAGES {
         for _ in previous..frame {
@@ -306,10 +316,71 @@ fn frames(
         }
         capture(&mut rt, stage, frame);
         drawn.push(rt.presented(change.page));
+        terminal.push(rt.presented(TERMINAL));
         previous = frame;
     }
     goes_its_way(change, idle, &drawn, reduced, &name);
+    terminal_stands_still(change, idle_terminal, &terminal, &name);
+    field_in_view(change, &rt, &name);
     no_terminal_input(&client);
+}
+
+/// A bottom sheet that opens typing shows its whole field in its body,
+/// clear of the fade over its hidden edge, however little room the
+/// keyboard and the text size leave it.
+fn field_in_view(change: &Change, rt: &Runtime<Desk>, name: &str) {
+    let (body, field) = match change.name {
+        "machines-open" => ("machines-body", "machine-field"),
+        "rename-open" => ("rename-body", "rename-field"),
+        _ => return,
+    };
+    let body = crate::ui::element(rt, body).rect;
+    let field = crate::ui::element(rt, field);
+    assert!(field.focused, "{name}: the sheet did not open typing");
+    let fade = phux_design::tokens::SPACE.s6;
+    let [_, y, _, h] = field.rect;
+    assert!(
+        y >= body[1] - 0.5 && y + h <= body[1] + body[3] - fade + 0.5,
+        "{name}: field {:?} out of view in its body {body:?}",
+        field.rect
+    );
+}
+
+/// The terminal Settings covers and uncovers.
+const TERMINAL: &str = "pane-@1";
+
+/// Settings slides over the terminal and off it again; the terminal never
+/// moves under it. Opening, it fades where it stood; closing, it is there
+/// whole, at its settled place and size, from the frame Settings starts
+/// to leave.
+fn terminal_stands_still(
+    change: &Change,
+    idle: Option<[f32; 4]>,
+    drawn: &[Option<([f32; 4], f32)>],
+    name: &str,
+) {
+    match change.name {
+        "settings-open" => {
+            let idle = idle.unwrap_or_else(|| panic!("{name}: no terminal at rest"));
+            for (rect, _) in drawn.iter().flatten() {
+                assert_eq!(*rect, idle, "{name}: the terminal moved under Settings");
+            }
+        }
+        "settings-close" => {
+            let settled = drawn[4].unwrap_or_else(|| panic!("{name}: no terminal settled"));
+            let commit = drawn[0].unwrap_or_else(|| panic!("{name}: no terminal at once"));
+            assert_eq!(
+                commit.0, settled.0,
+                "{name}: the terminal grew in under Settings"
+            );
+            assert!(
+                commit.1 > 0.99,
+                "{name}: the terminal faded in ({})",
+                commit.1
+            );
+        }
+        _ => {}
+    }
 }
 
 /// Whether every glass panel draws its own blur: none sits in a layer that

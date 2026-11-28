@@ -68,5 +68,5 @@ pub(super) fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
         .child(heading)
         .children(count)
         .children(receipt);
-    crate::ui::phone::sheet::header(leading, [close], t)
+    crate::ui::phone::sheet::header(leading, [close], t).key("inbox-header")
 }

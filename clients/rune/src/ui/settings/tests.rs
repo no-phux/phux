@@ -17,7 +17,17 @@ mod themes;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::tokens_for(cx.system_dark(), desk.settings.theme);
-    view(desk, &ink)
+    let page = view(desk, &ink);
+    if desk.phone.is_none() {
+        return page;
+    }
+    // A phone's page sits in the stage under the top bar's slot, and
+    // reaches up over it.
+    rune::col()
+        .w_full()
+        .h_full()
+        .child(rune::el().w_full().h(super::super::phone::top_bar_slot()))
+        .child(rune::col().grow(1.0).w_full().min_h(0.0).child(page))
 }
 
 fn runtime(size: (f32, f32), phone: bool) -> Runtime<Desk> {

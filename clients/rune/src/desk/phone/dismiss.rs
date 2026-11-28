@@ -116,6 +116,17 @@ impl Bottom {
             Self::Rename => &["rename-field"],
         }
     }
+
+    /// The field the keyboard types into while it does: the sheet keeps
+    /// it in view as the room above the keyboard changes.
+    pub fn typing(self, desk: &Desk) -> Option<&'static str> {
+        let focused = match self {
+            Self::Machines => desk.machines.field.focused,
+            Self::News => false,
+            Self::Rename => desk.connection.tabs.rename_field.focused,
+        };
+        self.field().first().copied().filter(|_| focused)
+    }
 }
 
 /// The page on top that a swipe can take away.

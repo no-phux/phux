@@ -64,10 +64,18 @@ impl Deref for Look {
     }
 }
 
+/// The room the top bar takes in the screen: its capsule row and the gap
+/// it leaves under it. While Settings is open the bar's slot keeps this
+/// room, so the stage under the page never moves, and the page reaches up
+/// over it.
+pub(super) fn top_bar_slot() -> f32 {
+    let s = phux_design::tokens::SPACE;
+    s.touch_min + s.s1
+}
+
 /// The top bar's capsule and the gap under it: where a banner starts.
 pub(super) fn top_bar_height() -> f32 {
-    let s = phux_design::tokens::SPACE;
-    s.touch_min + s.s1 + s.s2
+    top_bar_slot() + phux_design::tokens::SPACE.s2
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
@@ -96,12 +104,19 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     cx.focus_ring(ring.width, ring.offset, p.roles.border.focus.paint());
     let stage = phone_stage(desk, &p, cx);
     let top = top_inset(desk, &p, cx);
+    // Settings covers the bar's slot rather than taking it, so the stage
+    // and the terminal leaving or coming back in it stand still.
+    let top_bar = if desk.settings_open {
+        el().key("phone-top-slot").w_full().h(top_bar_slot())
+    } else {
+        returning(top_bar(desk, controls), desk)
+    };
     let screen = col()
         .key("phone-screen")
         .w_full()
         .h_full()
         .pt(top)
-        .children((!desk.settings_open).then(|| top_bar(desk, controls)))
+        .child(top_bar)
         .child(stage)
         .children(
             (!desk.settings_open)
@@ -242,9 +257,20 @@ fn top_inset(desk: &Desk, p: &Look, cx: &Cx<Desk>) -> f32 {
     }
 }
 
+/// What Settings uncovers as it goes: already there, whole and where it
+/// settles, under the page sliding off it, never growing or fading in
+/// behind it.
+fn returning(e: El, desk: &Desk) -> El {
+    if desk.settings_settling() && !desk.settings_open {
+        e.transition(rune::Transition::none()).instant_changes()
+    } else {
+        e
+    }
+}
+
 /// Modals precede the drawn keyboard so its keys belong to their fields.
-/// While Settings comes or goes, the stage lands where the top bar puts
-/// it at once, so only the page moves.
+/// While Settings comes or goes, the stage lands where it goes at once
+/// (the bar's slot holds its top), so only the page moves.
 fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
     let stage = col().key("phone-stage");
     let stage = if desk.settings_settling() {
@@ -253,6 +279,9 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
     } else {
         stage
     };
+    // Notices and the confirm bar paint over Settings, which covers the
+    // stage, as they do over the terminal.
+    let over = |e: El| e.paint_order(2);
     stage
         .grow(1.0)
         .w_full()
@@ -261,10 +290,10 @@ fn phone_stage(desk: &Desk, p: &Look, cx: &mut Cx<Desk>) -> El {
         .child(if desk.settings_open {
             settings::view(desk, p)
         } else {
-            panes::view(desk, p, cx)
+            returning(panes::view(desk, p, cx), desk)
         })
-        .children(status::confirm_bar(desk, p))
-        .children(overlay::toast(desk, p))
+        .children(status::confirm_bar(desk, p).map(over))
+        .children(overlay::toast(desk, p).map(over))
 }
 
 /// An opaque control surface over the terminal's ground: the raised layer

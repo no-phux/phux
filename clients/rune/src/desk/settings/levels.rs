@@ -37,6 +37,23 @@ impl Desk {
             || (self.settings_ui.closed_at).is_some_and(|at| self.clock - at < SETTLING)
     }
 
+    /// The poll's half of [`Self::settings_settling`]: a wake when the
+    /// closed page's exit is over, and then a view without it, so the stage
+    /// goes back to animating its changes on time rather than at the next
+    /// commit something else makes.
+    pub(in crate::desk) fn settle_settings(&mut self, tx: &mut Tx) -> bool {
+        let Some(at) = self.settings_ui.closed_at else {
+            return false;
+        };
+        let left = SETTLING - (self.clock - at);
+        if left > 0.0 {
+            tx.wake_after(std::time::Duration::from_secs_f64(left));
+            return false;
+        }
+        self.settings_ui.closed_at = None;
+        true
+    }
+
     pub fn settings_category(&mut self, category: Category) {
         if category == Category::RemoteHosts && self.phone.is_none() {
             self.list_devices();

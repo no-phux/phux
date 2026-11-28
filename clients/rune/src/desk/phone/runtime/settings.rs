@@ -346,3 +346,55 @@ fn a_settings_level_opens_at_its_top_and_back_restores_the_list() {
     let back = rt.presented("settings-terminal").unwrap().0;
     assert!((back[1] - row[1]).abs() < 0.5, "{back:?} against {row:?}");
 }
+
+/// A notice raised while Settings is open paints over the page and takes
+/// its own taps there, as it does over the terminal.
+#[test]
+fn a_notice_raised_over_settings_shows_and_is_dismissed_over_it() {
+    let (client, mut rt) = open(true);
+    rt.update(|d, _| d.say(crate::desk::NoticeKind::Error, "Couldn't reach the host."));
+    settle(&mut rt);
+    let (x, y) = rt.find("toast-close").expect("the notice's close");
+    let picked = rt.element_at(x, y).expect("something under the close");
+    assert!(
+        picked.path().split('/').any(|part| part == "toast-close"),
+        "Settings covers the notice: {}",
+        picked.path()
+    );
+    tap(&mut rt, "toast-close", 0.1);
+    assert!(rt.state.toasts().is_empty(), "the tap dismissed the notice");
+    assert!(rt.state.settings_open);
+    no_terminal_input(&client);
+}
+
+/// Closing Settings holds the stage still for the page's exit only: the
+/// app's poll ends that window on time, with no other commit to end it.
+#[test]
+fn the_stage_animates_again_once_settings_has_gone() {
+    let (_client, mut rt) = open(true);
+    rt.poll = Some(Desk::poll);
+    rt.update(|d, tx| {
+        d.close_settings();
+        tx.animated();
+    });
+    assert!(rt.state.settings_settling());
+    for _ in 0..12 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.settings_settling(), "still leaving at 200 ms");
+    let commits = rt.stats.commits;
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(!rt.state.settings_settling(), "the exit is over");
+    assert!(
+        rt.stats.commits > commits,
+        "the view never ran after the exit"
+    );
+    // Once: the window ends, and nothing wakes for it again.
+    let commits = rt.stats.commits;
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.stats.commits, commits);
+}

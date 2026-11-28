@@ -328,7 +328,16 @@ fn phone_heading(desk: &Desk, t: &Tokens) -> El {
         } else {
             el().size(s.touch_min, s.touch_min)
         })
-        .child(el().grow(1.0).center().child(title(t)))
+        // Every sheet's title type, capped as theirs is, so at the largest
+        // text sizes the close keeps its place on the trailing margin.
+        .child(
+            el().grow(1.0).min_w(0.0).center().child(
+                title(t)
+                    .font(super::phone::sheet::title_type(t))
+                    .min_w(0.0)
+                    .truncate(),
+            ),
+        )
         .child(close)
 }
 
@@ -389,9 +398,14 @@ fn phone(desk: &Desk, t: &Tokens) -> El {
     let ground = t.roles.layer.sidebar.paint();
     col()
         .key("settings-scrim")
-        .w_full()
-        .h_full()
-        .min_h(0.0)
+        // Over the stage and up over the top bar's slot, which holds the
+        // stage still while the page comes and goes.
+        .pin(
+            Some(0.0),
+            Some(-super::phone::top_bar_slot()),
+            Some(0.0),
+            Some(0.0),
+        )
         .modal_tx(true, Desk::settings_escape)
         .label("Settings")
         // It arrives as nothing, leaving the entrance to the page; the page

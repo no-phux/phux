@@ -480,13 +480,21 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
             .w_full()
             .key(key)
     };
+    let phone = desk.phone.is_some();
     let drawer = col()
         .key("inbox")
         // The phone form is narrower than the drawer.
         .w_full()
         .max_w(EXTENTS.drawer_w)
-        .h_full()
-        .border(s.hairline, r.border.base.paint())
+        .h_full();
+    // A phone's sheet wears every phone sheet's chrome: no ring, and no
+    // rule between its header and its questions.
+    let drawer = if phone {
+        drawer
+    } else {
+        drawer.border(s.hairline, r.border.base.paint())
+    };
+    let drawer = drawer
         // A phone's Inbox is a sheet: it rises and lowers again, by its
         // Close as by a swipe. A desktop's slides in from its edge.
         .transition(if desk.phone.is_some() {
@@ -498,7 +506,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
             )
         })
         .child(title(desk, items.len(), t))
-        .child(rule("inbox-header-rule"))
+        .children((!phone).then(|| rule("inbox-header-rule")))
         .child(if centred {
             el().key("inbox-scroll")
                 .w_full()
