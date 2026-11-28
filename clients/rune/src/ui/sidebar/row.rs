@@ -238,18 +238,33 @@ fn name(
                 .gap(t.space.s1)
                 .items_center()
                 .child(
-                    super::session_heading(session, t)
-                        .shrink()
-                        .min_w(t.space.pointer_min)
-                        .h(t.space.pointer_min),
-                )
-                .children(pane.place.as_ref().map(|place| {
-                    text(format!("· {place}"))
-                        .font(t.ty.caption)
-                        .color(quiet)
-                        .truncate()
+                    row()
+                        .grow(1.0)
                         .min_w(0.0)
-                        .a11y_hidden()
+                        .gap(t.space.s1)
+                        .items_center()
+                        .child(
+                            super::session_heading(session, t)
+                                .shrink()
+                                .min_w(t.space.pointer_min)
+                                .h(t.space.pointer_min),
+                        )
+                        .children(pane.place.as_ref().map(|place| {
+                            text(format!("· {place}"))
+                                .font(t.ty.caption)
+                                .color(quiet)
+                                .truncate()
+                                .min_w(0.0)
+                                .a11y_hidden()
+                        })),
+                )
+                // Closing belongs to the session line, not a blank column
+                // beside the resource title. Its target and hover group stay.
+                .children(session.key.map(|key| {
+                    super::super::reveal(
+                        super::actions::session_controls(Some(key), session.name, t),
+                        true,
+                    )
                 })),
         );
     }
@@ -328,12 +343,6 @@ fn render_row(pane: &Row, session: Option<&super::Header>, t: &Tokens) -> El {
         .help(tip)
         .child(pane.identity(sidebar, t))
         .child(name(pane, name_ink, quiet, disabled, session, t))
-        .children(session.map(|session| {
-            super::super::reveal(
-                super::actions::session_controls(session.key, session.name, t),
-                true,
-            )
-        }))
         .children(selected.then(|| host_color::stripe(host, t)));
     row_actions(row, pane)
 }

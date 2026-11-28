@@ -3,6 +3,7 @@ use super::*;
 use phux_client_runtime::project_identity::SessionProject;
 
 mod current_member;
+mod row_alignment;
 mod tests;
 
 fn inventory() -> phux_client_runtime::control::Topology {

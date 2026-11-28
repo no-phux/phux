@@ -169,6 +169,10 @@ make every caption the same ink: retain its quiet underline and accessible
 "Current pane" description. A pending or cancelled selection must not move
 that cue before the shown resource changes. Keep the containing row's single
 keyboard stop and the members' existing hit bounds.
+Single-resource cases also retain long resource/session names at rest, hovered
+and keyboard-focused across that desktop matrix. The title uses the full text
+column; Close stays a complete pointer target on its session/context line,
+without changing row height, session/resource drag ownership or confirmation.
 
 Reconnect feedback cases retain an attached terminal, then exercise an ordinary
 drop, a long explanation and a real failed pairing status. Compare top, scrolled

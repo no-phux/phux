@@ -381,6 +381,12 @@ impl Desk {
         }
     }
 
+    /// Whether a keyboard or the composer has the phone's attention: the
+    /// navigation rows (tabs, Move and Panes) step aside for the terminal.
+    pub fn phone_typing(&self) -> bool {
+        self.phone_keyboard_visible() || self.active_composer().is_some()
+    }
+
     pub fn toggle_keyboard(&mut self, tx: &mut Tx) {
         if self.modal() == Some(Modal::PhoneNavigation) {
             self.blur_phone_search(tx);

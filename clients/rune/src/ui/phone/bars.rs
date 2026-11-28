@@ -258,47 +258,70 @@ fn place_detail(desk: &Desk, session: &str) -> String {
         .shown
         .as_ref()
         .map(|shown| desk.activities.mark(&shown.resource).word());
-    match state.filter(|word| !word.is_empty()) {
+    let mut detail = match state.filter(|word| !word.is_empty()) {
         Some(word) => format!("{session} · {word}"),
         None => session.to_owned(),
+    };
+    // With the strip tucked away the title says which tab this is; a
+    // sideways swipe still pages between them.
+    if let Some((at, of)) = tucked_tab(desk) {
+        detail = format!("{detail} · tab {at} of {of}");
     }
+    detail
+}
+
+/// The tab strip steps aside while a keyboard is up: typing wants the
+/// rows, and a sideways swipe on the terminal pages tabs, naming where it
+/// lands. The active tab's place, counted from one, when it has.
+fn tucked_tab(desk: &Desk) -> Option<(usize, usize)> {
+    let tabs = &desk.connection.tabs.list;
+    if tabs.len() < 2 || !desk.phone_typing() {
+        return None;
+    }
+    let at = tabs.iter().position(|tab| tab.active)?;
+    Some((at + 1, tabs.len()))
 }
 
 /// The session's tabs by name, and a new one. A lone tab needs no strip:
-/// its rows go to the terminal, and New Tab is in the commands.
+/// its rows go to the terminal, and New Tab is in the commands. Nor does
+/// typing: the strip tucks away under a keyboard ([`tucked_tab`]).
 pub(super) fn tab_pills(desk: &Desk, p: &Look) -> Option<El> {
-    if desk.connection.tabs.list.len() < 2 {
+    if desk.connection.tabs.list.len() < 2 || tucked_tab(desk).is_some() {
         return None;
     }
     let s = &p.space;
-    let mut pills = surface(
-        row()
-            .key("phone-tabs")
-            .shrink()
-            .min_w(0.0)
-            .gap(s.s0_5)
-            .radius(p.radius.full)
-            .items_center()
-            .scroll_x()
-            // A tab past the edge fades out instead of being cut square,
-            // and one scrolled to stops clear of the fade.
-            .scroll_edge_fade(s.s5)
-            .scroll_margin(s.s5),
-        p,
-    );
+    // No track: the active tab's chip is the strip's one surface.
+    let mut pills = row()
+        .key("phone-tabs")
+        .shrink()
+        .min_w(0.0)
+        .items_center()
+        .scroll_x()
+        // A tab past the edge fades out instead of being cut square,
+        // and one scrolled to stops clear of the fade.
+        .scroll_edge_fade(s.s5)
+        .scroll_margin(s.s5);
     for (index, tab) in desk.connection.tabs.list.iter().enumerate() {
         pills = pills.child(tab_pill(desk, index, tab, p));
     }
-    let new = floating_round(
-        desk,
-        "phone-tab-new",
-        "New tab",
-        &icons::PLUS,
-        "plus",
-        None,
+    // New tab is a chip the tabs' size, not a round button twice their
+    // weight: a 32-point disc inside its 44-point touch target.
+    let new = touchable(
+        el().key("phone-tab-new")
+            .size(s.touch_min, s.touch_min)
+            .radius(p.radius.full)
+            .center()
+            .label("New tab")
+            .on_press(Desk::new_tab)
+            .child(
+                surface(el().size(s.s8, s.s8).radius(p.radius.full).center(), p).child(glyph(
+                    &icons::PLUS,
+                    p.icon.size.md,
+                    p.roles.text.text.paint(),
+                )),
+            ),
         p,
-    )
-    .on_press(Desk::new_tab);
+    );
     // One touch target tall: the strip spends no rows the terminal could.
     let strip = row()
         .key("phone-tab-strip")
@@ -338,10 +361,11 @@ fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
     } else {
         format!("Tab {}", index + 1)
     };
-    let pill = row()
-        .key(format!("phone-tab-{index}"))
-        .h(s.touch_min)
-        .min_w(s.touch_min)
+    // The chip is the size iOS draws a segment; the touch target around it
+    // stays 44 points, so the strip reads light without shrinking a tap.
+    let chip = row()
+        .h(s.s8)
+        .min_w(0.0)
         // Two of the grid's largest steps: a long name truncates.
         .max_w(PHONE.tab_max_w)
         .px(s.s3)
@@ -349,8 +373,6 @@ fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
         .radius(p.radius.full)
         .items_center()
         .motion(p.motion.select.enter)
-        .label(name)
-        .on_press(move |d: &mut Desk| d.select_tab(index))
         .children(waiting.then(|| {
             badge::mark(p, State::NeedsYou, p.icon.size.sm).a11y_hidden()
         }))
@@ -360,10 +382,19 @@ fn tab_pill(desk: &Desk, index: usize, tab: &crate::desk::Tab, p: &Look) -> El {
                 .color(ink.paint())
                 .truncate(),
         );
-    let pill = touchable(pill, p);
-    if tab.active {
-        crate::ui::lifted(pill, p)
+    let chip = if tab.active {
+        crate::ui::lifted(surface(chip, p), p)
     } else {
-        pill
-    }
+        chip
+    };
+    let pill = el()
+        .key(format!("phone-tab-{index}"))
+        .h(s.touch_min)
+        .min_w(s.touch_min)
+        .radius(p.radius.full)
+        .center()
+        .label(name)
+        .on_press(move |d: &mut Desk| d.select_tab(index))
+        .child(chip);
+    touchable(pill, p)
 }

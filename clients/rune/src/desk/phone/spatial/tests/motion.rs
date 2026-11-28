@@ -163,7 +163,11 @@ fn run(gpu: &rune::render::Gpu, case: Case, appearance: &str) {
         appearance == "dark",
         "terminal and chrome must genuinely use the named appearance"
     );
-    let origin = rt.find("phone-navigation").expect("dedicated Move target");
+    // Typing tucks the Move handle away; the map takes the same swipe.
+    let origin = rt
+        .find("phone-navigation")
+        .or_else(|| rt.find("phone-minimap"))
+        .expect("a Move target");
     let mut renderer = rune::render::Renderer::new(
         &gpu.device,
         rune::render::OFFSCREEN_FORMAT.remove_srgb_suffix(),

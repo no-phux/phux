@@ -67,9 +67,11 @@ pub fn view(desk: &Desk, phone: &Phone, ink: &Tokens, area: El) -> El {
 }
 
 /// Move and Panes, only when there is somewhere to go. A lone terminal
-/// keeps the whole stage: its finger scrolls it directly.
+/// keeps the whole stage: its finger scrolls it directly. Typing tucks the
+/// toolbar away as it does the tabs; the top bar's pane map still taps
+/// and swipes to any pane.
 fn toolbar(desk: &Desk, several: bool, p: &Look) -> El {
-    if !several {
+    if !several || desk.phone_typing() {
         return el().key("phone-navigation-toolbar").h(0.0);
     }
     let tools = row()

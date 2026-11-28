@@ -17,7 +17,6 @@ fn prepare(
     rt.set_srgb_blend(true);
     rt.update(|d, _| {
         d.settings.theme = crate::theme::find(if dark { "phux" } else { "phux-light" });
-        d.phone.as_mut().unwrap().keyboard = !native;
         if native {
             d.native = Some(crate::mobile::Platform::test());
         }
@@ -31,7 +30,9 @@ fn prepare(
         }
     });
     settle(&mut rt);
+    // Panes is on the toolbar typing tucks away: open it, then type.
     tap(&mut rt, "phone-pane-picker");
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = !native);
     settle(&mut rt);
     assert!(
         rt.elements().iter().any(|element| {
@@ -223,8 +224,13 @@ fn picker_rows_fit_and_reveal_whole_targets_without_shrinking_requested_text() {
                     reveal(&mut rt, key);
                     whole_control(&rt, key);
                 }
-                assert_eq!(geometry(&rt, "phone-navigation-toolbar").rect[3], 44.0);
-                assert_eq!(geometry(&rt, "phone-navigation").rect[3], 44.0);
+                // Typing (the drawn keys) tucks Move and Panes away.
+                if rt.state.phone_typing() {
+                    assert_eq!(geometry(&rt, "phone-navigation-toolbar").rect[3], 0.0);
+                } else {
+                    assert_eq!(geometry(&rt, "phone-navigation-toolbar").rect[3], 44.0);
+                    assert_eq!(geometry(&rt, "phone-navigation").rect[3], 44.0);
+                }
                 assert_eq!(
                     focus(&rt),
                     id(1),

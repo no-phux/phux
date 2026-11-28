@@ -8,6 +8,8 @@ fn contrast(a: Color, b: Color) -> f32 {
 fn phone_desk(tabs: u8) -> Desk {
     let mut desk = crate::test_support::settings_window().with_phone(true);
     desk.settings_open = false;
+    // Keyboard down, so the tab strip shows; typing tucks it away.
+    desk.phone.as_mut().expect("a phone").keyboard = false;
     desk.connection.tabs.list = (0..tabs)
         .map(|i| crate::desk::Tab {
             locked: false,
@@ -111,6 +113,7 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
             active: i == 5,
         })
         .collect();
+    desk.phone.as_mut().expect("a phone").keyboard = false;
     let mut rt = crate::test_support::runtime(
         desk,
         crate::ui::view,
@@ -150,48 +153,56 @@ fn the_active_tab_is_brought_whole_into_the_strip() {
 /// system keyboard's width; they are 44 tall.
 #[test]
 fn every_phone_control_is_a_touch_target() {
-    let mut desk = phone_desk(3);
-    desk.phone.as_mut().expect("a phone").keyboard = true;
-    let rt = runtime(desk, (320.0, 568.0));
-    let mut all = Vec::new();
-    nodes(&rt.accessibility_json(), &mut all);
-    let mut checked = 0;
-    for node in &all {
-        let Some(key) = node["key"].as_str() else {
-            continue;
+    // Typing shows the drawn keys; with the keyboard down the tabs show.
+    for keyboard in [true, false] {
+        let mut desk = phone_desk(3);
+        desk.phone.as_mut().expect("a phone").keyboard = keyboard;
+        let rt = runtime(desk, (320.0, 568.0));
+        let mut all = Vec::new();
+        nodes(&rt.accessibility_json(), &mut all);
+        let mut checked = 0;
+        for node in &all {
+            let Some(key) = node["key"].as_str() else {
+                continue;
+            };
+            let pressable = node["actions"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|a| a == "click"));
+            if !key.starts_with("phone-") || !pressable {
+                continue;
+            }
+            let b = node["bounds"].as_array().expect("bounds");
+            let (w, h) = (b[2].as_f64().unwrap(), b[3].as_f64().unwrap());
+            assert!(h >= 44.0, "{key} is {h} tall");
+            if !key.starts_with("phone-cap-") {
+                assert!(w >= 44.0, "{key} is {w} wide");
+            }
+            checked += 1;
+        }
+        let shown: &[&str] = if keyboard {
+            &["phone-cap-113"]
+        } else {
+            &["phone-tab-0", "phone-tab-new"]
         };
-        let pressable = node["actions"]
-            .as_array()
-            .is_some_and(|a| a.iter().any(|a| a == "click"));
-        if !key.starts_with("phone-") || !pressable {
-            continue;
+        for key in [
+            "phone-back",
+            "phone-place",
+            "phone-more",
+            "phone-command",
+            "phone-key-Escape",
+            "phone-pad",
+            "phone-keyboard-toggle",
+        ]
+        .iter()
+        .chain(shown)
+        {
+            assert!(
+                all.iter().any(|n| n["key"] == *key),
+                "{key} is in the accessibility tree"
+            );
         }
-        let b = node["bounds"].as_array().expect("bounds");
-        let (w, h) = (b[2].as_f64().unwrap(), b[3].as_f64().unwrap());
-        assert!(h >= 44.0, "{key} is {h} tall");
-        if !key.starts_with("phone-cap-") {
-            assert!(w >= 44.0, "{key} is {w} wide");
-        }
-        checked += 1;
+        assert!(checked >= 10, "only {checked} controls");
     }
-    for key in [
-        "phone-back",
-        "phone-place",
-        "phone-more",
-        "phone-tab-0",
-        "phone-tab-new",
-        "phone-command",
-        "phone-key-Escape",
-        "phone-pad",
-        "phone-keyboard-toggle",
-        "phone-cap-113",
-    ] {
-        assert!(
-            all.iter().any(|n| n["key"] == key),
-            "{key} is in the accessibility tree"
-        );
-    }
-    assert!(checked >= 20, "only {checked} controls");
 }
 
 /// Status is colour, mark and word: a tab with a terminal that needs you

@@ -218,7 +218,10 @@ pub(super) fn accessory(desk: &Desk, phone: &Phone, p: &Look) -> El {
     };
     // Return stays pinned under the right thumb unless the largest text
     // leaves no room beside it: then it leads the strip, first in view.
-    let enter = (!native_field).then(|| return_key(p));
+    // The native host's system keyboard has its own return right below,
+    // so while it shows the strip keeps that width for its keys.
+    let system_return = desk.native.is_some() && desk.phone_keyboard_visible();
+    let enter = (!native_field && !system_return).then(|| return_key(p));
     let (strip_enter, pair_enter) = if scrolling_pad {
         (enter, None)
     } else {

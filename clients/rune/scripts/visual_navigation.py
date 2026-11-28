@@ -88,7 +88,8 @@ def sidebar_hierarchy_inventory(themes):
             zoomed_geometry(width, height, 2) if mode == "large" else (width, height, 2)
         for theme, mode, state, (width, height) in product(
             themes, ("normal", "large", "forced"),
-            ("expanded", "single", "split", "hosts", "focused", "empty"),
+            ("expanded", "single", "split", "hosts", "focused", "empty",
+             "single-long-rest", "single-long-hover", "single-long-focused"),
             ((1100, 720), (640, 360)))
     }
 

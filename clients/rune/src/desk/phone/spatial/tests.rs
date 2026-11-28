@@ -236,6 +236,7 @@ fn map_swipes_do_not_also_tap_and_picker_reaches_document_and_tiny_leaves() {
 #[test]
 fn modal_blocks_map_handle_picker_and_tabs_without_terminal_input() {
     let (client, mut rt) = fixture(true);
+    show_tabs(&mut rt);
     rt.update(|d, _| d.pending = Some(crate::desk::Pending::Close(id(1))));
     settle(&mut rt);
     for key in [
@@ -320,6 +321,10 @@ fn keyboard_resizes_only_focus_and_drag_frames_do_not_storm_pty_sizes() {
     let (client, mut rt) = fixture(true);
     // Unlike the geometry-only fixture, resize settling runs on the app clock.
     rt.poll = Some(Desk::poll);
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = true);
+    settle(&mut rt);
+    // Raising it resized once already; count only the toggle's resizes.
+    resized(&client);
     let before = rt.state.connection.fitted[&id(1)];
     tap(&mut rt, "phone-keyboard-toggle");
     settle(&mut rt);
@@ -383,6 +388,7 @@ fn document_closure_ratio_changes_groups_and_unarranged_resources_reconcile() {
         "layout change cancels in-flight navigation"
     );
     assert_eq!(rt.state.phone.as_ref().unwrap().travel, [0.0; 2]);
+    show_tabs(&mut rt);
     tap(&mut rt, "phone-tab-1");
     poll(&mut rt);
     settle(&mut rt);

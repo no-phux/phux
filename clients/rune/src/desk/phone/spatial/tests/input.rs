@@ -60,6 +60,8 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
     let map = geometry(&rt, "phone-minimap");
     assert_eq!([map.rect[2], map.rect[3]], [96.0, 64.0]);
     tap(&mut rt, "phone-pane-picker");
+    // The picker's drawn keys need the keyboard the toolbar stepped aside for.
+    rt.update(|d, _| d.phone.as_mut().unwrap().keyboard = true);
     settle(&mut rt);
     for (n, name) in [(1, "Build"), (2, "Tests"), (3, "Logs")] {
         assert!(
@@ -115,6 +117,7 @@ fn picker_is_compact_named_and_traps_physical_soft_and_paste_input() {
 fn confirmation_inside_spatial_find_keeps_the_query_until_confirmation_closes() {
     let (client, mut rt) = fixture(true);
     rt.update(|d, _| {
+        d.phone.as_mut().unwrap().keyboard = true;
         d.open_find();
         d.pending = Some(crate::desk::Pending::Close(id(1)));
     });
