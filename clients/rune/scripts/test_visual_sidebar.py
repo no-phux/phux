@@ -8,10 +8,11 @@ import visual_review as review
 class SidebarHierarchyInventory(unittest.TestCase):
     def test_native_inset_and_interactive_states(self):
         cases = review.required_inventory()
-        self.assertEqual(sum(name.startswith("navigation/sidebar-hierarchy-") for name in cases), 72)
+        self.assertEqual(sum(name.startswith("navigation/sidebar-hierarchy-") for name in cases), 108)
         for theme, mode, state, (width, height) in product(
             ("dark", "light"), ("normal", "large", "forced"),
-            ("expanded", "single", "split", "hosts", "focused", "empty"),
+            ("expanded", "single", "split", "hosts", "focused", "empty",
+             "single-long-rest", "single-long-hover", "single-long-focused"),
             ((1100, 720), (640, 360)),
         ):
             stem = f"sidebar-hierarchy-{theme}-{mode}-{state}-{width}x{height}-2x"
