@@ -51,6 +51,9 @@ pub struct Tabs {
     pub left_tab: Option<[u8; 16]>,
     pub renaming: Option<Renaming>,
     pub rename_field: TextEdit,
+    /// The name the rename sheet opened with: an edit away from it is not
+    /// swiped away by accident.
+    pub rename_from: String,
     /// The title bar's room for the strip, in points, once it is laid out:
     /// what each tab's share is cut from.
     pub room: f32,
@@ -492,6 +495,7 @@ impl Desk {
     fn open_rename(&mut self, target: Renaming, current: String) {
         self.connection.tabs.renaming = Some(target);
         let end = current.len();
+        self.connection.tabs.rename_from.clone_from(&current);
         self.connection.tabs.rename_field = TextEdit::new(current);
         self.connection.tabs.rename_field.set_selection(0, end);
         self.connection.tabs.rename_field.focused = true;

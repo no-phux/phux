@@ -301,9 +301,16 @@ impl Desk {
             Modal::Settings => Away::Settings,
             Modal::Machines => Away::Bottom(Bottom::Machines),
             Modal::News => Away::Bottom(Bottom::News),
-            Modal::Rename => Away::Bottom(Bottom::Rename),
+            // An edited name, like a typed reply, takes Cancel to discard.
+            Modal::Rename if !self.rename_edited() => Away::Bottom(Bottom::Rename),
             _ => return None,
         })
+    }
+
+    /// The rename field holds something other than the name it opened with.
+    fn rename_edited(&self) -> bool {
+        let tabs = &self.connection.tabs;
+        tabs.rename_field.text.trim() != tabs.rename_from.trim()
     }
 
     /// Whether `away` is the page a swipe would take: only it follows the

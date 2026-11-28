@@ -22,7 +22,7 @@ pub(super) fn layer(desk: &Desk, page_el: El, page: Page, top: f32, p: &Look) ->
         Page::Sessions => {
             let drift = p.space.s16;
             // The list goes ahead of its frost, which clears after it.
-            let springs = lagged(p.motion.drawer, LIST_LEAD);
+            let springs = list_springs(p);
             let drawer = rune::Transition::offset(-drift, 0.0)
                 .combined(rune::Transition::opacity())
                 .springs(springs);
@@ -106,23 +106,23 @@ pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
     // list opacities).
     Some(
         frost
-            .transition(rune::Transition::opacity().springs(lagged(p.motion.drawer, FROST_LAG)))
+            .transition(rune::Transition::opacity().springs(frost_springs(p)))
             .paint_order(OVER_LEAVING)
             .inert()
             .a11y_hidden(),
     )
 }
 
-/// Sessions' exit against the drawer's: the list goes in a little over
-/// half its time, and the frost under it clears in half as long again, so
-/// the list is gone before the terminal shows crisp through the frost.
-const LIST_LEAD: f32 = 0.6;
-const FROST_LAG: f32 = 1.5;
+/// Sessions' list leaves on a control's quick exit, well inside the
+/// drawer's, so it is gone before the frost under it clears.
+fn list_springs(p: &Look) -> rune::SpringPair {
+    rune::SpringPair::new(p.motion.drawer.enter, p.motion.control.exit)
+}
 
-/// The drawer's springs with the exit taking `scale` times as long.
-fn lagged(drawer: rune::SpringPair, scale: f32) -> rune::SpringPair {
-    let exit = rune::Spring::new(drawer.exit.duration * scale, drawer.exit.bounce);
-    rune::SpringPair::new(drawer.enter, exit)
+/// The frost clears on the drawer's longer entrance spring, so the terminal
+/// never shows crisp through a list still on screen.
+fn frost_springs(p: &Look) -> rune::SpringPair {
+    rune::SpringPair::new(p.motion.drawer.enter, p.motion.drawer.enter)
 }
 
 fn glass(panel: El, p: &Look) -> El {

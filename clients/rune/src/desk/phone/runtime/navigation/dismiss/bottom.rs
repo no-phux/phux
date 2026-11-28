@@ -52,3 +52,31 @@ fn bottom_sheets_lower_on_a_downward_swipe_as_their_close_does() {
     }
     no_terminal_input(&client);
 }
+
+/// An edited name, like a typed reply, is never swiped away: Cancel, which
+/// discards it, is a decision. Back to the name it opened with, it lowers.
+#[test]
+fn an_edited_rename_stays_under_a_downward_swipe() {
+    use crate::desk::phone::dismiss::Bottom;
+    let (client, mut rt) = fixture();
+    detailed_inventory(&mut rt);
+    rt.set_system_reduced_motion(true);
+    rt.update(|d, tx| {
+        let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+        d.rename_session(key, "phux");
+        tx.instant();
+    });
+    settle(&mut rt);
+    rt.update(|d, _| d.connection.tabs.rename_field.replace_text("phux mobile"));
+    settle(&mut rt);
+    assert_eq!(rt.state.swipe_away(), None);
+    let panel = crate::ui::element(&rt, Bottom::Rename.key()).rect;
+    let header = [panel[0] + panel[2] / 3.0, panel[1] + 24.0];
+    drag(&mut rt, header, [0.0, panel[3] * 0.6], 1.0);
+    assert!(rt.state.modal().is_some(), "the edited name stays");
+    assert_eq!(rt.state.connection.tabs.rename_field.text, "phux mobile");
+    rt.update(|d, _| d.connection.tabs.rename_field.replace_text("phux"));
+    settle(&mut rt);
+    assert_eq!(rt.state.swipe_away(), Some(Away::Bottom(Bottom::Rename)));
+    no_terminal_input(&client);
+}
