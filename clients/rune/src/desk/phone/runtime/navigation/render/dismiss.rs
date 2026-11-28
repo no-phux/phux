@@ -22,7 +22,7 @@ struct Gesture {
     lift: [f32; 2],
 }
 
-const GESTURES: [Gesture; 6] = [
+const GESTURES: [Gesture; 7] = [
     Gesture {
         name: "sessions-left",
         open: Desk::open_phone_sessions,
@@ -80,7 +80,25 @@ const GESTURES: [Gesture; 6] = [
         mid: [80.0, 4.0],
         lift: [200.0, 6.0],
     },
+    // A sheet resting on the bottom edge, held by its header: the finger
+    // lands a little under its top, wherever that is.
+    Gesture {
+        name: "rename-down",
+        open: |d| {
+            let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
+            d.rename_session(key, "phux");
+        },
+        away: Away::Bottom(crate::desk::phone::dismiss::Bottom::Rename),
+        layer: "rename",
+        from: [0.33, HEADER],
+        mid: [4.0, 40.0],
+        lift: [6.0, 120.0],
+    },
 ];
+
+/// A `from` height that means the moving page's header, a little under
+/// its top, rather than a share of the phone.
+const HEADER: f32 = -1.0;
 
 #[test]
 fn dismiss_motion_visual_review_frames() {
@@ -135,9 +153,14 @@ fn frames(
         "dismiss-{}-{theme_name}-{}x{}-2x-reduced-{reduced}",
         gesture.name, size.0, size.1
     );
+    let top = rt.presented(gesture.layer).map_or(0.0, |(rect, _)| rect[1]);
     let from = [
         size.0 as f32 * gesture.from[0],
-        size.1 as f32 * gesture.from[1],
+        if gesture.from[1] == HEADER {
+            top + 24.0
+        } else {
+            size.1 as f32 * gesture.from[1]
+        },
     ];
     let at = |travel: [f32; 2]| [from[0] + travel[0], from[1] + travel[1]];
     let mut capture = |rt: &mut Runtime<Desk>, stage: &str, frame: u32| {

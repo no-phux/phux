@@ -19,7 +19,7 @@ from urllib.parse import quote
 from visual_acp import (
     EXPORTER as ACP_FORM_EXPORTER, ASK_OWNER_EXPORTER, ask_owner_inventory, form_inventory,
 )
-from visual_motion import MOTION_FRAMES, motion_frames, pane_motion_inventory
+from visual_motion import MOTION_FRAMES, MOTION_STEMS, motion_frames, pane_motion_inventory
 from visual_navigation import navigation_exporter, navigation_inventory
 from visual_palette import EXPORTER as PALETTE_EXPORTER, palette_inventory
 from visual_themes import theme_inventory
@@ -306,7 +306,7 @@ def case_record(root, png):
         "physical": physical, "logical": logical, "scale": tree["scale"],
         "elementCount": len(tree["elements"]),
     }
-    if png.stem.startswith(("pane-motion-", "accessory-resize-", "batched-swipe-", "dismiss-")):
+    if png.stem.startswith(MOTION_STEMS):
         case.update(motion_record(root, png, tree))
     return case
 

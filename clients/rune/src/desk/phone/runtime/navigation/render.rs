@@ -8,6 +8,7 @@ mod dismiss;
 mod header;
 mod inventory;
 mod menu;
+mod motion;
 mod reconnect;
 mod search;
 mod states;

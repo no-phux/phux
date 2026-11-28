@@ -4,7 +4,10 @@ import unittest
 
 import test_visual_review as fixtures
 import visual_review as review
-from visual_motion import DISMISS_FRAMES, batched_swipe_inventory, dismiss_inventory, motion_frames
+from visual_motion import (
+    DISMISS_FRAMES, SWITCHER_SWIPE_FRAMES, batched_swipe_inventory, dismiss_inventory, motion_frames,
+    page_motion_inventory, switcher_swipe_inventory,
+)
 
 
 class MotionReview(unittest.TestCase):
@@ -63,7 +66,7 @@ class MotionReview(unittest.TestCase):
 
     def test_dismiss_swipes_bind_both_let_goes_and_name_their_own_stage(self):
         inventory = dismiss_inventory()
-        self.assertEqual(len(inventory), 480)
+        self.assertEqual(len(inventory), 560)
         self.fixture.populate(inventory)
         for case in self.fixture.produce()["cases"]:
             if not case["png"].startswith("navigation/dismiss-"):
@@ -75,3 +78,24 @@ class MotionReview(unittest.TestCase):
         frames = motion_frames(stem)
         stage = next(stage for stage in frames if stem.endswith(f"-{stage}"))
         self.assertEqual(frames[stage], DISMISS_FRAMES["short-release"])
+
+    def test_page_motion_and_switcher_swipes_bind_their_exporters_and_clocks(self):
+        pages, swipes = page_motion_inventory(), switcher_swipe_inventory()
+        self.assertEqual(len(pages), 408)
+        self.assertEqual(len(swipes), 24)
+        self.fixture.populate({**pages, **swipes})
+        exporters = {"navigation/motion-": "page_motion_visual_review_frames",
+                     "navigation/switcher-swipe-": "switcher_swipe_visual_review_frames"}
+        seen = set()
+        for case in self.fixture.produce()["cases"]:
+            for prefix, exporter in exporters.items():
+                if case["png"].startswith(prefix):
+                    self.assertEqual(case["exporter"], exporter)
+                    self.assertIn("motionSha256", case)
+                    seen.add(prefix)
+        self.assertEqual(seen, set(exporters))
+        # The release and its 100 ms on resolve to their own frames.
+        stem = "switcher-swipe-dark-393x852-2x-reduced-false-release"
+        frames = motion_frames(stem)
+        stage = next(stage for stage in frames if stem.endswith(f"-{stage}"))
+        self.assertEqual(frames[stage], SWITCHER_SWIPE_FRAMES["release"])

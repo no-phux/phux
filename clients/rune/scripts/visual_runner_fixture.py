@@ -42,6 +42,8 @@ filters = {
     "phone_pane_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "batched_swipe_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "dismiss_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "page_motion_visual_review_frames": "RUNE_NAVIGATION_SNAP",
+    "switcher_swipe_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "phone_pane_picker_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "attention_contrast_visual_review_frames": "RUNE_NAVIGATION_SNAP",
     "sidebar_focus_visual_review_frames": "RUNE_NAVIGATION_SNAP",
@@ -67,7 +69,7 @@ for relative, (width, height, scale) in review.required_inventory().items():
         "scenario": "exported fixture", "theme": "dark",
         "elements": [{"path": "root"}], "accessibility": {},
     }
-    if path.stem.startswith(("pane-motion-", "accessory-resize-", "batched-swipe-", "dismiss-")):
+    if path.stem.startswith(review.MOTION_STEMS):
         frames = review.motion_frames(path.stem)
         stage = next(stage for stage in frames if path.stem.endswith(f"-{stage}"))
         scenario = path.stem[:-(len(stage) + 1)]

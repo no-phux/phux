@@ -21,7 +21,35 @@ DISMISS_FRAMES = {
 }
 DISMISS_GESTURES = (
     "sessions-left", "actions-down", "switcher-down", "inbox-down", "palette-down",
-    "settings-back",
+    "settings-back", "rename-down",
+)
+# Every page coming and going by its own control, after the press.
+PAGE_MOTION_FRAMES = {
+    "idle": 0, "commit": 1, "plus-50ms": 3, "plus-100ms": 6, "plus-200ms": 12, "settled": 60,
+}
+PAGE_MOTION_CHANGES = (
+    "sessions-open", "sessions-close", "actions-open", "actions-close", "switcher-open",
+    "switcher-to-sessions", "inbox-open", "inbox-close", "palette-open", "settings-open",
+    "settings-push", "settings-pop", "settings-close", "rename-open", "find-open",
+    "machines-open", "news-open",
+)
+# Size, theme, Reduce Motion and text size of each case.
+PAGE_MOTION_CASES = (
+    ((393, 852), "dark", "false", "standard"),
+    ((320, 568), "light", "false", "standard"),
+    ((393, 852), "dark", "true", "standard"),
+    ((320, 568), "dark", "true", "ax5"),
+)
+SWITCHER_SWIPE_FRAMES = {
+    "idle": 0, "mid-drag": 1, "past-commit": 2, "release": 3, "release-plus-100ms": 9,
+    "settled": 63,
+}
+SWITCHER_SWIPE_CASES = (((393, 852), "dark"), ((320, 568), "light"))
+
+# The stems whose frames carry a fixed-clock `.motion.json`.
+MOTION_STEMS = (
+    "pane-motion-", "accessory-resize-", "batched-swipe-", "dismiss-", "motion-",
+    "switcher-swipe-",
 )
 
 
@@ -30,6 +58,10 @@ def motion_frames(stem):
         return BATCHED_SWIPE_FRAMES
     if stem.startswith("dismiss-"):
         return DISMISS_FRAMES
+    if stem.startswith("motion-"):
+        return PAGE_MOTION_FRAMES
+    if stem.startswith("switcher-swipe-"):
+        return SWITCHER_SWIPE_FRAMES
     return ACCESSORY_RESIZE_FRAMES if stem.startswith("accessory-resize-") else MOTION_FRAMES
 
 
@@ -50,6 +82,26 @@ def dismiss_inventory(themes=("dark", "light")):
         for gesture, theme, (width, height), reduced, stage in product(
             DISMISS_GESTURES, themes, ((393, 852), (320, 568)), ("false", "true"),
             DISMISS_FRAMES)
+    }
+
+
+def page_motion_inventory(themes=("dark", "light")):
+    return {
+        f"navigation/motion-{change}-{theme}-{width}x{height}-2x-{text}-reduced-{reduced}-"
+        f"{stage}.png": (width, height, 2)
+        for change, ((width, height), theme, reduced, text), stage in product(
+            PAGE_MOTION_CHANGES, PAGE_MOTION_CASES, PAGE_MOTION_FRAMES)
+        if theme in themes
+    }
+
+
+def switcher_swipe_inventory(themes=("dark", "light")):
+    return {
+        f"navigation/switcher-swipe-{theme}-{width}x{height}-2x-reduced-{reduced}-{stage}.png":
+            (width, height, 2)
+        for ((width, height), theme), reduced, stage in product(
+            SWITCHER_SWIPE_CASES, ("false", "true"), SWITCHER_SWIPE_FRAMES)
+        if theme in themes
     }
 
 

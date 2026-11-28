@@ -18,7 +18,7 @@ SUBJECT = "inbox/phone-question-dark-320x568-1x.png"
 
 
 def motion_fixture(path, tree):
-    if not path.stem.startswith(("pane-motion-", "accessory-resize-", "batched-swipe-", "dismiss-")):
+    if not path.stem.startswith(review.MOTION_STEMS):
         return
     frames = review.motion_frames(path.stem)
     stage = next(stage for stage in frames if path.stem.endswith(f"-{stage}"))
@@ -78,10 +78,10 @@ class VisualReview(unittest.TestCase):
         self.inventory.stop()
         self.populate(review.required_inventory())
         manifest = self.produce()
-        self.assertEqual(len(manifest["cases"]), 2441)
+        self.assertEqual(len(manifest["cases"]), 2953)
         self.assertEqual({family: sum(case["family"] == family for case in manifest["cases"])
                           for family in review.FAMILIES},
-                         {"inbox": 404, "settings": 298, "navigation": 1682, "palette": 56,
+                         {"inbox": 404, "settings": 298, "navigation": 2194, "palette": 56,
                           "resources": 1})
         case = next(case for case in manifest["cases"] if case["png"] == self.subject)
         self.assertEqual(case["physical"], [320, 568])
