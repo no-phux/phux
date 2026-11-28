@@ -95,6 +95,18 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                         .wrap(),
                 )
         }));
+    // A phone's rests on the bottom edge, its notes on the page margin,
+    // and closes from its header's button or a swipe down.
+    if desk.phone.is_some() {
+        let sheet = super::phone::sheet::BottomSheet {
+            which: crate::desk::phone::dismiss::Bottom::News,
+            title: "What's new",
+            close: Desk::close_news,
+            body: body.px(s.s4),
+            foot: None,
+        };
+        return super::phone::sheet::bottom(desk, sheet, p);
+    }
     let sheet = Sheet {
         key: "news",
         title: "What's new",
@@ -102,9 +114,7 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         top: s.s12 + s.s12,
         close: Desk::close_news,
     };
-    // A phone has no Escape: its sheet closes from the header's button.
-    let foot = desk.phone.is_none().then(|| key_hint("esc", "close", p));
-    sheet.build(None, body, foot, p)
+    sheet.build(None, body, Some(key_hint("esc", "close", p)), p)
 }
 
 #[cfg(test)]

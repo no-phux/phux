@@ -63,9 +63,11 @@ fn short_settings_and_phone_categories_have_no_fade() {
             d.settings_category(Category::Developer);
         });
         settle(&mut rt);
-        assert_edges(&rt, "settings-content", 0.0, 0.0);
+        // A phone's level has its own scroller.
+        let scroller = rt.state.settings_scroller();
+        assert_edges(&rt, scroller, 0.0, 0.0);
         assert!(
-            fades(&rt, "settings-content")
+            fades(&rt, scroller)
                 .iter()
                 .all(|f| f[1] == 0.0 && f[3] == 0.0)
         );

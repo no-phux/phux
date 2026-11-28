@@ -154,7 +154,17 @@ fn whole_control(rt: &Runtime<Desk>, key: &str) {
         contained(text.rect, text.visible),
         "{key}: incomplete text {text:?}"
     );
-    let viewport = geometry(rt, "phone-pane-list").visible;
+    // A pinned Done sits under the list, in the panel; the rows scroll in it.
+    let pinned = !button.path.contains("phone-pane-list");
+    let viewport = geometry(
+        rt,
+        if pinned {
+            "phone-pane-panel"
+        } else {
+            "phone-pane-list"
+        },
+    )
+    .visible;
     let margin = phux_design::tokens::SPACE.s2;
     assert!(
         button.rect[1] >= viewport[1] + margin - 0.5
@@ -175,6 +185,15 @@ fn picker_rows_fit_and_reveal_whole_targets_without_shrinking_requested_text() {
             for large in [false, true] {
                 let (client, mut rt) = prepare(size, scale, native, dark, large);
                 let before = stored(&client);
+                if !large {
+                    // Done and the arrows pinned under the list still leave
+                    // a whole row to pick as it opens, keyboard or not.
+                    let first = geometry(&rt, "phone-pick-@1");
+                    assert!(
+                        contained(first.rect, first.visible),
+                        "{size:?}: no whole row above the pinned controls: {first:?}"
+                    );
+                }
                 let label = geometry(&rt, "phone-pick-@1").label.unwrap();
                 assert_eq!(label, format!("{LONG_NAME} · @1 · current"));
                 assert_eq!(

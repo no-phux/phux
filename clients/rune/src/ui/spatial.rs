@@ -385,20 +385,26 @@ fn map(all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look) -> El {
 
 fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look) -> El {
     let s = &p.space;
-    let list = col()
+    let mut list = col()
         .key("phone-pane-list")
-        .pin(Some(s.s3), Some(s.s3), Some(s.s3), Some(s.s3))
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
         .padding(s.s2)
         .gap(s.s1)
-        .radius(p.radius.md)
-        .continuous_corners()
-        .fill(p.roles.layer.overlay.paint())
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
         .scroll_margin(s.s2);
-    let mut list = p.elevate(list, Tier::Floating);
-    let mut directions = row().w_full();
+    // Done and the arrows stay under the thumb below the list, however long
+    // it scrolls, in one row that takes no more height than the arrows did
+    // at the list's top, so the list keeps its room above a keyboard. At
+    // the accessibility sizes they could not share a row, and a pinned
+    // footer would leave too little room for one whole row on the smallest
+    // phone: there the arrows open the list and Done ends it, as Sessions'
+    // New session does.
+    let pinned = p.type_scale < PHONE.stacked_title_scale;
+    let mut directions = row().w_full().gap(if pinned { s.s1 } else { 0.0 });
     for (label, dir) in [
         ("←", Direction::Left),
         ("↑", Direction::Up),
@@ -417,7 +423,10 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
             .px(0.0),
         );
     }
-    list = list.child(directions);
+    if !pinned {
+        list = list.child(directions);
+        directions = row();
+    }
     for (id, _) in all {
         let target = id.clone();
         let name = pane_name(desk, id);
@@ -449,25 +458,42 @@ fn picker(desk: &Desk, all: &[(ResourceId, Rect)], focus: &ResourceId, p: &Look)
         )
         .w_full(),
     );
-    list = list.child(
-        picker_button(
-            "phone-picker-close",
-            "Close pane picker",
-            "Done",
-            p,
-            Desk::close_phone_picker,
-        )
-        .w_full(),
+    let done = picker_button(
+        "phone-picker-close",
+        "Close pane picker",
+        "Done",
+        p,
+        Desk::close_phone_picker,
     );
+    let (done, foot) = if pinned {
+        (None, Some(directions.child(done.grow(1.5).px(0.0))))
+    } else {
+        (Some(done.w_full()), None)
+    };
     // A real scroll tail lets the last focus ring clear the viewport too.
-    list = list.child(el().w_full().h(s.s2));
+    let list = list.children(done).child(el().w_full().h(s.s2));
+    let panel = col()
+        .key("phone-pane-panel")
+        .pin(Some(s.s3), Some(s.s3), Some(s.s3), Some(s.s3))
+        .radius(p.radius.md)
+        .continuous_corners()
+        .clip_rounded(p.radius.md)
+        .fill(p.roles.layer.overlay.paint())
+        .child(list)
+        .children(foot.map(|controls| {
+            col()
+                .w_full()
+                .child(rune::rule(s.hairline, p.roles.border.muted.paint()).w_full())
+                .child(el().w_full().padding(s.s2).child(controls))
+        }));
+    let panel = p.elevate(panel, Tier::Floating);
     el().key("phone-picker-modal")
         .cover()
         .fill(p.roles.layer.scrim.paint())
         .modal(true, Desk::close_phone_picker)
         .on_key(|d: &mut Desk, event, _| d.phone_picker_key(event))
         .on_paste(|_: &mut Desk, _, _| {})
-        .child(list)
+        .child(panel)
 }
 
 fn pane_name(desk: &Desk, id: &ResourceId) -> String {

@@ -481,10 +481,10 @@ fn native_session_filter_returns_to_the_first_result_after_scrolling() {
     rt.frame(1.0);
     let list = rt.presented("phone-session-list").unwrap().0;
     let first = rt.presented("phone-session-1").unwrap().0;
-    // The list's top inset and the card's padding, none of the old offset.
+    // The list's top inset, none of the old offset.
     let space = phux_design::tokens::SPACE;
     assert!(
-        first[1] >= list[1] && first[1] - list[1] < space.s2 + space.s1 + 1.0,
+        first[1] >= list[1] && first[1] - list[1] < space.s2 + 1.0,
         "{first:?} vs {list:?}"
     );
     assert_eq!(bridge.snapshot(&rt).text, "session");

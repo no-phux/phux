@@ -66,16 +66,23 @@ fn needs_you_leads_and_quiet_sessions_fold_under_their_names() {
     let band = crate::ui::element(&rt, "phone-needs-you").rect;
     let first = crate::ui::element(&rt, "phone-session-section-1").rect;
     assert!(band[1] < first[1], "needs you leads: {band:?} {first:?}");
-    // Claude is blocked; OpenCode finished unseen. Both ask, from two sessions.
-    let waiting = crate::ui::element(&rt, "phone-needs-you-heading");
-    assert!(
-        waiting
-            .label
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Needs you, 2"),
-        "{waiting:?}"
+    // Claude is blocked in phux; OpenCode finished unseen in api. Both ask,
+    // from two sessions, and their own cards still list them.
+    let waiting = crate::ui::element(&rt, "phone-needs-you-heading")
+        .label
+        .unwrap_or_default();
+    assert_eq!(waiting, "Needs you, 2");
+    // A heading the rotor finds, with the Inbox its own button.
+    assert_eq!(
+        crate::ui::element(&rt, "phone-needs-you-heading").role,
+        "heading"
     );
+    let open = crate::ui::element(&rt, "phone-needs-you-heading-open");
+    assert_eq!(open.label.as_deref(), Some("Open Inbox"));
+    assert!(open.rect[2] >= 44.0 && open.rect[3] >= 44.0, "{open:?}");
+    assert!(rt.find("phone-needs-you-pane-@4").is_some());
+    assert!(rt.find("phone-needs-you-pane-@2").is_some());
+    assert!(rt.find("phone-session-pane-@2").is_some());
     // "notes" has no panes and nothing moving: it folds into Quiet.
     assert!(rt.find("phone-session-section-3").is_none());
     // The last band stays above the footer.

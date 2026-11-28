@@ -9,9 +9,11 @@
 use super::super::Desk;
 use super::touch::Feedback;
 
-/// Points from the left edge where a sideways drag pulls the drawer: a
-/// thumb's reach past a case's lip, as a system edge gesture takes.
-pub const EDGE: f32 = 24.0;
+/// Points from the left edge where a sideways drag pulls the drawer (or,
+/// in Settings, goes back): a thumb's reach past a case's lip and a little
+/// over, so a thumb that lands just inside the screen still finds it. The
+/// rest of the stage still pages tabs.
+pub const EDGE: f32 = 32.0;
 /// How much of the stage a drag crosses to commit when lifted slowly.
 pub const PAGE_COMMIT: f32 = 0.33;
 /// How much of the stage a drag crosses to step over into another session.
@@ -23,7 +25,7 @@ pub const PULL_COMMIT: f32 = 0.3;
 /// A lift at least this fast (points a second) along the drag commits it.
 const FLICK: f32 = 450.0;
 /// A flick still travels this far, so a nudge never pages.
-const FLICK_MIN: f32 = 32.0;
+pub(super) const FLICK_MIN: f32 = 32.0;
 /// A finger still for this long before lifting throws nothing.
 const SETTLE: f64 = 0.1;
 /// Stage width when none is laid out yet.
@@ -120,7 +122,14 @@ impl Across {
 
     /// A slow drag past `fraction` of `w`, or a flick along it at least
     /// `flick_min` points long.
-    fn commits(&self, dx: f32, w: f32, fraction: f32, flick_min: f32, clock: f64) -> bool {
+    pub(super) fn commits(
+        &self,
+        dx: f32,
+        w: f32,
+        fraction: f32,
+        flick_min: f32,
+        clock: f64,
+    ) -> bool {
         let v = self.velocity(clock);
         let flicked = v.abs() >= FLICK && v.signum() == dx.signum() && dx.abs() >= flick_min;
         // A flick back against the drag cancels it, however far it went.
@@ -131,7 +140,7 @@ impl Across {
 
 /// Past the end, the page gives less and less: a system scroll view's
 /// rubber band, `(1 − 1 / (x·c / w + 1)) · w`.
-fn rubber(dx: f32, w: f32) -> f32 {
+pub(super) fn rubber(dx: f32, w: f32) -> f32 {
     const C: f32 = 0.55;
     dx.signum() * (1.0 - 1.0 / (dx.abs() * C / w + 1.0)) * w
 }
@@ -142,7 +151,7 @@ fn step_of(dx: f32) -> isize {
 }
 
 impl Desk {
-    fn stage_w(&self) -> f32 {
+    pub(super) fn stage_w(&self) -> f32 {
         self.phone
             .as_ref()
             .map(|phone| phone.stage[0])
@@ -312,7 +321,7 @@ impl Desk {
 }
 
 /// Play `detent` as the drag crosses into committing, not back out.
-fn tick(past: &mut bool, now: bool, detent: Feedback, feedback: &mut Option<Feedback>) {
+pub(super) fn tick(past: &mut bool, now: bool, detent: Feedback, feedback: &mut Option<Feedback>) {
     if now && !*past {
         *feedback = Some(detent);
     }

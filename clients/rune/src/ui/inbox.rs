@@ -10,12 +10,15 @@ use rune_kit::{Button, ButtonVariant, Card, ControlSize, Spinner};
 
 use super::overlay::{EXTENTS, Glass, glass, key_hint, notice_words};
 use super::tokens::{Paint, Tier, Tokens};
-use super::{MOD, badge, icons, lifted, pressable};
+use super::{MOD, badge, icons, lifted};
 use crate::activity::{Ask, Mark};
+use crate::desk::phone::dismiss::Away;
 use crate::desk::{Desk, NoticeKind};
 use crate::inbox::{self, Item, Waiting};
 
+mod header;
 mod inline;
+use header::title;
 mod reply;
 pub use inline::ask_card;
 
@@ -454,76 +457,8 @@ fn footer(desk: &Desk, empty: bool, t: &Tokens) -> El {
     }
 }
 
-/// The drawer's title and count. A phone has no Escape key, so it also
-/// shows Close, a full touch target that dismisses as Escape does.
-fn title(desk: &Desk, count: usize, t: &Tokens) -> El {
-    let s = &t.space;
-    let r = &t.roles;
-    let heading = super::questions::retirement_target(
-        text("Inbox").font(t.ty.title).color(r.text.text.paint()),
-        super::questions::INBOX_FOCUS,
-    );
-    // A phone's empty drawer says so in its body; a zero here is noise.
-    let count = (desk.phone.is_none() || count > 0).then(|| {
-        text(count.to_string())
-            .font(t.ty.readout)
-            .color(r.text.dim.paint())
-    });
-    let title = row()
-        .w_full()
-        .h(s.s12)
-        .px(s.s4)
-        .items_center()
-        .justify_between();
-    if desk.phone.is_none() {
-        return title.child(heading).children(count);
-    }
-    let close = pressable("inbox-close", t)
-        .role("button")
-        .label("Close Inbox")
-        .min_w(s.touch_min)
-        .h(s.touch_min)
-        .px(s.s2)
-        .radius(t.radius.sm)
-        .center()
-        .child(
-            text("Close")
-                .font(t.ty.body)
-                .color(r.accent.accent_text.paint())
-                .a11y_hidden(),
-        )
-        .on_press_tx(|d: &mut Desk, tx| {
-            // The same dismissal as Escape, including clearing the draft.
-            d.close_inbox();
-            tx.blur();
-        });
-    let mut leading = col().grow(1.0).min_w(0.0).gap(s.s1).child(
-        row()
-            .gap(s.s2)
-            .items_center()
-            .child(heading)
-            .children(count),
-    );
-    // Confirmations stay in the fixed header, so they do not displace the
-    // question above a keyboard; errors wrap in the footer.
-    if let Some(notice) = &desk.notice
-        && notice.kind == NoticeKind::Info
-    {
-        leading = leading.child(
-            text(notice.text.clone())
-                .key("inbox-receipt-status")
-                .role("status")
-                .font(t.ty.caption)
-                .color(r.text.text.paint())
-                .w_full()
-                .truncate(),
-        );
-    }
-    title.gap(s.s2).child(leading).child(close)
-}
-
 /// The drawer, on the trailing edge: it slides in on the drawer spring and
-/// fades out.
+/// fades out. A phone's is a sheet that rises whole and lowers again.
 pub fn view(desk: &Desk, p: &Tokens) -> El {
     let t = p;
     let s = &t.space;
@@ -545,19 +480,33 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
             .w_full()
             .key(key)
     };
+    let phone = desk.phone.is_some();
     let drawer = col()
         .key("inbox")
         // The phone form is narrower than the drawer.
         .w_full()
         .max_w(EXTENTS.drawer_w)
-        .h_full()
-        .border(s.hairline, r.border.base.paint())
-        .transition(Transition::asymmetric(
-            Transition::move_edge(Edge::Trailing).springs(t.motion.drawer),
-            Transition::opacity(),
-        ))
+        .h_full();
+    // A phone's sheet wears every phone sheet's chrome: no ring, and no
+    // rule between its header and its questions.
+    let drawer = if phone {
+        drawer
+    } else {
+        drawer.border(s.hairline, r.border.base.paint())
+    };
+    let drawer = drawer
+        // A phone's Inbox is a sheet: it rises and lowers again, by its
+        // Close as by a swipe. A desktop's slides in from its edge.
+        .transition(if desk.phone.is_some() {
+            super::phone::motion::sheet(t)
+        } else {
+            Transition::asymmetric(
+                Transition::move_edge(Edge::Trailing).springs(t.motion.drawer),
+                Transition::opacity(),
+            )
+        })
         .child(title(desk, items.len(), t))
-        .child(rule("inbox-header-rule"))
+        .children((!phone).then(|| rule("inbox-header-rule")))
         .child(if centred {
             el().key("inbox-scroll")
                 .w_full()
@@ -573,19 +522,30 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
                     t,
                 ))
         } else {
-            col()
-                .key("inbox-scroll")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(list)
+            super::phone::swipe_list(
+                desk,
+                col()
+                    .key("inbox-scroll")
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .child(list),
+                Away::Inbox,
+            )
         })
         .child(rule("inbox-footer-rule"))
         .children(reply::phone_reply(desk, &items, picked, t))
-        .child(footer(desk, items.is_empty(), t));
+        .child(footer(desk, items.is_empty(), t))
+        // Its grabber says it pulls down, while it does: never with a reply
+        // typed, which a swipe would discard. Last, out of flow, so it
+        // comes and goes without moving what the fields are known by.
+        .children(
+            desk.swipes(Away::Inbox)
+                .then(|| super::phone::sheet::grabber(0.0, t)),
+        );
     let drawer = t.elevate(
         glass(
             drawer,
@@ -596,8 +556,17 @@ pub fn view(desk: &Desk, p: &Tokens) -> El {
         ),
         Tier::Overlay,
     );
+    let drawer = super::phone::swipeable(desk, drawer, Away::Inbox, t);
+    let place = |row: El| row.w_full().h_full().child(el().grow(1.0)).child(drawer);
+    // A phone's sheet rises whole over a scrim that fades in under it.
+    if desk.phone.is_some() {
+        let sheet = super::phone::sheet::place(row());
+        return super::phone::sheet::holder("inbox-scrim", "Inbox", Desk::close_inbox, true, t)
+            .child(place(sheet));
+    }
     super::scrim(el().key("inbox-scrim"), "Inbox", Some(Desk::close_inbox), t)
-        .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
+        .clip_rounded(0.0)
+        .child(place(row()))
 }
 
 #[cfg(test)]

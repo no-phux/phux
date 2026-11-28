@@ -11,6 +11,7 @@ use crate::keys::{self, Typed};
 pub mod attach;
 pub mod composer;
 pub mod dictation;
+pub mod dismiss;
 pub mod navigation;
 mod refit;
 pub mod spatial;
@@ -68,6 +69,14 @@ pub struct Phone {
     pub feedback: Option<touch::Feedback>,
     /// A sideways drag between sessions, or the edge-pulled drawer.
     pub swipe: swipe::Swipe,
+    /// A page a finger is swiping away, and the live values it binds.
+    pub dismiss: dismiss::Dismiss,
+    /// The navigation page a child it opened goes back to on closing.
+    pub return_to: Option<navigation::Return>,
+    /// How far the Sessions list was scrolled, kept while it is closed.
+    pub sessions_scroll: navigation::Offset,
+    /// Where the Sessions list opens: the kept offset or the current pane.
+    pub reveal: Option<navigation::Reveal>,
     pub ctrl: bool,
     pub alt: bool,
     /// Shift held for the next key, or to keep a terminal hold's selection
@@ -105,6 +114,10 @@ impl Default for Phone {
             refit: None,
             feedback: None,
             swipe: swipe::Swipe::default(),
+            dismiss: dismiss::Dismiss::default(),
+            return_to: None,
+            sessions_scroll: navigation::Offset::default(),
+            reveal: None,
             ctrl: false,
             alt: false,
             shift: false,

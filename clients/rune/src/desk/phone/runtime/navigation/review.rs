@@ -107,7 +107,8 @@ fn connections_keyboard_activation_requests_native_setup_without_terminal_input(
         rt.key(crate::keys::plain(key));
         settle(&mut rt);
         assert!(rt.state.native.as_ref().unwrap().connection_requested);
-        assert!(rt.state.phone_page().is_none());
+        // UIKit's sheet comes up over Sessions, which waits under it.
+        assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
         assert!(!rt.state.phone.as_ref().unwrap().query.focused);
         no_terminal_input(&client);
     }

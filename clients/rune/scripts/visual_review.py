@@ -19,12 +19,13 @@ from urllib.parse import quote
 from visual_acp import (
     EXPORTER as ACP_FORM_EXPORTER, ASK_OWNER_EXPORTER, ask_owner_inventory, form_inventory,
 )
-from visual_motion import MOTION_FRAMES, motion_frames, pane_motion_inventory
+from visual_motion import MOTION_FRAMES, MOTION_STEMS, motion_frames, pane_motion_inventory
 from visual_navigation import navigation_exporter, navigation_inventory
+from visual_palette import EXPORTER as PALETTE_EXPORTER, palette_inventory
 from visual_themes import theme_inventory
 
 
-FAMILIES = ("inbox", "settings", "navigation", "resources")
+FAMILIES = ("inbox", "settings", "navigation", "palette", "resources")
 THEMES = ("dark", "light")
 # Maintained contract: extend this inventory when adding required exporter cases.
 INBOX_VIEWPORTS = (
@@ -51,7 +52,7 @@ JUDGMENTS = """NOT REVIEWED
 
 - Selected UX category (see clients/rune/VISUAL_REVIEW.md):
 - Next category / rotation override and reason:
-- Selected surface (inbox / settings / navigation / resources):
+- Selected surface (inbox / settings / navigation / palette / resources):
 - Observed issue (name exact before case and visible symptom):
 - Measurable acceptance (geometry, readability, action reachability, etc.):
 - UX improvement implemented this tick:
@@ -245,7 +246,7 @@ def required_inventory():
     """
     return {
         **inbox_inventory(), **settings_inventory(), **navigation_inventory(THEMES),
-        "resources/mixed.png": (800, 600, 1),
+        **palette_inventory(), "resources/mixed.png": (800, 600, 1),
     }
 
 
@@ -281,6 +282,7 @@ def exporter_for(family, stem):
         return navigation_exporter(stem)
     return {
         "inbox": inbox_exporter_for(stem),
+        "palette": PALETTE_EXPORTER,
         "resources": "native_png_headless_renderer_smoke",
     }[family]
 
@@ -304,7 +306,7 @@ def case_record(root, png):
         "physical": physical, "logical": logical, "scale": tree["scale"],
         "elementCount": len(tree["elements"]),
     }
-    if png.stem.startswith(("pane-motion-", "accessory-resize-", "batched-swipe-")):
+    if png.stem.startswith(MOTION_STEMS):
         case.update(motion_record(root, png, tree))
     return case
 

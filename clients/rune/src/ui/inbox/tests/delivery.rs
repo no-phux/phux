@@ -472,7 +472,7 @@ fn phone_receipt_confirmation_keeps_the_question_and_editor_in_place() {
             status.visible, status.rect,
             "the whole confirmation fits the header"
         );
-        let [_, y, _, h] = crate::ui::element(&rt, "inbox-header-rule").rect;
+        let [_, y, _, h] = crate::ui::element(&rt, "inbox-header").rect;
         assert!(status.rect[1] + status.rect[3] <= y + h);
         rt.update(|d, _| {
             d.say(

@@ -2,10 +2,10 @@
 //! actions, including Open; a hold on a pane opens its own menu.
 use crate::ui::tokens::Voice;
 use phux_design::State;
-use rune::{El, col, el, row, text};
+use rune::{El, col, row, text};
 
 use super::resource::Place;
-use super::{Desk, Look, card, control, resource_row, separator_at};
+use super::{Desk, Look, card, control, grid, resource_row};
 use crate::addressable::Addressable;
 use crate::desk::phone::navigation::Held;
 use crate::ui::icons;
@@ -58,15 +58,12 @@ pub(super) fn session_section(
 
 /// Panes as one grouped card, an inset hairline between rows.
 pub(super) fn rows(desk: &Desk, resources: &[&Addressable], place: Place, p: &Look) -> El {
-    let mut surface = card(p);
-    let text_inset = p.space.s3 + super::resource::identity_width(p) + p.space.s2;
-    for (i, resource) in resources.iter().enumerate() {
-        if i > 0 {
-            surface = surface.child(separator_at(text_inset, p));
-        }
-        surface = surface.child(resource_row(desk, resource, place, p));
-    }
-    surface
+    card(
+        resources
+            .iter()
+            .map(|resource| resource_row(desk, resource, place, p)),
+        p,
+    )
 }
 
 fn session_header(
@@ -78,7 +75,6 @@ fn session_header(
 ) -> El {
     let fold = fold.filter(|_| !members.is_empty());
     let s = &p.space;
-    let dim = p.roles.text.dim.paint();
     let tally = Tally::of(desk, members);
     let panes = match members.len() {
         0 => "No panes".to_owned(),
@@ -105,6 +101,9 @@ fn session_header(
     if tally.live > 0 {
         summary.push(format!("{} working", tally.live));
     }
+    let color = crate::session_color::of(&session.name)
+        .map(|rgb| crate::host_color::mark(rgb, p.icon.size.xs, p.roles.layer.ground.paint()));
+    let title = heading_title(session.name.clone(), p).key(format!("phone-session-title-{id}"));
     let header = control(&format!("phone-session-{id}"), &label, p, move |d, _| {
         if fold.is_some() {
             d.toggle_phone_fold(id);
@@ -112,69 +111,136 @@ fn session_header(
             d.phone_session(&name);
         }
     })
-    .w_full()
-    .gap(s.s2)
-    .px(s.s3 + s.s1)
-    .py(s.s1)
     .on_secondary_press_local(move |d: &mut Desk, event, tx| {
         let at = [event.window_x, event.window_y];
         d.open_phone_menu(Held::Session(id), format!("phone-session-{id}"), at, tx);
-    })
-    .child(
-        col()
-            .grow(1.0)
-            .min_w(0.0)
-            .gap(s.s0_5)
-            .child(
-                text(session.name.clone())
-                    .key(format!("phone-session-title-{id}"))
-                    .font(p.ty.lead.semibold())
-                    .color(p.roles.text.text.paint())
-                    .truncate()
-                    .a11y_hidden(),
-            )
-            // The summary carries "1 working": it wraps, never cut, at the
-            // largest text sizes, as a pane row's detail does (audit row 25).
-            .child(
-                text(summary.join(" · "))
-                    .font(p.ty.caption)
-                    .color(if current {
-                        p.roles.accent.accent_text.paint()
-                    } else {
-                        dim
-                    })
-                    .wrap()
-                    .a11y_hidden(),
-            ),
-    )
-    .children(
-        crate::session_color::of(&session.name)
-            .map(|rgb| crate::host_color::mark(rgb, s.s2 + s.s0_5, p.roles.layer.ground.paint())),
-    )
-    .children((tally.waiting > 0).then(|| attention_count(tally.waiting, p)));
-    match fold {
+    });
+    let heading = heading_body(
+        row()
+            .w_full()
+            .gap(s.s2)
+            .items_center()
+            .child(title.shrink())
+            .children(color),
+        Some(summary.join(" · ")),
+        p,
+    );
+    // The ⋯ takes the trailing column the rows' checks share, so the
+    // header's own padding ends at it.
+    let header = with_count(heading_frame(header, p).pr(0.0), heading, tally.waiting, p);
+    let header = match fold {
         Some(folded) => header.expanded(!folded).child(chevron(folded, p)),
         None => header.child(chevron(true, p)),
+    };
+    // Folded, the current session's header stands for its current pane.
+    let header = if current && fold == Some(true) {
+        super::resource::where_you_are(header)
+    } else {
+        header
+    };
+    row()
+        .key(format!("phone-session-header-{id}"))
+        .w_full()
+        .items_center()
+        .pr(grid::clear_inset(p))
+        .child(header.grow(1.0).min_w(0.0))
+        .child(more(id, &session.name, p))
+}
+
+/// The session's menu in plain sight: the verbs a hold on its header
+/// opens (Open, New Pane, Fold, Rename, Close Session), one tap away.
+fn more(id: u32, name: &str, p: &Look) -> El {
+    let key = format!("phone-session-more-{id}");
+    let row = key.clone();
+    control(&key, &format!("More for {name}"), p, move |d, tx| {
+        d.open_phone_more(Held::Session(id), row.clone(), tx);
+    })
+    .px(0.0)
+    .center()
+    .radius(p.radius.full)
+    .child(
+        rune::icon(&icons::MORE, grid::trail_mark(p))
+            .color(p.roles.text.dim.paint())
+            .a11y_hidden(),
+    )
+}
+
+/// Every section heading's frame: on the card's content inset, a touch row
+/// tall, its trailing marks on the rows' trailing column.
+pub(super) fn heading_row(heading: El, p: &Look) -> El {
+    heading_frame(heading, p).w_full()
+}
+
+/// [`heading_row`] without its width, to share a row with a control.
+fn heading_frame(heading: El, p: &Look) -> El {
+    heading
+        .min_h(p.space.touch_min)
+        .px(grid::inset(p))
+        .py(p.space.s1)
+        .gap(p.space.s2)
+        .items_center()
+}
+
+/// A section's name, as every section heading sets it.
+/// One line at ordinary sizes, as a system list cuts a long name; whole,
+/// wrapped, at the accessibility sizes, where one line holds a word.
+pub(super) fn heading_title(title: String, p: &Look) -> El {
+    let title = text(title)
+        .font(p.ty.lead.semibold())
+        .color(p.roles.text.text.paint())
+        .min_w(0.0)
+        .a11y_hidden();
+    if p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale {
+        title.wrap()
+    } else {
+        title.truncate()
     }
+}
+
+/// Whether a heading's attention count sits under its name rather than on
+/// the trailing column: at the accessibility sizes, where a column beside
+/// the name would break even a two-word name across lines.
+fn count_under(p: &Look) -> bool {
+    p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale
+}
+
+/// `heading` (a [`heading_body`]) in `frame`, with the attention count for
+/// `waiting` panes, if any: on its own column, or under the name.
+pub(super) fn with_count(frame: El, heading: El, waiting: usize, p: &Look) -> El {
+    let count = (waiting > 0).then(|| attention_count(waiting, p));
+    if count_under(p) {
+        frame.child(heading.children(count))
+    } else {
+        frame.child(heading).children(count)
+    }
+}
+
+/// A heading's name over its optional one-line summary in quiet ink; the
+/// summary wraps, never cut, at the largest text sizes (audit row 25).
+pub(super) fn heading_body(title: El, summary: Option<String>, p: &Look) -> El {
+    col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(p.space.s0_5)
+        .child(title)
+        .children(summary.filter(|s| !s.is_empty()).map(|summary| {
+            text(summary)
+                .font(p.ty.caption)
+                .color(p.roles.text.dim.paint())
+                .wrap()
+                .a11y_hidden()
+        }))
 }
 
 /// A trailing disclosure on the same grid as the pane selection check.
 pub(super) fn chevron(points_right: bool, p: &Look) -> El {
-    let size = p.icon.grid * p.type_scale;
-    el().size(size, size)
-        .center()
-        .child(
-            rune::icon(
-                if points_right {
-                    &icons::CHEVRON_RIGHT
-                } else {
-                    &icons::CHEVRON
-                },
-                p.icon.size.md * p.type_scale,
-            )
-            .color(p.roles.text.dim.paint()),
-        )
-        .a11y_hidden()
+    let icon = if points_right {
+        &icons::CHEVRON_RIGHT
+    } else {
+        &icons::CHEVRON
+    };
+    let mark = rune::icon(icon, grid::trail_mark(p)).color(p.roles.text.dim.paint());
+    grid::trail_slot(Some(mark), grid::trail_w(p), p)
 }
 
 /// Attention is a mark and number, not another surface. The header names it.
@@ -198,37 +264,47 @@ pub(super) fn attention_count(count: usize, p: &Look) -> El {
         .a11y_hidden()
 }
 
-/// A band's heading over its card: a quiet small label and a count, as an
-/// inset grouped list titles its sections.
-pub(super) fn band_heading(key: &str, title: &str, count: usize, p: &Look) -> El {
-    let s = &p.space;
-    let dim = p.roles.text.dim.paint();
-    row()
-        .key(key.to_owned())
-        .w_full()
-        .px(s.s3 + s.s1)
-        .pt(s.s1)
-        .items_center()
-        .gap(s.s2)
+/// The Needs you band's heading, set as every section heading is: its
+/// name, the count as the sessions' headings mark attention, and the
+/// disclosure on their column, here to the Inbox, where every question
+/// can be answered in place. A touch row tall, as theirs are, and a tap
+/// anywhere on it opens the Inbox. To assistive technology it stays a
+/// heading, so the rotor finds the band, and the disclosure is its own
+/// "Open Inbox" button. At the accessibility sizes the name takes the
+/// whole measure, with the count and the disclosure under it.
+pub(super) fn inbox_heading(key: &str, title: &str, count: usize, label: String, p: &Look) -> El {
+    let open = |d: &mut Desk, tx: &mut rune::Tx| d.phone_action(crate::keys::Shortcut::Inbox, tx);
+    // The disclosure is the touch row's height, so the row adds no padding.
+    let frame = heading_row(row().key(key.to_owned()), p)
+        .py(0.0)
         .role("heading")
-        .label(format!("{title}, {count}"))
+        .label(label)
+        .on_press_tx(open);
+    let name = heading_body(
+        heading_title(title.to_owned(), p).key(format!("{key}-title")),
+        None,
+        p,
+    );
+    let count = (count > 0).then(|| attention_count(count, p));
+    let disclosure = control(&format!("{key}-open"), "Open Inbox", p, open)
+        .px(0.0)
+        .w(grid::trail_w(p))
+        .center()
         .child(
-            text(title.to_owned())
-                .font(p.ty.caption.semibold())
-                .color(dim)
-                .grow(1.0)
-                .min_w(0.0)
-                .truncate()
+            rune::icon(&icons::CHEVRON_RIGHT, grid::trail_mark(p))
+                .color(p.roles.text.dim.paint())
                 .a11y_hidden(),
-        )
-        .child(
-            el().min_w(p.icon.grid * p.type_scale)
-                .center()
-                .child(
-                    text(count.to_string())
-                        .font(p.ty.caption.figures())
-                        .color(p.status.state(State::NeedsYou).tone.ink),
-                )
-                .a11y_hidden(),
-        )
+        );
+    if !count_under(p) {
+        return frame.child(name).children(count).child(disclosure);
+    }
+    frame.child(
+        name.child(
+            row()
+                .gap(p.space.s1)
+                .items_center()
+                .children(count)
+                .child(disclosure),
+        ),
+    )
 }

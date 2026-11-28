@@ -7,15 +7,50 @@ use rune::{Key, KeyEvent, Tx};
 use super::touch::Feedback;
 use super::{Desk, Soft};
 use crate::desk::Pending;
-use crate::keys::Shortcut;
 
 pub(crate) mod native;
+mod returns;
+mod reveal;
+
+pub use returns::Return;
+pub use reveal::Reveal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Sessions,
     Actions,
     Switcher,
+}
+
+/// A list's scroll offset, reported by its scroller in every frame that
+/// moves it: a live value, so scrolling runs no view.
+#[derive(Clone)]
+pub struct Offset(rune::Live<f32>);
+
+impl Default for Offset {
+    fn default() -> Self {
+        Self(rune::Live::new(0.0))
+    }
+}
+
+impl std::fmt::Debug for Offset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.get().fmt(f)
+    }
+}
+
+impl Offset {
+    pub fn get(&self) -> f32 {
+        self.0.get()
+    }
+
+    /// The scroller's report: points down from the top.
+    pub fn follow(&self) -> impl Fn(rune::ScrollPos) + 'static {
+        let offset = self.0.clone();
+        move |at: rune::ScrollPos| {
+            offset.set(at.offset[1]);
+        }
+    }
 }
 
 /// What a long press on the Sessions page holds: a session or one pane.
@@ -105,6 +140,7 @@ impl Desk {
             return;
         }
         self.close_phone_menu();
+        let clock = self.clock;
         if let Some(phone) = &mut self.phone {
             phone.reset_navigation();
             phone.release();
@@ -112,21 +148,39 @@ impl Desk {
             phone.page = Some(page);
             phone.switcher = None;
             phone.menu = None;
-            phone.query.clear();
+            phone.return_to = None;
+            // The filter is the last visit's; its keyboard waits for a tap.
             phone.query.focused = false;
+            if page == Page::Sessions {
+                phone.reveal = Some(if phone.query.text.is_empty() {
+                    Reveal::current(clock, phone.sessions_scroll.get())
+                } else {
+                    Reveal::Kept(phone.sessions_scroll.get())
+                });
+            }
         }
     }
 
+    /// Close the page. Sessions keeps its filter and place for the next
+    /// visit; only picking a row is done with them.
     pub fn close_phone_navigation(&mut self) {
         self.close_phone_menu();
         if let Some(phone) = &mut self.phone {
             phone.page = None;
             phone.switcher = None;
             phone.menu = None;
-            phone.query.clear();
             phone.query.focused = false;
             phone.query.cancel_composition();
             phone.release();
+        }
+    }
+
+    /// A Sessions row was picked: its search is done with, and the page
+    /// goes. The next visit opens around the pane it picked.
+    pub fn close_phone_sessions_picked(&mut self) {
+        self.close_phone_navigation();
+        if let Some(phone) = &mut self.phone {
+            phone.query.clear();
         }
     }
 
@@ -199,14 +253,8 @@ impl Desk {
         }
     }
 
-    pub fn phone_action(&mut self, action: Shortcut, tx: &mut Tx) {
-        self.close_phone_navigation();
-        tx.blur();
-        self.shortcut(action, tx);
-    }
-
     pub fn phone_session(&mut self, name: &str) {
-        self.close_phone_navigation();
+        self.close_phone_sessions_picked();
         self.show_session(name);
     }
 
@@ -215,7 +263,7 @@ impl Desk {
             .phone
             .as_ref()
             .map(|phone| phone.query.text.trim().to_owned());
-        self.close_phone_navigation();
+        self.close_phone_sessions_picked();
         match name.filter(|name| !name.is_empty()) {
             Some(name) => self.create_session(name),
             None => self.new_session(),
@@ -243,11 +291,27 @@ impl Desk {
     /// A hold on a row: the menu opens where the finger is, with a tick.
     /// Search's keyboard goes, so the menu has the screen.
     pub fn open_phone_menu(&mut self, held: Held, row: String, at: [f32; 2], tx: &mut Tx) {
+        if self.show_phone_menu(held, row, at, tx) {
+            self.phone_feedback(Feedback::Hold);
+        }
+    }
+
+    /// A session header's ⋯: the menu a hold opens, for a thumb that never
+    /// thought to hold. It hangs from the ⋯ at the page's trailing edge.
+    pub fn open_phone_more(&mut self, held: Held, row: String, tx: &mut Tx) {
+        let edge = self.phone.as_ref().map_or(0.0, |p| p.page_size[0]);
+        self.show_phone_menu(held, row, [edge, 0.0], tx);
+    }
+
+    /// The menu for `held`, beside `row`; whether it opened.
+    fn show_phone_menu(&mut self, held: Held, row: String, at: [f32; 2], tx: &mut Tx) -> bool {
         let source = native::source(self, &held);
         self.close_phone_menu();
-        let Some(phone) = &mut self.phone else { return };
+        let Some(phone) = &mut self.phone else {
+            return false;
+        };
         if phone.page != Some(Page::Sessions) {
-            return;
+            return false;
         }
         // Search's keyboard goes; a keyboard focus elsewhere stays, so the
         // modal hands it back when the menu closes.
@@ -263,7 +327,7 @@ impl Desk {
             source,
             asked: false,
         });
-        self.phone_feedback(Feedback::Hold);
+        true
     }
 
     /// Whether what a menu was opened on is still listed.
@@ -342,7 +406,7 @@ impl Desk {
     fn pane_verb(&mut self, id: ResourceId, session: &str, verb: Verb) {
         match verb {
             Verb::Open => {
-                self.close_phone_navigation();
+                self.close_phone_sessions_picked();
                 self.show(id, session);
             }
             Verb::NewPane => {

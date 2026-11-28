@@ -305,3 +305,96 @@ fn a_native_phone_reaches_labs_through_developer_mode() {
     step(&mut rt, &format!("set-lab-{echo}"));
     assert_eq!(rt.state.labs.get(echo), Some(true));
 }
+
+/// Each Settings level keeps its own place: a category opens at its top
+/// however far down the list was, and back brings the list home where it
+/// was left, not where the category was scrolled.
+#[test]
+fn a_settings_level_opens_at_its_top_and_back_restores_the_list() {
+    let (_client, mut rt) = open(true);
+    rt.set_viewport((320.0, 568.0), 2.0);
+    rt.update(|d, tx| {
+        // Large text, so the category list scrolls on the small phone.
+        d.set_accessibility(false, "UICTContentSizeCategoryAccessibilityXXXL");
+        tx.instant();
+    });
+    settle(&mut rt);
+    rt.update(|_, tx| tx.scroll_to_instant("settings-content", 0.0, 160.0));
+    settle(&mut rt);
+    let left = rt.state.settings_ui.list_scroll.get();
+    assert!(left > 100.0, "the list scrolled: {left}");
+    let row = rt.presented("settings-terminal").unwrap().0;
+    let click = rune::accesskit::Action::Click;
+    assert!(rt.accessibility_action("settings-terminal", click, None));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    // The category's first control sits at the top of its own scroller.
+    let scroller = rt.presented(rt.state.settings_scroller()).unwrap().0;
+    let first = rt.presented("text-size").unwrap().0;
+    assert!(
+        first[1] >= scroller[1] && first[1] < scroller[1] + 160.0,
+        "the category opened at its top: {first:?} in {scroller:?}"
+    );
+    rt.update(|d, tx| tx.scroll_to_instant(d.settings_scroller(), 0.0, 400.0));
+    settle(&mut rt);
+    assert!(rt.accessibility_action("settings-back", click, None));
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.settings_ui.list_scroll.get(), left);
+    let back = rt.presented("settings-terminal").unwrap().0;
+    assert!((back[1] - row[1]).abs() < 0.5, "{back:?} against {row:?}");
+}
+
+/// A notice raised while Settings is open paints over the page and takes
+/// its own taps there, as it does over the terminal.
+#[test]
+fn a_notice_raised_over_settings_shows_and_is_dismissed_over_it() {
+    let (client, mut rt) = open(true);
+    rt.update(|d, _| d.say(crate::desk::NoticeKind::Error, "Couldn't reach the host."));
+    settle(&mut rt);
+    let (x, y) = rt.find("toast-close").expect("the notice's close");
+    let picked = rt.element_at(x, y).expect("something under the close");
+    assert!(
+        picked.path().split('/').any(|part| part == "toast-close"),
+        "Settings covers the notice: {}",
+        picked.path()
+    );
+    tap(&mut rt, "toast-close", 0.1);
+    assert!(rt.state.toasts().is_empty(), "the tap dismissed the notice");
+    assert!(rt.state.settings_open);
+    no_terminal_input(&client);
+}
+
+/// Closing Settings holds the stage still for the page's exit only: the
+/// app's poll ends that window on time, with no other commit to end it.
+#[test]
+fn the_stage_animates_again_once_settings_has_gone() {
+    let (_client, mut rt) = open(true);
+    rt.poll = Some(Desk::poll);
+    rt.update(|d, tx| {
+        d.close_settings();
+        tx.animated();
+    });
+    assert!(rt.state.settings_settling());
+    for _ in 0..12 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.settings_settling(), "still leaving at 200 ms");
+    let commits = rt.stats.commits;
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(!rt.state.settings_settling(), "the exit is over");
+    assert!(
+        rt.stats.commits > commits,
+        "the view never ran after the exit"
+    );
+    // Once: the window ends, and nothing wakes for it again.
+    let commits = rt.stats.commits;
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.stats.commits, commits);
+}

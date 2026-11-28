@@ -142,6 +142,9 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
+    /// Whether the keyboard has moved the palette's highlight since it
+    /// opened: a phone's touch list shows its picked row only then.
+    pub palette_keyed: bool,
     /// What the palette lists.
     pub palette_mode: crate::palette::Mode,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -327,6 +330,7 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
+            palette_keyed: false,
             palette_mode: crate::palette::Mode::All,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             plugin_actions: plugin_actions::Actions::default(),
@@ -431,7 +435,9 @@ impl Desk {
             | self.follow_host_theme()
             | self.pump_onboarding(tx)
             | self.follow_accessibility()
-            | self.expire_notice(tx);
+            | self.expire_notice(tx)
+            | self.phone_return(tx)
+            | self.settle_switcher();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let updated = updated | self.pump_plugin_actions();
         let Some(client) = self.connection.client.clone() else {

@@ -42,6 +42,10 @@ fn sheet_palette_and_inbox_rules_take_whole_device_pixels() {
                         assert!(rt.presented(&key).is_none(), "no phone chord footer");
                         continue;
                     }
+                    if phone && name == "inbox" && edge == "header" {
+                        assert!(rt.presented(&key).is_none(), "a phone sheet's header");
+                        continue;
+                    }
                     let [_, _, w, h] = rt.presented(&key).expect("rule is laid out").0;
                     let expected = scale.floor().max(1.0) / scale;
                     assert!((h - expected).abs() < 0.01, "{key} at {scale}x: {h}");

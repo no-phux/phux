@@ -45,7 +45,8 @@ diff identities. Run new fixtures against baseline in an isolated worktree;
 distinguish fixture-only from app changes. Candidate captures are not "before".
 
 The runner reuses real Rune `Runtime<Desk>`/GPU exporters for Settings,
-navigation, resources and `phone_inbox_visual_review_frames`, not mock HTML
+navigation, the command palette (`palette_visual_review_frames`), resources
+and `phone_inbox_visual_review_frames`, not mock HTML
 or a second UI. Extend coverage near behavior tests. Use deterministic IDs,
 realistic text, fixed timing and explicit settling. Seed inventory, then use
 actual handlers/events for the interaction under review.
@@ -65,6 +66,7 @@ Keep a populated core gallery every tick, not just the selected happy path:
 | Settings | Grouped sections and current values; category drill-down; long labels; typed search/no match; in-progress update feedback. |
 | Phone navigation | Several sessions and panes with long names/folders; mixed working/attention/quiet states; current pane; scrolled bottom; matching search with keyboard and no matches. |
 | Attention and contrast | Populated desktop sidebar and selected tab with a waiting agent; Inbox closed, keyboard-focused via Focus Sidebar then Shift+Tab, and opened with Space (native button activation). Normal and forced colours, light/dark, 1100×720 and 640×360, at true 2×. Phone Inbox remains in the existing core matrix; phone tabs have no attention glow. |
+| Command palette | Populated terminals with working, blocked and done agents, sessions, commands; empty list, typed matches, no match, Themes and Sessions modes; phone keyboard up and largest text. 1100×720, 640×360, 393×852, 320×568, light/dark, 2×. |
 | Resources | Actual decoded image beside a structured native document/accessibility tree; readable text and labels, not an empty placeholder. |
 | Phone Inbox | Populated questions and approvals, long agent/detail text, suggested replies; focused reply with keyboard; empty state and a safe dismiss path. Delivery cases include pending, acknowledged, refused and unconfirmed answers, plus a newer draft and another question before an older receipt. |
 
@@ -205,23 +207,10 @@ code or draft lifetime. Prove existing dismissal/draft semantics, scrolling,
 keyboard clearance and no input leaking into the terminal. Do not force menu
 API adoption. This is not a standing instruction to churn Inbox afterward.
 
-Phone pane-motion cases exercise the actual Move handler over a retained,
-unequal split arrangement. They export idle, press, first-axis, mid-drag,
-release, release +100 ms and settled frames at a fixed 60 Hz. Matching
-`.motion.json` sidecars bind each case, frame and elapsed time into the
-manifest. Horizontal/vertical drift, reversal, boundary resistance,
-cancellation, reduced motion and keyboard-open cases supplement the small,
-light/dark and native-sized 2× matrix. They establish rendered trajectories
-and input semantics, not physical-device smoothness.
-
-Batched swipe cases queue two moves and a release before one frame. Compare
-idle, start, release, release +100 ms and settled edge-pull frames on both
-phone widths, full and native keyboard-reduced viewports, light/dark and
-reduced motion at true 2×. Their motion sidecars bind the actual fixed-frame
-timeline. The final displacement must determine whether Sessions opens;
-behavior tests also cover tabs, session boundaries, withdrawal, cancellation
-and untimed velocity accumulation. These cases do not establish physical
-touch feel or a velocity estimate for moves with no elapsed app time.
+Motion cases (pane motion, batched swipes, swipes away, every page's own
+control and the switcher's card) bind fixed-clock frames to `.motion.json`
+sidecars; what each exports and asserts is in
+[motion review](./VISUAL_REVIEW_MOTION.md).
 
 Pane-picker cases compare long, similarly named panes at standard and AX5
 text sizes, light/dark, both phone widths and native keyboard-reduced 2×

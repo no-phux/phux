@@ -17,7 +17,17 @@ mod themes;
 
 fn surface(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let ink = super::super::tokens_for(cx.system_dark(), desk.settings.theme);
-    view(desk, &ink)
+    let page = view(desk, &ink);
+    if desk.phone.is_none() {
+        return page;
+    }
+    // A phone's page sits in the stage under the top bar's slot, and
+    // reaches up over it.
+    rune::col()
+        .w_full()
+        .h_full()
+        .child(rune::el().w_full().h(super::super::phone::top_bar_slot()))
+        .child(rune::col().grow(1.0).w_full().min_h(0.0).child(page))
 }
 
 fn runtime(size: (f32, f32), phone: bool) -> Runtime<Desk> {
@@ -52,7 +62,9 @@ fn phone_categories_search_close_and_back_have_44_point_targets() {
             assert!(y >= 0.0 && y + h <= size.1 + 0.5, "{key} fits vertically");
         }
         assert!(rt.accessibility_action("settings-terminal", Action::Click, None));
+        // The level slides in from the trailing edge: let it land.
         rt.frame(0.0);
+        rt.frame(1.0);
         assert!(rt.find("settings-back").is_some());
         assert!(rt.find("text-size").is_some());
         for key in ["text-smaller", "text-bigger"] {

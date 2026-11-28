@@ -71,8 +71,9 @@ fn search_chrome_stays_fixed_and_the_last_row_clears_the_footer() {
         tx.instant();
     });
     settle(&mut rt);
+    // Title and search stay put; Connections leads the list and scrolls.
     assert_eq!(element(&rt, "phone-session-query").rect, query);
-    assert_eq!(element(&rt, "phone-session-connections").rect, connections);
+    assert!(element(&rt, "phone-session-connections").rect[1] < connections[1]);
     assert_eq!(element(&rt, "phone-session-new").rect, dock);
     let last = element(&rt, "phone-session-20");
     assert!(last.visible[3] >= 44.0, "{last:?}");

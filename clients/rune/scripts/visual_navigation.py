@@ -2,7 +2,10 @@
 from itertools import product
 from struct import pack, unpack
 
-from visual_motion import accessory_resize_inventory, batched_swipe_inventory, pane_motion_inventory
+from visual_motion import (
+    accessory_resize_inventory, batched_swipe_inventory, dismiss_inventory, page_motion_inventory,
+    pane_motion_inventory, switcher_swipe_inventory,
+)
 from visual_states import states_inventory
 
 
@@ -46,6 +49,9 @@ def navigation_inventory(themes=("dark", "light")):
     cases.update(reconnect_inventory(themes))
     cases.update(pane_motion_inventory(themes))
     cases.update(batched_swipe_inventory(themes))
+    cases.update(dismiss_inventory(themes))
+    cases.update(page_motion_inventory(themes))
+    cases.update(switcher_swipe_inventory(themes))
     cases.update({
         f"navigation/pane-picker-{theme}-{text}-{width}x{height}-{scale}x-"
         f"native-{native}-{state}.png": (width, height, scale)
@@ -159,6 +165,9 @@ def connections_inventory(themes):
 def navigation_exporter(stem):
     for prefix, exporter in (
         ("batched-swipe-", "batched_swipe_visual_review_frames"),
+        ("dismiss-", "dismiss_motion_visual_review_frames"),
+        ("motion-", "page_motion_visual_review_frames"),
+        ("switcher-swipe-", "switcher_swipe_visual_review_frames"),
         ("session-search-", "phone_session_search_visual_review_frames"),
         ("canvas-", "phone_session_canvas_visual_review_frames"),
         ("reconnect-", "reconnect_feedback_visual_review_frames"),

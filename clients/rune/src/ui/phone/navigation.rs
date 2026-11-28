@@ -9,13 +9,15 @@ use rune::{El, Key, Tx, col, el, row, text, text_input};
 
 use super::{Desk, Look};
 use crate::desk::phone::navigation::Page;
-use crate::ui::tokens::{GlassSurface, Paint};
+use crate::ui::tokens::Paint;
 use crate::ui::{icons, pressable};
 
 mod actions;
 mod connections;
 mod dock;
+mod grid;
 mod inventory;
+mod layer;
 mod menu;
 mod resource;
 mod section;
@@ -25,6 +27,8 @@ use crate::ui::Cover;
 use actions::actions;
 use connections::view as connections;
 use inventory::{matches, session_list};
+pub(in crate::ui) use layer::frost;
+use layer::{drawer, layer};
 pub(crate) use menu::native as native_menu;
 use resource::resource_row;
 use states::empty_state;
@@ -38,7 +42,7 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     let p = &super::page_look(desk);
     let s = &p.space;
     if page == Page::Switcher {
-        return Some(switcher::view(desk, top, p));
+        return Some(layer(desk, switcher::view(desk, top, p), page, top, p));
     }
     let title = match page {
         Page::Sessions => "Sessions",
@@ -47,26 +51,31 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
     };
     let heading = text(title)
         .key("phone-navigation-heading")
-        .font(
-            (if page == Page::Sessions {
-                p.ty.title
-            } else {
-                p.ty.lead
-            })
-            .semibold(),
-        )
+        .font(p.ty.title.semibold())
         .color(p.roles.text.text.paint())
         .role("heading")
         .wrap()
         .min_w(0.0)
         .shrink();
-    let done = done(desk, p);
-    let margin = crate::ui::tokens::phone::page_margin() + s.s1;
+    // Sessions, a drawer, is Done; Terminal actions, a sheet, closes with
+    // the round ✕ every sheet ends its header with.
+    let round = page == Page::Actions || super::native_glass(desk, p);
+    let done = match page {
+        Page::Actions => super::close_button(desk, "phone-navigation-close", "Close", p)
+            .on_press(Desk::close_phone_navigation),
+        _ => done(desk, p),
+    };
+    // The title starts on the cards' edge; the close ends on it, as a bar
+    // button does: the circle itself, or the accent word inside its touch
+    // box.
+    let margin = grid::margin();
     let header = row()
         .w_full()
         .max_w(column_max())
-        .min_h(s.s16)
-        .px(margin)
+        .min_h(s.touch_min + s.s2)
+        .pt(if page == Page::Actions { s.s2 } else { 0.0 })
+        .pl(margin)
+        .pr(if round { margin } else { margin - s.s3 })
         .gap(s.s2);
     // At the accessibility text sizes the title takes its own line under
     // Done. Searching borrows that large title's room above the keyboard;
@@ -106,92 +115,14 @@ pub(in crate::ui) fn view(desk: &Desk, top: f32) -> Option<El> {
         .child(body.max_w(column_max()))
         .children(menu::view(desk, p));
     let sheet = drawer(sheet, page, pull, phone.stage[0], p);
-    Some(match pull {
+    let sheet = match pull {
         Some(_) => sheet.inert(),
         None => sheet
             .modal(true, Desk::close_phone_navigation)
             .on_key(|d: &mut Desk, event, _| d.phone_navigation_key(event))
             .on_paste(|_: &mut Desk, _, _| {}),
-    })
-}
-
-/// Sessions comes in from the left edge, where the thumb pulls it from, as
-/// frost rather than a sliding panel: the terminal blurs in place under
-/// [`frost`] (the phone's one blur) while the list drifts a short way in
-/// behind the finger and sharpens. A let-go pull or a close fades it back
-/// off. Terminal actions is one glass page. Opaque where glass may not draw.
-fn drawer(sheet: El, page: Page, pull: Option<f32>, width: f32, p: &Look) -> El {
-    if page != Page::Sessions {
-        return glass(sheet, p);
-    }
-    let shown = shown(pull, width);
-    let drift = p.space.s16;
-    // The list trails the frost, so it reads once the glass has come up
-    // behind it rather than as text floating on the terminal.
-    sheet
-        .offset(-drift * (1.0 - shown), 0.0)
-        .offset_motion(follow(pull, p))
-        .opacity(shown * shown)
-        .opacity_motion(follow(pull, p))
-        .transition(
-            rune::Transition::offset(-drift, 0.0)
-                .combined(rune::Transition::opacity())
-                .springs(p.motion.drawer),
-        )
-}
-
-/// The frost Sessions comes up on: the whole terminal blurred in place.
-/// Under a pulling finger it thickens, its blur and tint growing from
-/// clear to whole by the point a lift opens, so the terminal never shows
-/// crisp through the list. A sibling under the list, never inside a layer
-/// that fades as one, which would flatten what it blurs.
-pub(in crate::ui) fn frost(desk: &Desk) -> Option<El> {
-    let phone = desk.phone.as_ref()?;
-    let pull = phone.swipe.pull.filter(|_| desk.phone_page().is_none());
-    let page = desk.phone_page().or(pull.map(|_| Page::Sessions))?;
-    if page != Page::Sessions {
-        return None;
-    }
-    let p = &super::page_look(desk);
-    let commit = crate::desk::phone::swipe::PULL_COMMIT;
-    let thick = (shown(pull, phone.stage[0]) / commit).min(1.0);
-    let frost = p.glass_panel_thick(
-        el().key("phone-drawer-frost").cover(),
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.ground,
-        thick,
-    );
-    Some(
-        frost
-            .transition(rune::Transition::opacity().springs(p.motion.drawer))
-            .inert()
-            .a11y_hidden(),
-    )
-}
-
-fn glass(panel: El, p: &Look) -> El {
-    p.glass_panel(
-        panel,
-        GlassSurface::PhoneBar,
-        p.glass_tint_layer(),
-        p.roles.layer.ground,
-    )
-}
-
-/// How far in Sessions has come: whole once open.
-fn shown(pull: Option<f32>, width: f32) -> f32 {
-    pull.map_or(1.0, |pulled| (pulled / width.max(1.0)).clamp(0.0, 1.0))
-}
-
-/// A pulling finger is followed exactly; a let-go one settles on the
-/// drawer spring.
-fn follow(pull: Option<f32>, p: &Look) -> rune::Spring {
-    if pull.is_some() {
-        rune::Spring::NONE
-    } else {
-        p.motion.drawer.enter
-    }
+    };
+    Some(layer(desk, sheet, page, top, p))
 }
 
 /// Done closes the page: a glass checkmark like the top bar's buttons on
@@ -230,14 +161,14 @@ fn column_max() -> f32 {
     phux_design::tokens::LAYOUT.content_max.phone_column
 }
 
-/// A row nested in a card: the card's radius less its inset.
+/// A row nested in a padded panel: the panel's radius less its inset.
 fn nested(p: &Look) -> f32 {
     (p.radius.xl - p.space.s1).max(p.radius.xs)
 }
 
-/// A grouped surface: rows on one raised card, as an inset grouped list
-/// and the Actions page draw them.
-fn card(p: &Look) -> El {
+/// A floating panel of rows, such as the long-press menu: rows inset by
+/// [`nested`] so each press keeps its own rounded shape.
+fn panel(p: &Look) -> El {
     col()
         .w_full()
         .padding(p.space.s1)
@@ -246,9 +177,28 @@ fn card(p: &Look) -> El {
         .fill(p.roles.layer.raised.paint())
 }
 
-/// Two lines of text in a touch row.
-fn row_h(p: &Look) -> f32 {
-    p.space.row_h_touch + p.space.s4
+/// A grouped surface: `rows` edge to edge on one card, an inset hairline
+/// between them from the text column, as an iOS inset grouped list draws
+/// them. The first and last rows take the card's corners, so a press
+/// fills the row to the card's edge.
+fn card(rows: impl IntoIterator<Item = El>, p: &Look) -> El {
+    let rows: Vec<El> = rows.into_iter().collect();
+    let last = rows.len().saturating_sub(1);
+    let r = p.radius.xl;
+    let mut surface = col()
+        .w_full()
+        .radius(r)
+        .continuous_corners()
+        .fill(grid::card_fill(p));
+    for (i, row) in rows.into_iter().enumerate() {
+        if i > 0 {
+            surface = surface.child(separator(p));
+        }
+        let top = if i == 0 { r } else { 0.0 };
+        let bottom = if i == last { r } else { 0.0 };
+        surface = surface.child(row.corners([top, top, bottom, bottom]).continuous_corners());
+    }
+    surface
 }
 
 fn control(
@@ -306,13 +256,17 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     let dim = p.roles.text.dim.paint();
     let ink = p.roles.text.text.paint();
     // The lead role: an iOS field under 16 points zooms the page.
+    // The line sits on the field's centre line, with the magnifier: equal
+    // room above and below it at every text size.
+    let line = p.ty.lead.line_px();
+    let magnifier = grid::glyph(p);
     let search = text_input(&phone.query, p.ty.lead)
         .key("phone-session-query")
         .single_line()
         .grow(1.0)
         .min_w(0.0)
         .min_h(s.touch_min)
-        .py(s.s2)
+        .py(((s.touch_min - line) / 2.0).max(s.s2))
         .label("Search sessions, panes, agents, and folders")
         .color(ink)
         // Past the grid's text cap the full hint is cut mid-word on a
@@ -332,28 +286,18 @@ fn sessions(desk: &Desk, p: &Look) -> El {
     let search = row()
         .key("phone-session-search")
         .w_full()
-        .pl(s.s3)
-        .pr(s.s1)
+        .pl(grid::inset(p))
+        .pr(grid::clear_inset(p))
         .gap(s.s2)
         .items_center()
-        .radius(p.radius.lg)
+        .radius(p.radius.full)
         .continuous_corners()
-        .fill(p.roles.layer.raised.paint())
-        // Increased contrast keeps the field's edge; otherwise the fill
-        // alone reads as a field, as a system search field does.
-        .border(
-            s.hairline,
-            if p.increased_contrast {
-                p.roles.border.control.paint()
-            } else {
-                p.roles.border.muted.paint()
-            },
-        )
-        // The magnifier grows with the field's text, or the largest size
-        // leaves a speck beside a headline-sized placeholder.
+        .fill(grid::card_fill(p))
+        // The magnifier sits in the leading column the rows' marks use, at
+        // their size, and the text starts where their titles do.
         .child(
-            rune::icon(&icons::SEARCH, p.icon.grid * p.type_scale)
-                .color(dim)
+            grid::lead_slot(rune::icon(&icons::SEARCH, magnifier).color(dim), line, p)
+                .key("phone-session-search-mark")
                 .a11y_hidden(),
         )
         .child(search)
@@ -368,90 +312,87 @@ fn sessions(desk: &Desk, p: &Look) -> El {
                         .a11y_hidden(),
                 )
         }));
-    let list = session_list(desk, p);
+    // Increased contrast keeps the field's edge; otherwise the fill alone
+    // reads as a field, as a system search field does.
+    let search = if p.increased_contrast {
+        search.border(s.hairline, p.roles.border.control.paint())
+    } else {
+        search
+    };
+    let connections = (!phone.query.focused).then(|| connections(desk, p));
+    // Connections leads the list and scrolls with it; only the title and
+    // search stay put, as a system list's do.
+    let list = col()
+        .w_full()
+        .gap(grid::block_gap(p))
+        .children(connections)
+        .child(session_list(desk, p));
     let large_text = p.type_scale >= crate::ui::tokens::layout::PHONE.stacked_title_scale;
     let footer = dock::footer(desk, phone.query.text.trim(), ink, large_text, p);
-    let connections = (!phone.query.focused).then(|| connections(desk, p));
+    let margin = grid::margin();
+    // The scroller spans the page and its content keeps the margin, so a
+    // keyboard ring around a card-wide row is never cut by the viewport.
+    // It keeps its place for the next visit, and opens where it was for a
+    // kept search, else around the pane on screen.
+    let scroller = col()
+        .key("phone-session-list")
+        .w_full()
+        .min_h(0.0)
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .on_scroll_offset(phone.sessions_scroll.follow())
+        .on_layout_tx(move |d: &mut Desk, rect, tx| d.reveal_phone_sessions(large_text, rect, tx));
     // At large text sizes these controls can each be taller than the
     // ordinary list viewport. Let the whole body scroll, including search
     // and New session, rather than pinning oversized chrome over the list.
     if large_text {
-        return col()
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .px(crate::ui::tokens::phone::page_margin())
-            .pb(s.s3)
-            .child(
+        return col().w_full().grow(1.0).min_h(0.0).pb(s.s3).child(
+            scroller.h_full().scroll_margin(s.s1).child(
                 col()
-                    .key("phone-session-list")
                     .w_full()
-                    .h_full()
-                    .min_h(0.0)
-                    .scroll(rune::ScrollSpec {
-                        stick_bottom: false,
-                    })
-                    .scroll_margin(s.s1)
-                    .child(
-                        col()
-                            .w_full()
-                            .px(s.s1)
-                            .pt(s.s1)
-                            .gap(s.s3)
-                            .child(search)
-                            .children(connections)
-                            .child(list)
-                            .child(footer)
-                            // A real tail protects the last outside focus ring
-                            // where reveal margins cannot scroll farther.
-                            .child(el().w_full().h(s.s1).inert().a11y_hidden()),
-                    ),
-            );
+                    .px(margin)
+                    .pt(s.s1)
+                    .gap(grid::block_gap(p))
+                    .child(search)
+                    .child(list)
+                    .child(footer)
+                    // A real tail protects the last outside focus ring
+                    // where reveal margins cannot scroll farther.
+                    .child(el().w_full().h(s.s1).inert().a11y_hidden()),
+            ),
+        );
     }
     col()
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .px(crate::ui::tokens::phone::page_margin())
-        .gap(s.s2)
         .pb(s.s3)
-        // Search borrows the machine line's room so even a 320×568 phone
-        // can show a complete result above the keyboard and the footer.
+        // The list scrolls under a fade that starts clear of the search
+        // capsule, so a card is never cut flush along the field's edge.
+        .child(el().w_full().px(margin).pb(s.s2).child(search))
         .child(
-            col()
-                .w_full()
-                .px(s.s1)
-                .gap(s.s2)
-                .child(search)
-                .children(connections),
-        )
-        .child(
-            col()
-                .key("phone-session-list")
+            scroller
                 .grow(1.0)
-                .min_h(0.0)
-                .w_full()
-                .scroll(rune::ScrollSpec { stick_bottom: false })
-                .scroll_edge_fade(s.s2)
+                .scroll_edge_fade(s.s4)
                 .scroll_margin(s.s2)
-                .child(list.px(s.s1).py(s.s2)),
+                .child(list.px(margin).py(s.s2)),
         )
-        .child(el().w_full().px(s.s1).child(footer))
+        .child(el().w_full().px(margin).pt(s.s2).child(footer))
 }
 
-/// An inset hairline between touch rows, starting at the text column.
+/// An inset hairline between touch rows, from the text column to the
+/// card's trailing edge.
 fn separator(p: &Look) -> El {
-    separator_at(p.space.s3 + p.icon.grid + p.space.s2, p)
+    separator_at(grid::text_x(p), p)
 }
 
-fn separator_at(text_inset: f32, p: &Look) -> El {
-    let s = &p.space;
+fn separator_at(lead: f32, p: &Look) -> El {
     el().w_full()
-        .pl(text_inset)
-        .pr(s.s3)
+        .pl(lead)
         .child(
             el().w_full()
-                .h(s.hairline)
+                .h(p.space.hairline)
                 .fill(p.roles.border.muted.paint()),
         )
         .a11y_hidden()
@@ -501,7 +442,7 @@ fn other_hosts(mut list: El, desk: &Desk, query: &str, p: &Look) -> El {
                             &format!("{name} · {} terminals", session.terminals),
                             p,
                             move |d, _| {
-                                d.close_phone_navigation();
+                                d.close_phone_sessions_picked();
                                 d.open_on(host.clone(), name.clone());
                             },
                         )

@@ -6,6 +6,7 @@ use phux_protocol::wire::frame::{CommandResult, CommandValue};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
 mod canvas;
+mod dismiss;
 mod feedback;
 mod layout;
 mod organize;
@@ -207,7 +208,8 @@ fn the_native_browser_never_offers_a_nonexistent_local_mac() {
     );
     tap(&mut rt, "phone-session-connections", 0.1);
     assert!(rt.state.native.as_ref().unwrap().connection_requested);
-    assert!(rt.state.phone_page().is_none());
+    // UIKit's sheet comes up over Sessions, which waits under it.
+    assert_eq!(rt.state.phone_page(), Some(Page::Sessions));
 }
 
 #[test]

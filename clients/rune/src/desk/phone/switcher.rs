@@ -2,10 +2,11 @@
 //! preview is a read-only snapshot; choosing the card commits navigation.
 use phux_client_runtime::control::SessionDescriptor;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
-use rune::{Drag, Key, Phase};
+use rune::{Drag, Key, Live, Phase, Tx};
 
 use super::super::Desk;
 use super::navigation::Page;
+use super::swipe::{Across, FLICK_MIN, PAGE_COMMIT, rubber, tick};
 use super::touch::Feedback;
 
 #[derive(Clone, Debug)]
@@ -17,7 +18,113 @@ pub(crate) struct Switcher {
     request: Option<u32>,
     pub(crate) preview: Option<String>,
     pub(crate) caption: String,
-    pub(crate) offset: f32,
+    pub(crate) slide: Slide,
+}
+
+/// Where a finger has the previewed card.
+#[derive(Clone)]
+pub(crate) struct Slide {
+    /// The card's sideways shift: zero at rest.
+    pub(crate) shift: Live<[f32; 2]>,
+    finger: Option<Finger>,
+    /// A paged card is drawn beside the stage, to settle next frame.
+    arriving: bool,
+}
+
+impl Default for Slide {
+    fn default() -> Self {
+        Self {
+            shift: Live::new([0.0; 2]),
+            finger: None,
+            arriving: false,
+        }
+    }
+}
+
+impl std::fmt::Debug for Slide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Slide")
+            .field("shift", &self.shift.get())
+            .field("finger", &self.finger)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The card under a finger: the stage it pages across, the frame's clock,
+/// and which of how many sessions it previews.
+#[derive(Debug, Clone, Copy)]
+struct Card {
+    w: f32,
+    clock: f64,
+    index: usize,
+    len: usize,
+}
+
+impl Card {
+    /// A session lies beyond the card the way `dx` pulls it.
+    const fn beyond(self, dx: f32) -> bool {
+        if dx < 0.0 {
+            self.index + 1 < self.len
+        } else {
+            dx > 0.0 && self.index > 0
+        }
+    }
+
+    /// A move: the card where the finger has it, or a rubber band's give
+    /// where nothing lies beyond, ticking once as it crosses its point. A
+    /// finger that went upright first is not the card's.
+    fn follow(self, slide: &mut Slide, drag: &Drag, feedback: &mut Option<Feedback>) {
+        let finger = slide.finger.get_or_insert(Finger {
+            across: Across::new(self.clock),
+            sideways: drag.dx.abs() > drag.dy.abs(),
+            past: false,
+        });
+        if !finger.sideways {
+            return;
+        }
+        finger.across.sample(drag.dx, self.clock);
+        let (dx, w) = (drag.dx, self.w);
+        let shown = if self.beyond(dx) {
+            dx.clamp(-w, w)
+        } else {
+            rubber(dx, w)
+        };
+        slide.shift.snap([shown, 0.0]);
+        let past = self.beyond(dx) && dx.abs() >= w * PAGE_COMMIT;
+        tick(&mut finger.past, past, Feedback::Detent, feedback);
+    }
+
+    /// The lift: past its point or flicked, the step to page and whether
+    /// it still owes its detent; else the card springs home.
+    fn release(self, slide: &mut Slide, drag: &Drag) -> Option<(isize, bool)> {
+        let mut finger = slide.finger.take().filter(|f| f.sideways)?;
+        finger.across.sample(drag.dx, self.clock);
+        let (dx, w) = (drag.dx, self.w);
+        let pages = !drag.cancelled()
+            && self.beyond(dx)
+            && (finger.across).commits(dx, w, PAGE_COMMIT, FLICK_MIN, self.clock);
+        if !pages {
+            slide.shift.set([0.0; 2]);
+            return None;
+        }
+        // The next card carries on the finger's way: it is drawn where the
+        // old one would have had it beside, on the side that one left by,
+        // and settles from there next frame.
+        let step = if dx < 0.0 { 1 } else { -1 };
+        slide.shift.snap([dx + w * step as f32, 0.0]);
+        slide.arriving = true;
+        // A flick short of the point has not ticked yet.
+        Some((step, !finger.past))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Finger {
+    across: Across,
+    /// Its first movement was sideways: the card's to follow.
+    sideways: bool,
+    /// Past the commit point, so the detent ticks once per crossing.
+    past: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -53,7 +160,7 @@ impl Desk {
             request: None,
             preview: None,
             caption: String::new(),
-            offset: 0.0,
+            slide: Slide::default(),
         });
         self.request_session_preview();
     }
@@ -149,7 +256,14 @@ impl Desk {
             .is_some_and(|p| p.request.is_some())
     }
 
+    /// The arrows and keys: a step with its detent.
     pub(crate) fn step_phone_switcher(&mut self, step: isize) {
+        self.step_switcher(step, true);
+    }
+
+    /// Preview the session `step` places over, ticking a detent unless a
+    /// swipe already ticked its own crossing.
+    fn step_switcher(&mut self, step: isize, detent: bool) {
         let Some((_, index, len)) = self.switcher_selection() else {
             return;
         };
@@ -160,7 +274,9 @@ impl Desk {
             && let Some(page) = &mut phone.switcher
         {
             page.index = next;
-            phone.feedback = Some(Feedback::Detent);
+            if detent {
+                phone.feedback = Some(Feedback::Detent);
+            }
             self.request_session_preview();
         }
     }
@@ -175,19 +291,66 @@ impl Desk {
         }
     }
 
-    pub(crate) fn switcher_drag(&mut self, drag: &Drag) {
-        let Some(page) = self.phone.as_mut().and_then(|p| p.switcher.as_mut()) else {
+    /// A finger on the previewed card, as the terminal's sideways swipe
+    /// takes one: the card follows it one to one (a live value, so a move
+    /// runs no view), resists like a rubber band where there is no session
+    /// beyond, ticks a detent at a third of the stage and pages there or
+    /// on a flick. Let go short, it springs home. A drag that starts
+    /// upright is the page's, not the card's.
+    pub(crate) fn switcher_drag(&mut self, drag: &Drag, tx: &mut Tx) {
+        let Some((_, index, len)) = self.switcher_selection() else {
             return;
         };
-        let horizontal = drag.dx.abs() > drag.dy.abs();
-        if drag.phase == Phase::Move {
-            page.offset = if horizontal { drag.dx * 0.24 } else { 0.0 };
-        } else {
-            page.offset = 0.0;
+        let card = Card {
+            w: self.stage_w(),
+            // The frame's clock, which a handler runs on: what a flick is
+            // timed by.
+            clock: tx.clock(),
+            index,
+            len,
+        };
+        let paged = match drag.phase {
+            Phase::Down => {
+                self.switcher_slide(|slide, _| slide.finger = None);
+                None
+            }
+            Phase::Move => {
+                self.switcher_slide(|slide, feedback| card.follow(slide, drag, feedback));
+                None
+            }
+            Phase::Up => self
+                .switcher_slide(|slide, _| card.release(slide, drag))
+                .flatten(),
+        };
+        let Some((step, detent)) = paged else {
+            // Only live values changed: no view runs.
+            tx.live_only();
+            return;
+        };
+        tx.wake_after(std::time::Duration::ZERO);
+        self.step_switcher(step, detent);
+    }
+
+    /// `f` on the switcher's slide and the phone's haptic, if it is open.
+    fn switcher_slide<T>(
+        &mut self,
+        f: impl FnOnce(&mut Slide, &mut Option<Feedback>) -> T,
+    ) -> Option<T> {
+        let phone = self.phone.as_mut()?;
+        let page = phone.switcher.as_mut()?;
+        Some(f(&mut page.slide, &mut phone.feedback))
+    }
+
+    /// A paged card drawn beside the stage settles into place, a frame
+    /// after it was drawn there.
+    pub(in crate::desk) fn settle_switcher(&mut self) -> bool {
+        let slide = self.phone.as_mut().and_then(|p| p.switcher.as_mut());
+        if let Some(slide) = slide.map(|page| &mut page.slide)
+            && std::mem::take(&mut slide.arriving)
+        {
+            slide.shift.set([0.0; 2]);
         }
-        if drag.phase == Phase::Up && !drag.cancelled() && horizontal && drag.dx.abs() >= 44.0 {
-            self.step_phone_switcher(if drag.dx < 0.0 { 1 } else { -1 });
-        }
+        false
     }
 
     pub(super) fn switcher_key(&mut self, key: &Key) -> bool {
