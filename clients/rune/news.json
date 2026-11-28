@@ -1,5 +1,40 @@
 [
   {
+    "date": "2026-11-28",
+    "title": "Reclaim single-resource sidebar title width",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Let the iOS keyboard's return stand in for the pinned one",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Tuck the phone's Move and Panes toolbar away while typing",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Make the phone's New tab a chip like its tabs",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Draw the phone composer as one Messages-style row",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Tuck the phone's tabs away while typing",
+    "body": "In Rune 0.1.65."
+  },
+  {
+    "date": "2026-11-28",
+    "title": "Give the phone a native navigation bar and slimmer keys",
+    "body": "In Rune 0.1.65."
+  },
+  {
     "date": "2026-11-27",
     "title": "Dictate to a session with the iPhone Action Button",
     "body": "In Rune 0.1.64."
